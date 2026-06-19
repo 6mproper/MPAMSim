@@ -869,7 +869,7 @@ let activeHelpTarget = null;
 function setHelp(target, text) {
   if (!target || !text) return;
   target.dataset.help = text;
-  target.title = text;
+  target.removeAttribute("title");
   target.setAttribute("aria-describedby", "helpTooltip");
   bindHelpTarget(target);
 }
@@ -952,8 +952,10 @@ function hideHelp(target) {
 }
 
 function bindHelpTarget(target) {
-  if (!target || target.dataset.helpBound === "true") return;
-  if (!target.title) target.title = target.dataset.help || "";
+  if (!target) return;
+  // Avoid showing the browser's native title bubble over the custom tooltip.
+  target.removeAttribute("title");
+  if (target.dataset.helpBound === "true") return;
   target.dataset.helpBound = "true";
   target.addEventListener("mouseenter", () => showHelp(target));
   target.addEventListener("mouseleave", () => hideHelp(target));
