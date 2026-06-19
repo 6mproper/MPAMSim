@@ -38,6 +38,9 @@ class MemoryControllerMSC(Component):
         config: MemoryControllerConfig,
         settings: SettingsTable,
         on_complete: Callable[[Request], None],
+        on_cbusy: Optional[
+            Callable[[str, int, int, int], None]
+        ] = None,
         enforce_controls: bool = True,
     ) -> None:
         super().__init__(config.id)
@@ -45,6 +48,7 @@ class MemoryControllerMSC(Component):
         self.config = config
         self.settings = settings
         self.on_complete = on_complete
+        self.on_cbusy = on_cbusy
         self.enforce_controls = enforce_controls
         self._queues: DefaultDict[
             int, Deque[Tuple[int, Request]]
@@ -71,6 +75,26 @@ class MemoryControllerMSC(Component):
             Tuple[int, int], Dict[str, float]
         ] = defaultdict(
             _mc_counters
+        )
+        self._cbusy_sample_bytes: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_sample_hard_blocks: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_level: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_release_samples: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_last_bw_ratio: DefaultDict[int, float] = defaultdict(float)
+        self._cbusy_last_queue_ratio: DefaultDict[int, float] = defaultdict(float)
+        self._cbusy_interval_peak_bw_ratio: DefaultDict[
+            int, float
+        ] = defaultdict(float)
+        self._cbusy_interval_peak_queue_ratio: DefaultDict[
+            int, float
+        ] = defaultdict(float)
+        self._cbusy_interval_transitions: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_interval_assertions: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_interval_active_ns: DefaultDict[int, float] = defaultdict(float)
+        self.kernel.schedule(
+            self.config.cbusy_sample_ns,
+            self._evaluate_cbusy,
+            f"cbusy-sample:{self.component_id}",
         )
 
     @property
@@ -136,7 +160,10 @@ class MemoryControllerMSC(Component):
 
     def _max_available(self, partid: int, size_bytes: int) -> bool:
         setting = self.settings.lookup(partid)
-        if setting.bw_max_gbps is None:
+        if (
+            not setting.bmax_enable
+            or setting.bw_max_gbps is None
+        ):
             return True
         self._refill(
             partid,
@@ -149,7 +176,11 @@ class MemoryControllerMSC(Component):
 
     def _under_bmin(self, partid: int, size_bytes: int) -> bool:
         setting = self.settings.lookup(partid)
-        if setting.bw_min_gbps is None or setting.bw_min_gbps <= 0:
+        if (
+            not setting.bmin_enable
+            or setting.bw_min_gbps is None
+            or setting.bw_min_gbps <= 0
+        ):
             return False
         self._refill(
             partid,
@@ -165,7 +196,8 @@ class MemoryControllerMSC(Component):
             return True
         setting = self.settings.lookup(partid)
         if (
-            setting.bw_limit_mode == "softlimit"
+            not setting.bmax_enable
+            or setting.bw_limit_mode == "softlimit"
             or setting.bw_max_gbps is None
         ):
             return True
@@ -179,6 +211,7 @@ class MemoryControllerMSC(Component):
             self._interval_per_group[
                 (partid, request.pmg)
             ]["hardlimit_block_events"] += 1
+            self._cbusy_sample_hard_blocks[partid] += 1
         return available
 
     def _next_token_wait(
@@ -188,7 +221,8 @@ class MemoryControllerMSC(Component):
             return 0.0
         setting = self.settings.lookup(partid)
         if (
-            setting.bw_limit_mode != "hardlimit"
+            not setting.bmax_enable
+            or setting.bw_limit_mode != "hardlimit"
             or setting.bw_max_gbps is None
         ):
             return 0.0
@@ -226,13 +260,18 @@ class MemoryControllerMSC(Component):
             )
             bmin_bonus = (
                 16
-                if self.enforce_controls and self._under_bmin(
-                    partid, request.size_bytes
+                if (
+                    self.enforce_controls
+                    and setting.bmin_enable
+                    and self._under_bmin(
+                        partid, request.size_bytes
+                    )
                 )
                 else 0
             )
             soft_over = (
                 self.enforce_controls
+                and setting.bmax_enable
                 and setting.bw_limit_mode == "softlimit"
                 and setting.bw_max_gbps is not None
                 and not self._max_available(
@@ -241,7 +280,14 @@ class MemoryControllerMSC(Component):
             )
             soft_penalty = 16 if soft_over and contended else 0
             effective_priority = (
-                (setting.priority if self.enforce_controls else 0)
+                (
+                    setting.priority
+                    if (
+                        self.enforce_controls
+                        and setting.priority_enable
+                    )
+                    else 0
+                )
                 + min(15, aging_bonus)
                 + bmin_bonus
                 - soft_penalty
@@ -276,7 +322,10 @@ class MemoryControllerMSC(Component):
             return
         partid = request.partid
         setting = self.settings.lookup(partid)
-        if setting.bw_max_gbps is not None:
+        if (
+            setting.bmax_enable
+            and setting.bw_max_gbps is not None
+        ):
             self._refill(
                 partid,
                 setting.bw_max_gbps,
@@ -293,6 +342,7 @@ class MemoryControllerMSC(Component):
                 )
         if (
             setting.bw_min_gbps is not None
+            and setting.bmin_enable
             and setting.bw_min_gbps > 0
         ):
             self._refill(
@@ -326,6 +376,7 @@ class MemoryControllerMSC(Component):
                     partid
                 ).bw_limit_mode
                 == "hardlimit"
+                and self.settings.lookup(partid).bmax_enable
             ]
             waits = [
                 self._next_token_wait(partid, request)
@@ -389,6 +440,7 @@ class MemoryControllerMSC(Component):
         self._interval_busy_ns += serialization_ns
         self._interval_requests += 1
         self._interval_bytes += request.size_bytes
+        self._cbusy_sample_bytes[request.partid] += request.size_bytes
         self._sample_queue()
 
         self.kernel.schedule(
@@ -401,6 +453,153 @@ class MemoryControllerMSC(Component):
     def _sample_queue(self) -> None:
         self._queue_sample_sum += self.queue_length
         self._queue_samples += 1
+
+    def _cbusy_cap(self, partid: int, level: int) -> int:
+        setting = self.settings.lookup(partid)
+        return {
+            1: setting.cbusy_l1_ostd,
+            2: setting.cbusy_l2_ostd,
+            3: setting.cbusy_l3_ostd,
+        }.get(level, max(setting.cbusy_l1_ostd, 1))
+
+    def _detected_cbusy_level(
+        self,
+        partid: int,
+        bandwidth_ratio: float,
+        queue_ratio: float,
+        hard_blocks: int,
+    ) -> int:
+        setting = self.settings.lookup(partid)
+        if (
+            not self.enforce_controls
+            or not setting.cbusy_enable
+        ):
+            return 0
+        contended = self.queue_length > 1
+        bw_thresholds = (
+            self.config.cbusy_l1_bw_ratio,
+            self.config.cbusy_l2_bw_ratio,
+            self.config.cbusy_l3_bw_ratio,
+        )
+        queue_thresholds = (
+            self.config.cbusy_l1_queue_ratio,
+            self.config.cbusy_l2_queue_ratio,
+            self.config.cbusy_l3_queue_ratio,
+        )
+        level = 0
+        for candidate in range(1, 4):
+            if (
+                queue_ratio >= queue_thresholds[candidate - 1]
+                or (
+                    setting.bmax_enable
+                    and contended
+                    and bandwidth_ratio
+                    >= bw_thresholds[candidate - 1]
+                )
+            ):
+                level = candidate
+        if hard_blocks > 0:
+            level = max(level, 2)
+        return level
+
+    def _publish_cbusy(self, partid: int, level: int) -> None:
+        if self.on_cbusy is None:
+            return
+        cap = self._cbusy_cap(partid, level)
+        self.kernel.schedule(
+            self.config.cbusy_feedback_latency_ns,
+            lambda: self.on_cbusy(
+                self.component_id,
+                partid,
+                level,
+                cap,
+            ),
+            f"cbusy-feedback:{self.component_id}:p{partid}",
+        )
+
+    def _evaluate_cbusy(self) -> None:
+        configured = {partid for partid, _ in self.settings.items()}
+        partids = sorted(
+            configured
+            | set(self._queues)
+            | set(self._cbusy_sample_bytes)
+            | set(self._cbusy_level)
+        )
+        sample_ns = self.config.cbusy_sample_ns
+        for partid in partids:
+            setting = self.settings.lookup(partid)
+            bandwidth = (
+                self._cbusy_sample_bytes[partid]
+                * 8.0
+                / max(sample_ns, 1e-9)
+            )
+            bandwidth_ratio = (
+                bandwidth / setting.bw_max_gbps
+                if (
+                    setting.bmax_enable
+                    and setting.bw_max_gbps is not None
+                    and setting.bw_max_gbps > 0
+                )
+                else 0.0
+            )
+            queue_ratio = (
+                len(self._queues[partid])
+                / max(1, self.config.queue_depth)
+            )
+            detected = self._detected_cbusy_level(
+                partid,
+                bandwidth_ratio,
+                queue_ratio,
+                self._cbusy_sample_hard_blocks[partid],
+            )
+            current = self._cbusy_level[partid]
+            new_level = current
+            if (
+                not self.enforce_controls
+                or not setting.cbusy_enable
+            ):
+                new_level = 0
+                self._cbusy_release_samples[partid] = 0
+            elif detected > current:
+                new_level = detected
+                self._cbusy_release_samples[partid] = 0
+            elif detected < current:
+                self._cbusy_release_samples[partid] += 1
+                if (
+                    self._cbusy_release_samples[partid]
+                    >= self.config.cbusy_release_hold_samples
+                ):
+                    new_level = current - 1
+                    self._cbusy_release_samples[partid] = 0
+            else:
+                self._cbusy_release_samples[partid] = 0
+
+            if current > 0:
+                self._cbusy_interval_active_ns[partid] += sample_ns
+            self._cbusy_last_bw_ratio[partid] = bandwidth_ratio
+            self._cbusy_last_queue_ratio[partid] = queue_ratio
+            self._cbusy_interval_peak_bw_ratio[partid] = max(
+                self._cbusy_interval_peak_bw_ratio[partid],
+                bandwidth_ratio,
+            )
+            self._cbusy_interval_peak_queue_ratio[partid] = max(
+                self._cbusy_interval_peak_queue_ratio[partid],
+                queue_ratio,
+            )
+            if new_level != current:
+                self._cbusy_level[partid] = new_level
+                self._cbusy_interval_transitions[partid] += 1
+                if new_level > current:
+                    self._cbusy_interval_assertions[partid] += 1
+                self._publish_cbusy(partid, new_level)
+
+        self._cbusy_sample_bytes.clear()
+        self._cbusy_sample_hard_blocks.clear()
+        self.kernel.schedule(
+            sample_ns,
+            self._evaluate_cbusy,
+            f"cbusy-sample:{self.component_id}",
+        )
 
     def monitor_snapshot(self, interval_ns: float) -> Dict[str, object]:
         utilization = min(
@@ -430,12 +629,18 @@ class MemoryControllerMSC(Component):
                 ),
                 "bmax_gbps": (
                     setting.bw_max_gbps
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.bmax_enable
+                    )
                     else None
                 ),
                 "bmin_gbps": (
                     setting.bw_min_gbps
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.bmin_enable
+                    )
                     else None
                 ),
                 "limit_mode": (
@@ -445,9 +650,54 @@ class MemoryControllerMSC(Component):
                 ),
                 "priority": (
                     setting.priority
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.priority_enable
+                    )
                     else 0
                 ),
+                "configured_bmax_gbps": setting.bw_max_gbps,
+                "configured_bmin_gbps": setting.bw_min_gbps,
+                "configured_priority": setting.priority,
+                "bmax_enable": self.enforce_controls and setting.bmax_enable,
+                "bmin_enable": self.enforce_controls and setting.bmin_enable,
+                "priority_enable": (
+                    self.enforce_controls and setting.priority_enable
+                ),
+                "cbusy_enable": (
+                    self.enforce_controls and setting.cbusy_enable
+                ),
+                "cbusy_level": self._cbusy_level[partid],
+                "cbusy_bandwidth_ratio": (
+                    self._cbusy_last_bw_ratio[partid]
+                ),
+                "cbusy_queue_ratio": (
+                    self._cbusy_last_queue_ratio[partid]
+                ),
+                "cbusy_peak_bandwidth_ratio": (
+                    self._cbusy_interval_peak_bw_ratio[partid]
+                ),
+                "cbusy_peak_queue_ratio": (
+                    self._cbusy_interval_peak_queue_ratio[partid]
+                ),
+                "cbusy_transitions": (
+                    self._cbusy_interval_transitions[partid]
+                ),
+                "cbusy_assertions": (
+                    self._cbusy_interval_assertions[partid]
+                ),
+                "cbusy_duty": min(
+                    1.0,
+                    self._cbusy_interval_active_ns[partid]
+                    / max(interval_ns, 1e-9),
+                ),
+                "cbusy_ostd_cap": self._cbusy_cap(
+                    partid,
+                    self._cbusy_level[partid],
+                ) if self._cbusy_level[partid] > 0 else None,
+                "cbusy_l1_ostd": setting.cbusy_l1_ostd,
+                "cbusy_l2_ostd": setting.cbusy_l2_ostd,
+                "cbusy_l3_ostd": setting.cbusy_l3_ostd,
                 "monitor_enable": setting.monitor_enable,
                 "enforcement_enabled": self.enforce_controls,
             }
@@ -475,12 +725,18 @@ class MemoryControllerMSC(Component):
                 ),
                 "bmax_gbps": (
                     setting.bw_max_gbps
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.bmax_enable
+                    )
                     else None
                 ),
                 "bmin_gbps": (
                     setting.bw_min_gbps
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.bmin_enable
+                    )
                     else None
                 ),
                 "limit_mode": (
@@ -490,9 +746,21 @@ class MemoryControllerMSC(Component):
                 ),
                 "priority": (
                     setting.priority
-                    if self.enforce_controls
+                    if (
+                        self.enforce_controls
+                        and setting.priority_enable
+                    )
                     else 0
                 ),
+                "bmax_enable": self.enforce_controls and setting.bmax_enable,
+                "bmin_enable": self.enforce_controls and setting.bmin_enable,
+                "priority_enable": (
+                    self.enforce_controls and setting.priority_enable
+                ),
+                "cbusy_enable": (
+                    self.enforce_controls and setting.cbusy_enable
+                ),
+                "cbusy_level": self._cbusy_level[partid],
             }
 
         row = {
@@ -517,4 +785,9 @@ class MemoryControllerMSC(Component):
         self._queue_samples = 0
         self._interval_per_partid.clear()
         self._interval_per_group.clear()
+        self._cbusy_interval_transitions.clear()
+        self._cbusy_interval_assertions.clear()
+        self._cbusy_interval_active_ns.clear()
+        self._cbusy_interval_peak_bw_ratio.clear()
+        self._cbusy_interval_peak_queue_ratio.clear()
         return row

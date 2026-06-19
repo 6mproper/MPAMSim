@@ -216,3 +216,154 @@ def test_cpu_monitor_reports_outstanding_by_partid(tmp_path) -> None:
     )
     assert rows[-1]["issued"] >= rows[-1]["completed"]
     assert rows[-1]["backpressure_ns"] >= 0
+
+
+def test_independent_control_switches_report_neutral_effective_values(
+    tmp_path,
+) -> None:
+    parameters = default_parameters()
+    parameters.update(
+        {
+            "duration_ns": 20_000,
+            "control_interval_ns": 10_000,
+            "l3_sets": 1024,
+        }
+    )
+    for row in parameters["stimulus_configs"]:
+        row["enabled"] = row["slot"] == 0
+    parameters["stimulus_configs"][0]["partid"] = 2
+    parameters["partid_configs"][2].update(
+        {
+            "cpbm": "00ff",
+            "cmax": 1,
+            "cmax_enable": False,
+            "bmax_gbps": 1,
+            "bmax_enable": False,
+            "priority": 12,
+            "priority_enable": False,
+        }
+    )
+
+    raw = build_config(parameters, str(tmp_path / "switches"))
+    path = tmp_path / "switches.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    result = Simulation.from_config(load_config(path)).run()
+
+    cache_row = next(
+        row
+        for row in result.collector.msc_rows
+        if row["msc_type"] == "cache"
+    )["per_partid"]["2"]
+    mc_row = next(
+        row
+        for row in result.collector.msc_rows
+        if row["msc_type"] == "memory_controller"
+    )["per_partid"]["2"]
+    assert cache_row["configured_cmax"] == 1
+    assert cache_row["cmax_enable"] is False
+    assert cache_row["cmax"] == 8
+    assert mc_row["configured_bmax_gbps"] == 1
+    assert mc_row["bmax_enable"] is False
+    assert mc_row["bmax_gbps"] is None
+    assert mc_row["configured_priority"] == 12
+    assert mc_row["priority_enable"] is False
+    assert mc_row["priority"] == 0
+
+
+def test_cbusy_and_bmax_can_be_isolated_and_combined(tmp_path) -> None:
+    def run(mode: str):
+        parameters = default_parameters()
+        parameters.update(
+            {
+                "duration_ns": 60_000,
+                "control_interval_ns": 10_000,
+                "memory_controllers": 1,
+                "channels_per_mc": 1,
+                "channel_bandwidth_gbps": 16,
+                "mc_base_latency_ns": 300,
+                "mc_queue_depth": 32,
+                "max_outstanding": 32,
+                "policy": "static_mpam",
+                "cbusy_sample_ns": 500,
+                "cbusy_feedback_latency_ns": 10,
+                "cbusy_release_hold_samples": 3,
+                "cbusy_l1_queue_ratio": 0.03,
+                "cbusy_l2_queue_ratio": 0.06,
+                "cbusy_l3_queue_ratio": 0.10,
+            }
+        )
+        for row in parameters["stimulus_configs"]:
+            row["enabled"] = row["slot"] == 0
+        parameters["stimulus_configs"][0].update(
+            {
+                "partid": 0,
+                "rate_value": 500,
+                "rate_unit": "mrps",
+                "workload_type": "random_read",
+            }
+        )
+        parameters["partid_configs"][0].update(
+            {
+                "bmax_enable": mode in {"bmax", "combined"},
+                "bmax_gbps": 8,
+                "limit_mode": "hardlimit",
+                "bmin_enable": False,
+                "priority_enable": False,
+                "cbusy_enable": mode in {"cbusy", "combined"},
+                "cbusy_l1_ostd": 8,
+                "cbusy_l2_ostd": 4,
+                "cbusy_l3_ostd": 2,
+            }
+        )
+        raw = build_config(parameters, str(tmp_path / mode))
+        path = tmp_path / f"{mode}.yaml"
+        path.write_text(
+            yaml.safe_dump(raw, sort_keys=False),
+            encoding="utf-8",
+        )
+        result = Simulation.from_config(load_config(path)).run()
+        mc_rows = [
+            row
+            for row in result.collector.msc_rows
+            if row["msc_type"] == "memory_controller"
+        ]
+        cpu = [
+            row
+            for row in result.collector.requester_rows
+            if row["partid"] == 0
+        ][-1]
+        return {
+            "queue_peak": max(
+                row["queue_occupancy"] for row in mc_rows
+            ),
+            "hard_blocks": sum(
+                row["per_partid"]["0"]["hardlimit_block_events"]
+                for row in mc_rows
+            ),
+            "cbusy_stall": cpu["cbusy_stall_ns"],
+            "effective_ostd": cpu["effective_max_outstanding"],
+            "cbusy_transitions": cpu["cbusy_transitions"],
+            "cbusy_trace_events": sum(
+                row["policy"] == "mc_cbusy"
+                for row in result.collector.control_rows
+            ),
+        }
+
+    baseline = run("none")
+    bmax = run("bmax")
+    cbusy = run("cbusy")
+    combined = run("combined")
+
+    assert baseline["hard_blocks"] == 0
+    assert baseline["cbusy_stall"] == 0
+    assert bmax["hard_blocks"] > 0
+    assert bmax["cbusy_stall"] == 0
+    assert cbusy["hard_blocks"] == 0
+    assert cbusy["cbusy_stall"] > 0
+    assert cbusy["effective_ostd"] < 32
+    assert cbusy["cbusy_transitions"] > 0
+    assert cbusy["cbusy_trace_events"] > 0
+    assert cbusy["queue_peak"] < baseline["queue_peak"]
+    assert combined["hard_blocks"] > 0
+    assert combined["cbusy_stall"] > 0
+    assert combined["queue_peak"] < bmax["queue_peak"]

@@ -376,7 +376,7 @@ input[readonly] {
 }
 
 .mpam-config-table {
-  min-width: 610px;
+  min-width: 1000px;
   table-layout: fixed;
 }
 
@@ -397,6 +397,7 @@ input[readonly] {
 .mpam-config-table th:nth-child(7),
 .mpam-config-table th:nth-child(8) { width: 58px; }
 .mpam-config-table th:nth-child(9) { width: 76px; }
+.mpam-config-table th:nth-child(11) { width: 150px; }
 
 .mpam-config-table input,
 .mpam-config-table select {
@@ -409,6 +410,36 @@ input[readonly] {
 .mpam-config-table input[type="checkbox"] {
   width: 15px;
   height: 15px;
+}
+
+.control-field {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px;
+}
+
+.control-field input[type="checkbox"],
+.cbusy-control > input[type="checkbox"] {
+  margin: 0;
+}
+
+.cbusy-control {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.cbusy-control > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.cbusy-control > div input {
+  min-width: 0;
+  text-align: center;
 }
 
 .partid-chip {
@@ -976,6 +1007,65 @@ canvas {
 
 .control-state-reason {
   grid-column: 1 / -1;
+}
+
+.cbusy-level {
+  min-width: 28px;
+  min-height: 22px;
+  padding: 3px 5px;
+  display: inline-grid;
+  place-items: center;
+  color: #4c5962;
+  background: #edf0f2;
+  border: 1px solid #b8c1c7;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.cbusy-level.level-1 {
+  color: #6d5100;
+  background: #fff5d7;
+  border-color: #d2b35c;
+}
+
+.cbusy-level.level-2 {
+  color: #8a4900;
+  background: #ffead0;
+  border-color: #d49343;
+}
+
+.cbusy-level.level-3 {
+  color: #8a2525;
+  background: #fde2e2;
+  border-color: #cf7777;
+}
+
+.control-value {
+  min-height: 20px;
+  padding: 2px 5px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.control-value.enabled {
+  color: #176046;
+  background: #e8f3ed;
+  border: 1px solid #9abdab;
+}
+
+.control-value.disabled {
+  color: #6f7980;
+  background: #edf0f2;
+  border: 1px solid #c2c9ce;
+}
+
+.control-value + small {
+  margin-left: 4px;
+  color: var(--muted);
 }
 
 .monitor-group-heading {

@@ -53,6 +53,15 @@ class MemoryControllerConfig:
     base_latency_ns: float = 80.0
     token_bucket_window_ns: float = 100.0
     aging_ns: float = 500.0
+    cbusy_sample_ns: float = 1_000.0
+    cbusy_feedback_latency_ns: float = 50.0
+    cbusy_release_hold_samples: int = 3
+    cbusy_l1_bw_ratio: float = 1.0
+    cbusy_l2_bw_ratio: float = 1.1
+    cbusy_l3_bw_ratio: float = 1.25
+    cbusy_l1_queue_ratio: float = 0.25
+    cbusy_l2_queue_ratio: float = 0.50
+    cbusy_l3_queue_ratio: float = 0.75
 
 
 @dataclass
@@ -77,6 +86,16 @@ class MPAMSettingConfig:
     bw_limit_mode: str = "hardlimit"
     priority: Optional[int] = None
     monitor_enable: bool = True
+    cpbm_enable: bool = True
+    cmin_enable: bool = True
+    cmax_enable: bool = True
+    bmin_enable: bool = True
+    bmax_enable: bool = True
+    priority_enable: bool = True
+    cbusy_enable: bool = False
+    cbusy_l1_ostd: int = 24
+    cbusy_l2_ostd: int = 12
+    cbusy_l3_ostd: int = 4
 
 
 @dataclass

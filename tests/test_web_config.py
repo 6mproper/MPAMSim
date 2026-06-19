@@ -45,6 +45,9 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert len(config.controls_by_msc["mc0"]) == 16
     assert config.caches[0].sets == 32_768
     assert config.caches[0].monitor_group_sets == 8
+    assert config.controls_by_msc["slc0"][0].cpbm_enable is True
+    assert config.controls_by_msc["mc0"][0].cbusy_enable is False
+    assert config.memory_controllers[0].cbusy_sample_ns == 1_000
 
 
 def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:
@@ -76,3 +79,11 @@ def test_web_parameters_can_disable_one_thread(tmp_path) -> None:
     requester_sets = [row["requesters"] for row in raw["workloads"]]
     assert len(requester_sets) == 15
     assert ["cpu3.t1"] not in requester_sets
+
+
+def test_web_parameters_reject_unordered_cbusy_thresholds(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["cbusy_l1_queue_ratio"] = 0.8
+    parameters["cbusy_l2_queue_ratio"] = 0.4
+    with pytest.raises(ParameterError, match="queue ratios"):
+        build_config(parameters, str(tmp_path / "run"))

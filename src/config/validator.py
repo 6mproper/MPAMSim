@@ -41,6 +41,36 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Cache {cache.id} monitor_group_sets must be 8 in this model"
             )
+    for mc in config.memory_controllers:
+        if mc.cbusy_sample_ns <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} CBusy sample must be positive"
+            )
+        if mc.cbusy_feedback_latency_ns < 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} CBusy feedback latency cannot be negative"
+            )
+        if mc.cbusy_release_hold_samples <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} CBusy release hold must be positive"
+            )
+        if not (
+            0 < mc.cbusy_l1_bw_ratio
+            <= mc.cbusy_l2_bw_ratio
+            <= mc.cbusy_l3_bw_ratio
+        ):
+            raise ConfigError(
+                f"Memory controller {mc.id} CBusy bandwidth thresholds must be ordered"
+            )
+        if not (
+            0 <= mc.cbusy_l1_queue_ratio
+            <= mc.cbusy_l2_queue_ratio
+            <= mc.cbusy_l3_queue_ratio
+            <= 1
+        ):
+            raise ConfigError(
+                f"Memory controller {mc.id} CBusy queue thresholds must be ordered in [0, 1]"
+            )
     cores = []
     for cluster in config.clusters:
         if cluster.l3 not in cache_ids:
@@ -98,6 +128,15 @@ def validate_config(config: ProjectConfig) -> None:
                 )
             if control.priority is not None and not 0 <= control.priority <= 255:
                 raise ConfigError("priority must be in [0, 255]")
+            if not (
+                1
+                <= control.cbusy_l3_ostd
+                <= control.cbusy_l2_ostd
+                <= control.cbusy_l1_ostd
+            ):
+                raise ConfigError(
+                    "CBusy OSTD caps must satisfy 1 <= L3 <= L2 <= L1"
+                )
             if control.cache_portion_bitmap is not None:
                 try:
                     bitmap = int(control.cache_portion_bitmap, 16)

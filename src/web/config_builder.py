@@ -77,6 +77,7 @@ def _mask(value: object, ways: int, default: int) -> str:
 def _default_partid_configs(
     ways: int = 16,
     total_mc_bandwidth: float = 256.0,
+    max_outstanding: int = 32,
 ) -> List[Dict[str, object]]:
     full_mask = (1 << ways) - 1
     lower_ways = max(1, ways // 2)
@@ -89,13 +90,23 @@ def _default_partid_configs(
             "partid": partid,
             "name": f"partid_{partid}",
             "monitor_enable": True,
+            "cpbm_enable": True,
+            "cmin_enable": True,
+            "cmax_enable": True,
             "cmin": 0,
             "cmax": ways,
             "cpbm": f"{full_mask:0{width}x}",
+            "bmin_enable": True,
+            "bmax_enable": True,
             "bmin_gbps": 0.0,
             "bmax_gbps": total_mc_bandwidth,
             "limit_mode": "softlimit",
+            "priority_enable": True,
             "priority": 4,
+            "cbusy_enable": False,
+            "cbusy_l1_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.75))),
+            "cbusy_l2_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.50))),
+            "cbusy_l3_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.125))),
         }
         rows.append(row)
     rows[0].update({"name": "default", "priority": 4})
@@ -202,6 +213,15 @@ def default_parameters() -> Dict[str, object]:
         "mc_base_latency_ns": 80,
         "mc_queue_depth": 512,
         "max_outstanding": 32,
+        "cbusy_sample_ns": 1_000,
+        "cbusy_feedback_latency_ns": 50,
+        "cbusy_release_hold_samples": 3,
+        "cbusy_l1_bw_ratio": 1.0,
+        "cbusy_l2_bw_ratio": 1.1,
+        "cbusy_l3_bw_ratio": 1.25,
+        "cbusy_l1_queue_ratio": 0.25,
+        "cbusy_l2_queue_ratio": 0.50,
+        "cbusy_l3_queue_ratio": 0.75,
         "policy": "closed_loop_qos",
         "max_bw_step_percent": 10,
         "p99_hysteresis": 0.1,
@@ -215,11 +235,12 @@ def _parse_partid_configs(
     parameters: Dict[str, object],
     ways: int,
     total_mc_bandwidth: float,
+    max_outstanding: int,
 ) -> List[Dict[str, object]]:
     raw_rows = parameters.get("partid_configs")
     if not isinstance(raw_rows, list) or len(raw_rows) != 16:
         raw_rows = _default_partid_configs(
-            ways, total_mc_bandwidth
+            ways, total_mc_bandwidth, max_outstanding
         )
     full_mask = (1 << ways) - 1
     parsed = []
@@ -278,6 +299,43 @@ def _parse_partid_configs(
             raise ParameterError(
                 f"PARTID {partid}: priority must be 0..15"
             )
+        cbusy_l1_ostd = min(
+            max_outstanding,
+            int(
+            raw.get(
+                "cbusy_l1_ostd",
+                max(1, math.ceil(max_outstanding * 0.75)),
+            )
+            ),
+        )
+        cbusy_l2_ostd = min(
+            cbusy_l1_ostd,
+            int(
+            raw.get(
+                "cbusy_l2_ostd",
+                max(1, math.ceil(max_outstanding * 0.50)),
+            )
+            ),
+        )
+        cbusy_l3_ostd = min(
+            cbusy_l2_ostd,
+            int(
+            raw.get(
+                "cbusy_l3_ostd",
+                max(1, math.ceil(max_outstanding * 0.125)),
+            )
+            ),
+        )
+        if not (
+            1
+            <= cbusy_l3_ostd
+            <= cbusy_l2_ostd
+            <= cbusy_l1_ostd
+            <= max_outstanding
+        ):
+            raise ParameterError(
+                f"PARTID {partid}: require 1 <= CBusy L3 <= L2 <= L1 <= max outstanding"
+            )
         parsed.append(
             {
                 "partid": partid,
@@ -287,13 +345,23 @@ def _parse_partid_configs(
                 "monitor_enable": bool(
                     raw.get("monitor_enable", True)
                 ),
+                "cpbm_enable": bool(raw.get("cpbm_enable", True)),
+                "cmin_enable": bool(raw.get("cmin_enable", True)),
+                "cmax_enable": bool(raw.get("cmax_enable", True)),
                 "cmin": cmin,
                 "cmax": cmax,
                 "cpbm": cpbm,
+                "bmin_enable": bool(raw.get("bmin_enable", True)),
+                "bmax_enable": bool(raw.get("bmax_enable", True)),
                 "bmin_gbps": bmin,
                 "bmax_gbps": bmax,
                 "limit_mode": limit_mode,
+                "priority_enable": bool(raw.get("priority_enable", True)),
                 "priority": priority,
+                "cbusy_enable": bool(raw.get("cbusy_enable", False)),
+                "cbusy_l1_ostd": cbusy_l1_ostd,
+                "cbusy_l2_ostd": cbusy_l2_ostd,
+                "cbusy_l3_ostd": cbusy_l3_ostd,
             }
         )
     if seen != set(range(16)):
@@ -538,6 +606,41 @@ def build_config(
     max_outstanding = _integer(
         values, "max_outstanding", 32, 1, 1024
     )
+    cbusy_sample_ns = _number(
+        values, "cbusy_sample_ns", 1_000, 1, 1_000_000
+    )
+    cbusy_feedback_latency_ns = _number(
+        values,
+        "cbusy_feedback_latency_ns",
+        50,
+        0,
+        100_000,
+    )
+    cbusy_release_hold_samples = _integer(
+        values,
+        "cbusy_release_hold_samples",
+        3,
+        1,
+        1_000,
+    )
+    cbusy_bw_ratios = [
+        _number(values, "cbusy_l1_bw_ratio", 1.0, 0.01, 10),
+        _number(values, "cbusy_l2_bw_ratio", 1.1, 0.01, 10),
+        _number(values, "cbusy_l3_bw_ratio", 1.25, 0.01, 10),
+    ]
+    cbusy_queue_ratios = [
+        _number(values, "cbusy_l1_queue_ratio", 0.25, 0, 1),
+        _number(values, "cbusy_l2_queue_ratio", 0.50, 0, 1),
+        _number(values, "cbusy_l3_queue_ratio", 0.75, 0, 1),
+    ]
+    if cbusy_bw_ratios != sorted(cbusy_bw_ratios):
+        raise ParameterError(
+            "CBusy bandwidth ratios must satisfy L1 <= L2 <= L3"
+        )
+    if cbusy_queue_ratios != sorted(cbusy_queue_ratios):
+        raise ParameterError(
+            "CBusy queue ratios must satisfy L1 <= L2 <= L3"
+        )
     total_mc_bandwidth = (
         channels_per_mc * channel_bandwidth_gbps
     )
@@ -545,6 +648,7 @@ def build_config(
         parameters,
         l3_ways,
         total_mc_bandwidth,
+        max_outstanding,
     )
     stimulus_configs = _parse_stimulus_configs(parameters)
     workloads = _build_workloads(stimulus_configs)
@@ -640,6 +744,15 @@ def build_config(
             "base_latency_ns": mc_base_latency_ns,
             "token_bucket_window_ns": 100,
             "aging_ns": 500,
+            "cbusy_sample_ns": cbusy_sample_ns,
+            "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,
+            "cbusy_release_hold_samples": cbusy_release_hold_samples,
+            "cbusy_l1_bw_ratio": cbusy_bw_ratios[0],
+            "cbusy_l2_bw_ratio": cbusy_bw_ratios[1],
+            "cbusy_l3_bw_ratio": cbusy_bw_ratios[2],
+            "cbusy_l1_queue_ratio": cbusy_queue_ratios[0],
+            "cbusy_l2_queue_ratio": cbusy_queue_ratios[1],
+            "cbusy_l3_queue_ratio": cbusy_queue_ratios[2],
         }
         for index in range(mc_count)
     ]
@@ -656,6 +769,9 @@ def build_config(
                     "cmin": row["cmin"],
                     "cmax": row["cmax"],
                     "cpbm": row["cpbm"],
+                    "cmin_enable": row["cmin_enable"],
+                    "cmax_enable": row["cmax_enable"],
+                    "cpbm_enable": row["cpbm_enable"],
                     "monitor_enable": row["monitor_enable"],
                 }
                 for row in partid_configs
@@ -671,8 +787,15 @@ def build_config(
                     "partid": row["partid"],
                     "bmin": row["bmin_gbps"],
                     "bmax": row["bmax_gbps"],
+                    "bmin_enable": row["bmin_enable"],
+                    "bmax_enable": row["bmax_enable"],
                     "limit_mode": row["limit_mode"],
                     "priority": row["priority"],
+                    "priority_enable": row["priority_enable"],
+                    "cbusy_enable": row["cbusy_enable"],
+                    "cbusy_l1_ostd": row["cbusy_l1_ostd"],
+                    "cbusy_l2_ostd": row["cbusy_l2_ostd"],
+                    "cbusy_l3_ostd": row["cbusy_l3_ostd"],
                     "monitor_enable": row["monitor_enable"],
                 }
                 for row in partid_configs

@@ -159,6 +159,25 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             base_latency_ns=float(item.get("base_latency_ns", 80.0)),
             token_bucket_window_ns=float(item.get("token_bucket_window_ns", 100.0)),
             aging_ns=float(item.get("aging_ns", 500.0)),
+            cbusy_sample_ns=float(item.get("cbusy_sample_ns", 1_000.0)),
+            cbusy_feedback_latency_ns=float(
+                item.get("cbusy_feedback_latency_ns", 50.0)
+            ),
+            cbusy_release_hold_samples=int(
+                item.get("cbusy_release_hold_samples", 3)
+            ),
+            cbusy_l1_bw_ratio=float(item.get("cbusy_l1_bw_ratio", 1.0)),
+            cbusy_l2_bw_ratio=float(item.get("cbusy_l2_bw_ratio", 1.1)),
+            cbusy_l3_bw_ratio=float(item.get("cbusy_l3_bw_ratio", 1.25)),
+            cbusy_l1_queue_ratio=float(
+                item.get("cbusy_l1_queue_ratio", 0.25)
+            ),
+            cbusy_l2_queue_ratio=float(
+                item.get("cbusy_l2_queue_ratio", 0.50)
+            ),
+            cbusy_l3_queue_ratio=float(
+                item.get("cbusy_l3_queue_ratio", 0.75)
+            ),
         )
         for item in soc.get("memory", {}).get("controllers", [])
     ]
@@ -198,6 +217,16 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 ),
                 priority=int(item["priority"]) if item.get("priority") is not None else None,
                 monitor_enable=bool(item.get("monitor_enable", True)),
+                cpbm_enable=bool(item.get("cpbm_enable", True)),
+                cmin_enable=bool(item.get("cmin_enable", True)),
+                cmax_enable=bool(item.get("cmax_enable", True)),
+                bmin_enable=bool(item.get("bmin_enable", True)),
+                bmax_enable=bool(item.get("bmax_enable", True)),
+                priority_enable=bool(item.get("priority_enable", True)),
+                cbusy_enable=bool(item.get("cbusy_enable", False)),
+                cbusy_l1_ostd=int(item.get("cbusy_l1_ostd", 24)),
+                cbusy_l2_ostd=int(item.get("cbusy_l2_ostd", 12)),
+                cbusy_l3_ostd=int(item.get("cbusy_l3_ostd", 4)),
             )
             for item in entry.get("controls", [])
         ]

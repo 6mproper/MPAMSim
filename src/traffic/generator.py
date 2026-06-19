@@ -79,11 +79,14 @@ class WorkloadGenerator:
     def _issue(self) -> None:
         if self.kernel.now_ns >= self._stop_ns:
             return
-        if not self.requester.can_issue():
+        if not self.requester.can_issue(self.workload.partid):
             retry_ns = min(10.0, self._interval_ns)
             self.requester.on_backpressure(
                 self.workload.partid,
                 retry_ns,
+                cbusy=self.requester.blocked_by_cbusy(
+                    self.workload.partid
+                ),
             )
             self.kernel.schedule(retry_ns, self._issue, f"retry:{self.workload.name}")
             return

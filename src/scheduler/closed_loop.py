@@ -77,14 +77,20 @@ class ClosedLoopQoSPolicy(PolicyBase):
         updates: List[ControlUpdate] = []
         for msc_id, table in self.mc_tables.items():
             for partid in self.protected:
-                current = table.lookup(partid).priority
+                setting = table.lookup(partid)
+                if not setting.priority_enable:
+                    continue
+                current = setting.priority
                 new_priority = min(self.priority_max, current + 1)
                 if new_priority != current:
                     updates.append(
                         ControlUpdate(msc_id, partid, "priority", new_priority, reason, self.name)
                     )
             for partid in self.background:
-                cap = table.lookup(partid).bw_max_gbps
+                setting = table.lookup(partid)
+                if not setting.bmax_enable:
+                    continue
+                cap = setting.bw_max_gbps
                 if cap is None:
                     continue
                 new_cap = max(0.001, cap * (1.0 - self.max_step_percent / 100.0))
@@ -99,7 +105,10 @@ class ClosedLoopQoSPolicy(PolicyBase):
         for msc_id, table in self.mc_tables.items():
             for partid in self.background:
                 initial_cap = self._initial_caps.get((msc_id, partid))
-                current = table.lookup(partid).bw_max_gbps
+                setting = table.lookup(partid)
+                if not setting.bmax_enable:
+                    continue
+                current = setting.bw_max_gbps
                 if initial_cap is None or current is None or current >= initial_cap:
                     continue
                 new_cap = min(initial_cap, current * (1.0 + self.max_step_percent / 100.0))

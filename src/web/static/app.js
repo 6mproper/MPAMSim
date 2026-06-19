@@ -62,6 +62,15 @@ const parameterHelp = {
   max_bw_step_percent: "闭环每次调整背景 PARTID BMAX 的最大百分比。",
   p99_hysteresis: "P99 超过或低于目标的滞回区间，避免控制值频繁抖动。",
   min_hold_intervals: "两次闭环调整之间至少保持的采样周期数。",
+  cbusy_sample_ns: "MC 对每个 PARTID 评估 CBusy 的快速采样周期，独立于慢速软件控制周期。",
+  cbusy_feedback_latency_ns: "MC CBusy 档位变化传播到 CPU requester 的模型延迟。",
+  cbusy_release_hold_samples: "压力下降后连续满足该采样数才允许 CBusy 逐级释放。",
+  cbusy_l1_bw_ratio: "Level 1 带宽阈值：采样带宽除以启用的 BMAX。",
+  cbusy_l2_bw_ratio: "Level 2 带宽阈值，必须不小于 Level 1。",
+  cbusy_l3_bw_ratio: "Level 3 带宽阈值，必须不小于 Level 2。",
+  cbusy_l1_queue_ratio: "Level 1 队列阈值：该 PARTID 队列深度除以 MC 总队列容量。",
+  cbusy_l2_queue_ratio: "Level 2 队列阈值，必须不小于 Level 1。",
+  cbusy_l3_queue_ratio: "Level 3 队列阈值，必须不小于 Level 2。",
 };
 const stimulusFieldHelp = {
   enabled: "是否为该硬件线程生成 workload。关闭后该 requester 保留但不注入流量。",
@@ -78,13 +87,21 @@ const stimulusFieldHelp = {
 const partidFieldHelp = {
   name: "软件侧分区名称，仅用于识别和导出。",
   monitor_enable: "标记该 PARTID 的监控能力为启用；当前界面仍保留所有 16 行。",
+  cpbm_enable: "独立启用 CPBM；关闭时所有物理 way 都可参与分配。",
+  cmin_enable: "独立启用 CMIN 替换保护；关闭后最低 way 保护为 0。",
+  cmax_enable: "独立启用 CMAX；关闭后有效上限由 CPBM 可用 way 数决定。",
   cmin: "Cache minimum：抽样替换时保护该 PARTID 的最低 way 占有目标。",
   cmax: "Cache maximum：该 PARTID 在每个抽样 set 内最多可分配的 way 数。",
   cpbm: "Cache Portion Bitmap：十六进制 way 允许位图，bit N 对应 way N。",
   bmin_gbps: "每个 MC 上该 PARTID 的最小带宽目标；低于目标时获得调度加权。",
   bmax_gbps: "每个 MC 上该 PARTID 的最大带宽目标。",
+  bmin_enable: "独立启用 BMIN 调度加权。",
+  bmax_enable: "独立启用 BMAX hard token 或 soft contention penalty。",
   limit_mode: "soft：无竞争时可借用带宽，竞争且超限时降优先级；hard：token 不足时停止调度。",
   priority: "PARTID 的基础调度优先级，影响 NoC 和 MC 发生竞争时的选择顺序。",
+  priority_enable: "独立启用 priority；关闭后保留配置值但有效贡献为 0。",
+  cbusy_enable: "启用该 PARTID 的 MC 四档 CBusy 源端反馈。",
+  cbusy_ostd: "CBusy Level 1/2/3 对应的 requester effective OSTD 上限。",
 };
 const headerHelp = {
   "Requester": "固定硬件线程标识，格式为 cpu<核>.t<线程>。",
@@ -107,6 +124,7 @@ const headerHelp = {
   "BMAX": partidFieldHelp.bmax_gbps,
   "Mode": partidFieldHelp.limit_mode,
   "Pri": partidFieldHelp.priority,
+  "CBusy / OSTD": `${partidFieldHelp.cbusy_enable}\n${partidFieldHelp.cbusy_ostd}`,
   "PARTID / PMG": "软件可见监控 key。PARTID 选择控制策略，PMG 细分同一控制分区内的监控归因。",
   "L3 Sample BW": "该监控组在 L3 抽样 set 上观察到并按 8 倍估算的访问带宽。",
   "L3 Est. Occupancy": "该监控组在抽样 way 中的所有权按 8-set 分组放大的估算字节数。",
@@ -119,6 +137,8 @@ const headerHelp = {
   "OSTD Util %": "当前 outstanding 除以该 PARTID 所关联 requester 的最大 outstanding 容量之和。",
   "Issued / Completed": "仿真开始以来该 PARTID 在 CPU requester 侧累计发出和完成的请求数。",
   "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
+  "CBusy": "所有 MC 对该 PARTID 反馈的最高 CBusy 档位及对应 effective OSTD。",
+  "CBusy Stall ns": "因 CBusy-derived effective OSTD 达到上限而产生的源端累计等待。",
   "L3 Occupancy": "所有 L3 实例的 8-set 抽样占用估算之和。",
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
@@ -126,6 +146,7 @@ const headerHelp = {
   "MC Util %": "该 PARTID 在所有 MC 上的带宽之和除以这些 MC 的总建模带宽。",
   "Avg Queue ns": "最新采样周期内该 PARTID 在 MC 队列中的平均等待时间。",
   "Limit Events": "softlimit 低偏好请求数与 hardlimit 阻塞检查事件数。",
+  "CBusy Evidence": "最高档位、带宽/BMAX 比、队列比、占空比和本周期切换次数。",
   "Control State": "当前策略状态，以及该 PARTID 最近一次闭环控制更新。",
   "PARTID": "资源控制聚合标识；同一 PARTID 下的多个 PMG 会合并到该行。",
   "吞吐 Gbps": "该 PARTID 在最新采样周期内完成字节换算的有效带宽。",
@@ -169,6 +190,7 @@ const sectionHeadingHelp = {
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 分配、MC 带宽、优先级和监控开关。",
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
+  "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -245,18 +267,36 @@ function renderPartidConfig(rows) {
       <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
       <td><input data-field="name" data-help="${escapeHtml(partidFieldHelp.name)}" type="text" value="${escapeHtml(row.name)}" spellcheck="false"></td>
       <td><input data-field="monitor_enable" data-help="${escapeHtml(partidFieldHelp.monitor_enable)}" type="checkbox" ${row.monitor_enable ? "checked" : ""}></td>
-      <td><input data-field="cmin" data-help="${escapeHtml(partidFieldHelp.cmin)}" type="number" min="0" max="32" step="1" value="${row.cmin}"></td>
-      <td><input data-field="cmax" data-help="${escapeHtml(partidFieldHelp.cmax)}" type="number" min="0" max="32" step="1" value="${row.cmax}"></td>
-      <td><input data-field="cpbm" data-help="${escapeHtml(partidFieldHelp.cpbm)}" type="text" value="${escapeHtml(row.cpbm)}" spellcheck="false"></td>
-      <td><input data-field="bmin_gbps" data-help="${escapeHtml(partidFieldHelp.bmin_gbps)}" type="number" min="0" max="4096" step="1" value="${row.bmin_gbps}"></td>
-      <td><input data-field="bmax_gbps" data-help="${escapeHtml(partidFieldHelp.bmax_gbps)}" type="number" min="0" max="4096" step="1" value="${row.bmax_gbps}"></td>
+      <td>${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, partidFieldHelp.cmin_enable, partidFieldHelp.cmin, 'type="number" min="0" max="32" step="1"')}</td>
+      <td>${controlField("cmax_enable", row.cmax_enable, "cmax", row.cmax, partidFieldHelp.cmax_enable, partidFieldHelp.cmax, 'type="number" min="0" max="32" step="1"')}</td>
+      <td>${controlField("cpbm_enable", row.cpbm_enable, "cpbm", row.cpbm, partidFieldHelp.cpbm_enable, partidFieldHelp.cpbm, 'type="text" spellcheck="false"')}</td>
+      <td>${controlField("bmin_enable", row.bmin_enable, "bmin_gbps", row.bmin_gbps, partidFieldHelp.bmin_enable, partidFieldHelp.bmin_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
+      <td>${controlField("bmax_enable", row.bmax_enable, "bmax_gbps", row.bmax_gbps, partidFieldHelp.bmax_enable, partidFieldHelp.bmax_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
       <td><select data-field="limit_mode" data-help="${escapeHtml(partidFieldHelp.limit_mode)}">
         <option value="softlimit" title="无竞争时可借用空闲带宽，竞争且超限时降低调度优先级。" ${row.limit_mode === "softlimit" ? "selected" : ""}>soft</option>
         <option value="hardlimit" title="超过 BMAX 且 token 不足时阻塞请求，直到预算恢复。" ${row.limit_mode === "hardlimit" ? "selected" : ""}>hard</option>
       </select></td>
-      <td><input data-field="priority" data-help="${escapeHtml(partidFieldHelp.priority)}" type="number" min="0" max="15" step="1" value="${row.priority}"></td>
+      <td>${controlField("priority_enable", row.priority_enable, "priority", row.priority, partidFieldHelp.priority_enable, partidFieldHelp.priority, 'type="number" min="0" max="15" step="1"')}</td>
+      <td>
+        <div class="cbusy-control">
+          <input data-field="cbusy_enable" data-help="${escapeHtml(partidFieldHelp.cbusy_enable)}" type="checkbox" ${row.cbusy_enable ? "checked" : ""}>
+          <div data-help="${escapeHtml(partidFieldHelp.cbusy_ostd)}">
+            <input data-field="cbusy_l1_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l1_ostd}">
+            <input data-field="cbusy_l2_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l2_ostd}">
+            <input data-field="cbusy_l3_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l3_ostd}">
+          </div>
+        </div>
+      </td>
     </tr>
   `).join("");
+}
+
+function controlField(enableField, enabled, valueField, value, enableHelp, valueHelp, attributes) {
+  return `
+    <div class="control-field">
+      <input data-field="${enableField}" data-help="${escapeHtml(enableHelp)}" type="checkbox" ${enabled ? "checked" : ""}>
+      <input data-field="${valueField}" data-help="${escapeHtml(valueHelp)}" ${attributes} value="${escapeHtml(value)}">
+    </div>`;
 }
 
 function collectPartidConfigs() {
@@ -266,13 +306,23 @@ function collectPartidConfigs() {
       partid: Number(row.dataset.partidRow),
       name: value("name").value,
       monitor_enable: value("monitor_enable").checked,
+      cpbm_enable: value("cpbm_enable").checked,
+      cmin_enable: value("cmin_enable").checked,
+      cmax_enable: value("cmax_enable").checked,
       cmin: Number(value("cmin").value),
       cmax: Number(value("cmax").value),
       cpbm: value("cpbm").value,
+      bmin_enable: value("bmin_enable").checked,
+      bmax_enable: value("bmax_enable").checked,
       bmin_gbps: Number(value("bmin_gbps").value),
       bmax_gbps: Number(value("bmax_gbps").value),
       limit_mode: value("limit_mode").value,
+      priority_enable: value("priority_enable").checked,
       priority: Number(value("priority").value),
+      cbusy_enable: value("cbusy_enable").checked,
+      cbusy_l1_ostd: Number(value("cbusy_l1_ostd").value),
+      cbusy_l2_ostd: Number(value("cbusy_l2_ostd").value),
+      cbusy_l3_ostd: Number(value("cbusy_l3_ostd").value),
     };
   });
 }
@@ -367,6 +417,24 @@ function clampDependentInputs() {
   interval.max = $('[data-param="duration_ns"]').value;
   if (Number(interval.value) > Number(interval.max)) interval.value = interval.max;
   normalizePartidMasks();
+  normalizeCbusyCaps();
+}
+
+function normalizeCbusyCaps() {
+  const configuredMax = Number(
+    $('[data-param="max_outstanding"]').value || 1
+  );
+  $$("[data-partid-row]").forEach((row) => {
+    const l1 = row.querySelector('[data-field="cbusy_l1_ostd"]');
+    const l2 = row.querySelector('[data-field="cbusy_l2_ostd"]');
+    const l3 = row.querySelector('[data-field="cbusy_l3_ostd"]');
+    l1.max = configuredMax;
+    l1.value = Math.max(1, Math.min(configuredMax, Number(l1.value)));
+    l2.max = l1.value;
+    l2.value = Math.max(1, Math.min(Number(l1.value), Number(l2.value)));
+    l3.max = l2.value;
+    l3.value = Math.max(1, Math.min(Number(l2.value), Number(l3.value)));
+  });
 }
 
 function showToast(message) {
@@ -386,6 +454,8 @@ async function loadDefaults() {
 async function runSimulation() {
   stopPlayback();
   clearTimeout(state.polling);
+  state.partidConfigs = collectPartidConfigs();
+  state.stimulusConfigs = collectStimulusConfigs();
   state.result = null;
   state.partial = { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 };
   state.selectedTime = 0;
@@ -523,6 +593,10 @@ function aggregateCpuResources() {
     outstanding: 0,
     peakOutstanding: 0,
     maxOutstanding: 0,
+    effectiveMaxOutstanding: 0,
+    cbusyLevel: 0,
+    cbusyStallNs: 0,
+    cbusyTransitions: 0,
     issued: 0,
     completed: 0,
     backpressureNs: 0,
@@ -537,6 +611,15 @@ function aggregateCpuResources() {
     target.outstanding += Number(row.outstanding || 0);
     target.peakOutstanding += Number(row.peak_outstanding || 0);
     target.maxOutstanding += Number(row.max_outstanding || 0);
+    target.effectiveMaxOutstanding += Number(
+      row.effective_max_outstanding || row.max_outstanding || 0
+    );
+    target.cbusyLevel = Math.max(
+      target.cbusyLevel,
+      Number(row.cbusy_level || 0),
+    );
+    target.cbusyStallNs += Number(row.cbusy_stall_ns || 0);
+    target.cbusyTransitions += Number(row.cbusy_transitions || 0);
     target.issued += Number(row.issued || 0);
     target.completed += Number(row.completed || 0);
     target.backpressureNs += Number(row.backpressure_ns || 0);
@@ -546,9 +629,12 @@ function aggregateCpuResources() {
     if (row.maxOutstanding === 0 && row.requesters.size) {
       row.maxOutstanding = row.requesters.size * configuredMax;
     }
+    if (row.effectiveMaxOutstanding === 0 && row.requesters.size) {
+      row.effectiveMaxOutstanding = row.maxOutstanding;
+    }
     row.outstandingUtilization = Math.min(
       1,
-      row.outstanding / Math.max(1, row.maxOutstanding),
+      row.outstanding / Math.max(1, row.effectiveMaxOutstanding),
     );
     row.completionRatio = row.completed / Math.max(1, row.issued);
   });
@@ -575,6 +661,12 @@ function aggregateL3Resources() {
     cminByMsc: new Map(),
     cmaxByMsc: new Map(),
     cpbmByMsc: new Map(),
+    configuredCminByMsc: new Map(),
+    configuredCmaxByMsc: new Map(),
+    configuredCpbmByMsc: new Map(),
+    cminEnabled: false,
+    cmaxEnabled: false,
+    cpbmEnabled: false,
   }));
   latestBy(state.partial.msc, "msc_id")
     .filter((row) => row.msc_type === "cache")
@@ -593,6 +685,21 @@ function aggregateL3Resources() {
         target.cminByMsc.set(String(row.msc_id), values.cmin);
         target.cmaxByMsc.set(String(row.msc_id), values.cmax);
         target.cpbmByMsc.set(String(row.msc_id), values.cpbm);
+        target.configuredCminByMsc.set(
+          String(row.msc_id),
+          values.configured_cmin,
+        );
+        target.configuredCmaxByMsc.set(
+          String(row.msc_id),
+          values.configured_cmax,
+        );
+        target.configuredCpbmByMsc.set(
+          String(row.msc_id),
+          values.configured_cpbm,
+        );
+        target.cminEnabled ||= Boolean(values.cmin_enable);
+        target.cmaxEnabled ||= Boolean(values.cmax_enable);
+        target.cpbmEnabled ||= Boolean(values.cpbm_enable);
       });
     });
   visibleRows(state.partial.controls).forEach((update) => {
@@ -610,6 +717,11 @@ function aggregateL3Resources() {
   });
   result.forEach((row) => {
     const configured = state.partidConfigs[row.partid] || {};
+    if (!row.configuredCminByMsc.size) {
+      row.cminEnabled = Boolean(configured.cmin_enable);
+      row.cmaxEnabled = Boolean(configured.cmax_enable);
+      row.cpbmEnabled = Boolean(configured.cpbm_enable);
+    }
     const cminValues = new Set(row.cminByMsc.values());
     const cmaxValues = new Set(row.cmaxByMsc.values());
     const cpbmValues = new Set(row.cpbmByMsc.values());
@@ -624,6 +736,18 @@ function aggregateL3Resources() {
     row.cmin = singleValue(cminValues);
     row.cmax = singleValue(cmaxValues);
     row.cpbm = singleValue(cpbmValues);
+    row.configuredCmin = singleValue(
+      new Set(row.configuredCminByMsc.values()),
+      configured.cmin,
+    );
+    row.configuredCmax = singleValue(
+      new Set(row.configuredCmaxByMsc.values()),
+      configured.cmax,
+    );
+    row.configuredCpbm = singleValue(
+      new Set(row.configuredCpbmByMsc.values()),
+      configured.cpbm,
+    );
   });
   return result;
 }
@@ -640,8 +764,21 @@ function aggregateMcResources() {
     bmaxByMsc: new Map(),
     modeByMsc: new Map(),
     priorityByMsc: new Map(),
+    configuredBminByMsc: new Map(),
+    configuredBmaxByMsc: new Map(),
+    configuredPriorityByMsc: new Map(),
+    bminEnabled: false,
+    bmaxEnabled: false,
+    priorityEnabled: false,
     softRequests: 0,
     hardBlocks: 0,
+    cbusyEnabled: false,
+    cbusyLevel: 0,
+    cbusyBandwidthRatio: 0,
+    cbusyQueueRatio: 0,
+    cbusyDuty: 0,
+    cbusyTransitions: 0,
+    cbusyCap: 0,
   }));
   latestBy(state.partial.msc, "msc_id")
     .filter((row) => row.msc_type === "memory_controller")
@@ -661,8 +798,54 @@ function aggregateMcResources() {
         target.bmaxByMsc.set(String(row.msc_id), values.bmax_gbps);
         target.modeByMsc.set(String(row.msc_id), values.limit_mode);
         target.priorityByMsc.set(String(row.msc_id), values.priority);
+        target.configuredBminByMsc.set(
+          String(row.msc_id),
+          values.configured_bmin_gbps,
+        );
+        target.configuredBmaxByMsc.set(
+          String(row.msc_id),
+          values.configured_bmax_gbps,
+        );
+        target.configuredPriorityByMsc.set(
+          String(row.msc_id),
+          values.configured_priority,
+        );
+        target.bminEnabled ||= Boolean(values.bmin_enable);
+        target.bmaxEnabled ||= Boolean(values.bmax_enable);
+        target.priorityEnabled ||= Boolean(values.priority_enable);
         target.softRequests += Number(values.softlimit_requests || 0);
         target.hardBlocks += Number(values.hardlimit_block_events || 0);
+        target.cbusyEnabled ||= Boolean(values.cbusy_enable);
+        target.cbusyLevel = Math.max(
+          target.cbusyLevel,
+          Number(values.cbusy_level || 0),
+        );
+        target.cbusyBandwidthRatio = Math.max(
+          target.cbusyBandwidthRatio,
+          Number(
+            values.cbusy_peak_bandwidth_ratio
+            ?? values.cbusy_bandwidth_ratio
+            ?? 0,
+          ),
+        );
+        target.cbusyQueueRatio = Math.max(
+          target.cbusyQueueRatio,
+          Number(
+            values.cbusy_peak_queue_ratio
+            ?? values.cbusy_queue_ratio
+            ?? 0,
+          ),
+        );
+        target.cbusyDuty = Math.max(
+          target.cbusyDuty,
+          Number(values.cbusy_duty || 0),
+        );
+        target.cbusyTransitions += Number(values.cbusy_transitions || 0);
+        if (Number(values.cbusy_level || 0) > 0) {
+          target.cbusyCap = target.cbusyCap
+            ? Math.min(target.cbusyCap, Number(values.cbusy_ostd_cap || 0))
+            : Number(values.cbusy_ostd_cap || 0);
+        }
       });
     });
   visibleRows(state.partial.controls).forEach((update) => {
@@ -682,6 +865,11 @@ function aggregateMcResources() {
   });
   result.forEach((row) => {
     const configured = state.partidConfigs[row.partid] || {};
+    if (!row.configuredBminByMsc.size) {
+      row.bminEnabled = Boolean(configured.bmin_enable);
+      row.bmaxEnabled = Boolean(configured.bmax_enable);
+      row.priorityEnabled = Boolean(configured.priority_enable);
+    }
     if (!row.modeByMsc.size) {
       row.modeByMsc.set("configured", configured.limit_mode);
     }
@@ -709,13 +897,35 @@ function aggregateMcResources() {
     row.avgQueueDelayNs = row.queueDelayNs / Math.max(1, row.requests);
     row.mode = singleValue(new Set(row.modeByMsc.values()));
     row.priority = singleValue(new Set(row.priorityByMsc.values()));
+    row.configuredBmin = [...row.configuredBminByMsc.values()]
+      .filter((value) => value != null)
+      .reduce((sum, value) => sum + Number(value), 0);
+    row.configuredBmax = [...row.configuredBmaxByMsc.values()]
+      .filter((value) => value != null)
+      .reduce((sum, value) => sum + Number(value), 0);
+    row.configuredPriority = singleValue(
+      new Set(row.configuredPriorityByMsc.values()),
+      configured.priority,
+    );
   });
   return result;
 }
 
+function controlValue(enabled, effective, configured, formatter = String) {
+  const effectiveText = formatter(effective);
+  const configuredText = formatter(configured);
+  return enabled
+    ? `<span class="control-value enabled">${effectiveText}</span>`
+    : `<span class="control-value disabled">off</span><small>cfg ${configuredText}</small>`;
+}
+
 function controlFeedback(partid) {
   const updates = visibleRows(state.partial.controls)
-    .filter((row) => Number(row.partid) === Number(partid));
+    .filter(
+      (row) =>
+        Number(row.partid) === Number(partid)
+        && row.policy !== "mc_cbusy",
+    );
   const latest = updates[updates.length - 1] || null;
   const policy = $('input[name="policy"]:checked')?.value || "no_control";
   if (policy === "no_control") {
@@ -778,17 +988,20 @@ function renderResourceMonitor() {
   if (state.resourceView === "cpu") {
     headers = [
       "PARTID", "Control State", "Requester", "OSTD Current / Peak",
-      "OSTD Util %", "Issued / Completed", "Backpressure ns",
+      "OSTD Util %", "CBusy", "Issued / Completed",
+      "Backpressure ns", "CBusy Stall ns",
     ];
     rows = visible(aggregateCpuResources()).map((row) => `
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
         <td>${controlStateCell(row.partid)}</td>
         <td>${escapeHtml([...row.requesters].join(", ") || "-")}</td>
-        <td><strong>${formatNumber(row.outstanding, 0)}</strong> / ${formatNumber(row.peakOutstanding, 0)} <small>of ${formatNumber(row.maxOutstanding, 0)}</small></td>
+        <td><strong>${formatNumber(row.outstanding, 0)}</strong> / ${formatNumber(row.peakOutstanding, 0)} <small>eff ${formatNumber(row.effectiveMaxOutstanding, 0)} · cfg ${formatNumber(row.maxOutstanding, 0)}</small></td>
         <td>${utilizationCell(row.outstandingUtilization, partidColor(row.partid))}</td>
+        <td><span class="cbusy-level level-${row.cbusyLevel}">L${row.cbusyLevel}</span> <small>cap ${formatNumber(row.effectiveMaxOutstanding, 0)} · ${formatNumber(row.cbusyTransitions, 0)} trans</small></td>
         <td>${formatNumber(row.issued, 0)} / ${formatNumber(row.completed, 0)} <small>${(row.completionRatio * 100).toFixed(1)}%</small></td>
         <td>${formatNumber(row.backpressureNs, 2)}</td>
+        <td>${formatNumber(row.cbusyStallNs, 2)}</td>
       </tr>`);
   } else if (state.resourceView === "l3") {
     headers = [
@@ -804,14 +1017,15 @@ function renderResourceMonitor() {
         <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
         <td>${(row.hitRate * 100).toFixed(2)}%</td>
         <td>${formatNumber(row.allocationDenials, 0)}</td>
-        <td>${escapeHtml(row.cmin)}</td>
-        <td>${escapeHtml(row.cmax)}</td>
-        <td><code>${escapeHtml(row.cpbm)}</code></td>
+        <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => escapeHtml(value))}</td>
+        <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => escapeHtml(value))}</td>
+        <td>${controlValue(row.cpbmEnabled, row.cpbm, row.configuredCpbm, (value) => `<code>${escapeHtml(value)}</code>`)}</td>
       </tr>`);
   } else {
     headers = [
       "PARTID", "Control State", "MC BW", "MC Util %", "MC Requests",
-      "Avg Queue ns", "Throttle ns", "BMIN Σ", "BMAX Σ", "Mode", "Pri", "Limit Events",
+      "Avg Queue ns", "Throttle ns", "CBusy Evidence", "BMIN Σ",
+      "BMAX Σ", "Mode", "Pri", "Limit Events",
     ];
     rows = visible(aggregateMcResources()).map((row) => `
       <tr>
@@ -822,10 +1036,14 @@ function renderResourceMonitor() {
         <td>${formatNumber(row.requests, 0)}</td>
         <td>${formatNumber(row.avgQueueDelayNs, 2)}</td>
         <td>${formatNumber(row.throttleNs, 2)}</td>
-        <td>${row.hasBmin ? formatNumber(row.bmin, 1) : "-"}</td>
-        <td>${row.hasBmax ? formatNumber(row.bmax, 1) : "-"}</td>
-        <td>${escapeHtml(row.mode)}</td>
-        <td>${escapeHtml(row.priority)}</td>
+        <td>
+          <span class="cbusy-level level-${row.cbusyLevel}">L${row.cbusyLevel}</span>
+          <small>${row.cbusyEnabled ? `BW ${row.cbusyBandwidthRatio.toFixed(2)}x · Q ${(row.cbusyQueueRatio * 100).toFixed(1)}% · duty ${(row.cbusyDuty * 100).toFixed(0)}% · ${formatNumber(row.cbusyTransitions, 0)} trans` : "off"}</small>
+        </td>
+        <td>${controlValue(row.bminEnabled, row.hasBmin ? row.bmin : 0, row.configuredBmin, (value) => formatNumber(value, 1))}</td>
+        <td>${controlValue(row.bmaxEnabled, row.hasBmax ? row.bmax : 0, row.configuredBmax, (value) => formatNumber(value, 1))}</td>
+        <td>${row.bmaxEnabled ? escapeHtml(row.mode) : '<span class="control-value disabled">off</span>'}</td>
+        <td>${controlValue(row.priorityEnabled, row.priority, row.configuredPriority, (value) => escapeHtml(value))}</td>
         <td>${formatNumber(row.softRequests, 0)} soft / ${formatNumber(row.hardBlocks, 0)} hard</td>
       </tr>`);
   }
@@ -1427,6 +1645,7 @@ function bindEvents() {
   $("#resetPartidButton").addEventListener("click", () => {
     renderPartidConfig(state.defaults.partid_configs || []);
     normalizePartidMasks();
+    normalizeCbusyCaps();
     applyContextHelp();
   });
   $("#resetStimulusButton").addEventListener("click", () => {
@@ -1441,10 +1660,16 @@ function bindEvents() {
     renderAll();
   });
   $('[data-param="duration_ns"]').addEventListener("input", clampDependentInputs);
+  $('[data-param="max_outstanding"]').addEventListener("input", normalizeCbusyCaps);
   $('[data-param="l3_ways"]').addEventListener("input", normalizePartidMasks);
   $("#partidConfigTable").addEventListener("change", (event) => {
     if (event.target.matches('[data-field="cpbm"], [data-field="cmin"], [data-field="cmax"]')) {
       normalizePartidMasks();
+    }
+    if (event.target.matches(
+      '[data-field="cbusy_l1_ostd"], [data-field="cbusy_l2_ostd"], [data-field="cbusy_l3_ostd"]',
+    )) {
+      normalizeCbusyCaps();
     }
   });
   window.addEventListener("resize", () => requestAnimationFrame(renderCharts));

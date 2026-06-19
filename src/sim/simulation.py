@@ -141,6 +141,9 @@ class Simulation:
         }
         self._request_id = 0
         self._interval_index = 0
+        self._delivered_cbusy_levels: Dict[
+            tuple, int
+        ] = {}
         self._progress_callback: Optional[
             Callable[[float, MetricsCollector], None]
         ] = None
@@ -165,6 +168,7 @@ class Simulation:
                 mc,
                 self.settings_tables[mc.id],
                 self._complete,
+                on_cbusy=self._cbusy_feedback,
                 enforce_controls=self.enforce_controls,
             )
             for mc in config.memory_controllers
@@ -253,6 +257,35 @@ class Simulation:
             request.partid
         )
         self.collector.on_complete(request, self.kernel.now_ns)
+
+    def _cbusy_feedback(
+        self,
+        msc_id: str,
+        partid: int,
+        level: int,
+        cap: int,
+    ) -> None:
+        key = (msc_id, partid)
+        old_level = self._delivered_cbusy_levels.get(key, 0)
+        self._delivered_cbusy_levels[key] = level
+        self.collector.record_control(
+            self.kernel.now_ns,
+            "mc_cbusy",
+            msc_id,
+            partid,
+            "cbusy_level",
+            old_level,
+            level,
+            f"effective OSTD cap {cap}",
+        )
+        for requester in self.requesters.values():
+            if partid in requester.configured_partids:
+                requester.set_cbusy(
+                    msc_id,
+                    partid,
+                    level,
+                    cap,
+                )
 
     def _control_interval(self) -> None:
         self._interval_index += 1

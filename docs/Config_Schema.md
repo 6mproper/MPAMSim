@@ -207,6 +207,35 @@ PARTID width
 PMG width
 partition list
 MSC control list
+
+Each MSC control may independently set:
+
+```yaml
+cpbm_enable: true
+cmin_enable: true
+cmax_enable: true
+bmin_enable: true
+bmax_enable: true
+priority_enable: true
+cbusy_enable: false
+cbusy_l1_ostd: 24
+cbusy_l2_ostd: 12
+cbusy_l3_ostd: 4
+```
+
+Memory-controller instances may configure the CBusy detector:
+
+```yaml
+cbusy_sample_ns: 1000
+cbusy_feedback_latency_ns: 50
+cbusy_release_hold_samples: 3
+cbusy_l1_bw_ratio: 1.0
+cbusy_l2_bw_ratio: 1.1
+cbusy_l3_bw_ratio: 1.25
+cbusy_l1_queue_ratio: 0.25
+cbusy_l2_queue_ratio: 0.50
+cbusy_l3_queue_ratio: 0.75
+```
 cache portion bitmap
 cache minimum ways
 cache maximum ways

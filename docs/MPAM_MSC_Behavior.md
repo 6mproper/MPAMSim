@@ -199,6 +199,37 @@ bandwidth_utilization = group_bandwidth / controller_total_bandwidth
 BMIN, BMAX, and priority remain PARTID controls; PMG does not create a
 separate token bucket.
 
+### 5.6 Independent Control Enables
+
+CPBM, CMIN, CMAX, BMIN, BMAX, priority, and CBusy each have a per-PARTID
+enable. Disabling a mechanism retains its configured value for software
+inspection but selects a neutral effective behavior. Monitoring remains active.
+
+### 5.7 Four-Level CBusy Feedback
+
+Each MC may independently generate CBusy level 0 through 3 per PARTID. The
+detector samples:
+
+- interval bandwidth relative to enabled BMAX;
+- queued requests for that PARTID relative to MC queue capacity;
+- hard-limit block activity;
+- controller contention.
+
+Bandwidth over BMAX asserts a level only under contention. Queue pressure and
+hard-block activity may assert directly. Rising levels are immediate; falling
+levels require the configured hold samples and recover one level at a time.
+
+After the configured feedback latency, CPU requesters aggregate multiple MC
+responses with the maximum level and apply:
+
+```text
+effective_ostd = min(configured_ostd, cbusy_level_cap)
+```
+
+The cap is never below one. CBusy source stall is recorded separately from
+the configured requester-wide OSTD stall. The four thresholds and OSTD caps
+are simulator behavior parameters, not architected CBusy encodings.
+
 ## 6. Control Update Semantics
 
 Control updates are timestamped and applied at control intervals:
@@ -226,4 +257,6 @@ effective unrestricted cache settings and disabled memory-bandwidth controls.
 - Reducing memory-controller `bw_max_gbps` reduces achieved bandwidth and increases throttle delay.
 - Raising protected PARTID priority reduces queueing delay under contention.
 - Credit/backpressure reduces sustained queue occupancy.
+- BMAX-only, CBusy-only, and combined runs can be isolated with independent
+  enables and compared under identical workload and seed.
 - Monitors make the bottleneck visible instead of only reporting final latency.

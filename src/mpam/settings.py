@@ -17,6 +17,16 @@ class MPAMSetting:
     bw_limit_mode: str = "hardlimit"
     priority: int = 0
     monitor_enable: bool = True
+    cpbm_enable: bool = True
+    cmin_enable: bool = True
+    cmax_enable: bool = True
+    bmin_enable: bool = True
+    bmax_enable: bool = True
+    priority_enable: bool = True
+    cbusy_enable: bool = False
+    cbusy_l1_ostd: int = 24
+    cbusy_l2_ostd: int = 12
+    cbusy_l3_ostd: int = 4
 
     @property
     def cpbm(self) -> Optional[str]:
@@ -53,6 +63,16 @@ class SettingsTable:
                 bw_limit_mode=control.bw_limit_mode,
                 priority=control.priority or 0,
                 monitor_enable=control.monitor_enable,
+                cpbm_enable=control.cpbm_enable,
+                cmin_enable=control.cmin_enable,
+                cmax_enable=control.cmax_enable,
+                bmin_enable=control.bmin_enable,
+                bmax_enable=control.bmax_enable,
+                priority_enable=control.priority_enable,
+                cbusy_enable=control.cbusy_enable,
+                cbusy_l1_ostd=control.cbusy_l1_ostd,
+                cbusy_l2_ostd=control.cbusy_l2_ostd,
+                cbusy_l3_ostd=control.cbusy_l3_ostd,
             )
 
     def lookup(self, partid: int) -> MPAMSetting:

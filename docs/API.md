@@ -135,7 +135,7 @@ time_ns,partid,pmg,requests,bytes,avg_latency_ns,p99_latency_ns,p999_latency_ns,
 Columns:
 
 ```text
-time_ns,requester_id,partid,outstanding,peak_outstanding,max_outstanding,issued,completed,backpressure_ns
+time_ns,requester_id,partid,outstanding,peak_outstanding,max_outstanding,effective_max_outstanding,cbusy_level,cbusy_stall_ns,configured_ostd_stall_ns,cbusy_transitions,issued,completed,backpressure_ns
 ```
 
 `outstanding` is sampled at the control-interval boundary. `peak_outstanding`
@@ -157,6 +157,9 @@ Columns:
 ```text
 time_ns,policy,target_msc,partid,field,old_value,new_value,reason
 ```
+
+Fast feedback transitions use `policy=mc_cbusy`,
+`field=cbusy_level`, and record the delivered effective OSTD cap in `reason`.
 
 ### timeline_trace.csv
 
@@ -188,3 +191,8 @@ interval and contains the same fields as `per_cpu_partid.csv`.
 
 The CPU monitor is a requester and flow-control view. It does not model CPU
 pipeline occupancy, reorder buffers, SMT execution sharing, or coherency.
+
+Memory-controller `per_partid` snapshots also include configured/effective
+BMIN, BMAX, and priority values, their enable flags, and CBusy level,
+bandwidth ratio, queue ratio, duty, OSTD cap, assertion count, and transition
+count.

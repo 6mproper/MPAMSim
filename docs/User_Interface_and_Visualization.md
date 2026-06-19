@@ -92,6 +92,15 @@ It provides:
 - Per-PARTID feedback state that distinguishes no control, static control,
   closed-loop monitoring, and runtime-adjusted control, with the latest update
   target, field, time, and reason.
+- Independent per-PARTID switches for CPBM, CMIN, CMAX, BMIN, BMAX,
+  priority, and CBusy. A disabled control keeps its configured value visible
+  while the resource monitor shows the neutral effective value.
+- CBusy fast-loop configuration for detector period, feedback latency,
+  release hold, bandwidth/queue thresholds, and per-PARTID level-1/2/3 OSTD
+  caps.
+- CPU and MC resource views expose the causal chain: MC CBusy inputs/level,
+  requester effective OSTD, CBusy source stall, queueing, latency, and
+  throughput cost.
 
 ## 3. Visualization Requirements
 

@@ -121,6 +121,7 @@
                   <th>BMAX</th>
                   <th>Mode</th>
                   <th>Pri</th>
+                  <th>CBusy / OSTD</th>
                 </tr>
               </thead>
               <tbody id="partidConfigTable"></tbody>
@@ -140,6 +141,18 @@
             <label>带宽步长 %<input data-param="max_bw_step_percent" type="number" min="1" max="100" step="1"></label>
             <label>P99 滞回比例<input data-param="p99_hysteresis" type="number" min="0" max="1" step="0.01"></label>
             <label>最小保持周期<input data-param="min_hold_intervals" type="number" min="1" max="100" step="1"></label>
+          </div>
+          <h2>CBusy 快反馈</h2>
+          <div class="field-grid">
+            <label>采样周期 ns<input data-param="cbusy_sample_ns" type="number" min="1" max="1000000" step="10"></label>
+            <label>反馈延迟 ns<input data-param="cbusy_feedback_latency_ns" type="number" min="0" max="100000" step="1"></label>
+            <label>释放保持 samples<input data-param="cbusy_release_hold_samples" type="number" min="1" max="1000" step="1"></label>
+            <label>L1 BW 比<input data-param="cbusy_l1_bw_ratio" type="number" min="0.01" max="10" step="0.01"></label>
+            <label>L2 BW 比<input data-param="cbusy_l2_bw_ratio" type="number" min="0.01" max="10" step="0.01"></label>
+            <label>L3 BW 比<input data-param="cbusy_l3_bw_ratio" type="number" min="0.01" max="10" step="0.01"></label>
+            <label>L1 Queue 比<input data-param="cbusy_l1_queue_ratio" type="number" min="0" max="1" step="0.01"></label>
+            <label>L2 Queue 比<input data-param="cbusy_l2_queue_ratio" type="number" min="0" max="1" step="0.01"></label>
+            <label>L3 Queue 比<input data-param="cbusy_l3_queue_ratio" type="number" min="0" max="1" step="0.01"></label>
           </div>
         </section>
       </form>

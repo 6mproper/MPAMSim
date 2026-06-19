@@ -189,7 +189,10 @@ class CacheMSC(Component):
                 continue
             owner_cmin = (
                 self.settings.lookup(owner).cache_min_ways
-                if self.enforce_controls
+                if (
+                    self.enforce_controls
+                    and self.settings.lookup(owner).cmin_enable
+                )
                 else 0
             )
             if owner_counts[owner] > owner_cmin:
@@ -203,7 +206,10 @@ class CacheMSC(Component):
     def _eligible_way_indexes(self, partid: int) -> List[int]:
         if not self.enforce_controls:
             return list(range(self.config.ways))
-        bitmap = self.settings.lookup(partid).cache_portion_bitmap
+        setting = self.settings.lookup(partid)
+        if not setting.cpbm_enable:
+            return list(range(self.config.ways))
+        bitmap = setting.cache_portion_bitmap
         if bitmap is None:
             return list(range(self.config.ways))
         mask = int(bitmap, 16)
@@ -219,7 +225,10 @@ class CacheMSC(Component):
         enabled = len(self._eligible_way_indexes(setting.partid))
         configured = (
             setting.cache_max_ways
-            if setting.cache_max_ways is not None
+            if (
+                setting.cmax_enable
+                and setting.cache_max_ways is not None
+            )
             else enabled
         )
         return max(0, min(enabled, configured))
@@ -308,15 +317,21 @@ class CacheMSC(Component):
                 "allowed_capacity_bytes": self.allowed_capacity_bytes(partid),
                 "cmin": (
                     setting.cache_min_ways
-                    if self.enforce_controls
+                    if self.enforce_controls and setting.cmin_enable
                     else 0
                 ),
                 "cmax": self._effective_max_ways(setting),
                 "cpbm": (
                     setting.cache_portion_bitmap
-                    if self.enforce_controls
+                    if self.enforce_controls and setting.cpbm_enable
                     else f"{(1 << self.config.ways) - 1:x}"
                 ),
+                "configured_cmin": setting.cache_min_ways,
+                "configured_cmax": setting.cache_max_ways,
+                "configured_cpbm": setting.cache_portion_bitmap,
+                "cmin_enable": self.enforce_controls and setting.cmin_enable,
+                "cmax_enable": self.enforce_controls and setting.cmax_enable,
+                "cpbm_enable": self.enforce_controls and setting.cpbm_enable,
                 "monitor_enable": setting.monitor_enable,
                 "enforcement_enabled": self.enforce_controls,
             }
