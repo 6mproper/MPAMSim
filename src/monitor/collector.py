@@ -68,6 +68,7 @@ class MetricsCollector:
         self.interval: DefaultDict[int, PartidStats] = defaultdict(PartidStats)
         self.metrics_rows: List[Dict[str, object]] = []
         self.msc_rows: List[Dict[str, object]] = []
+        self.requester_rows: List[Dict[str, object]] = []
         self.timeline_rows: List[Dict[str, object]] = []
         self.control_rows: List[Dict[str, object]] = []
         self.last_interval_metrics: Dict[int, Dict[str, float]] = {}
@@ -111,6 +112,7 @@ class MetricsCollector:
             current[partid] = metrics
             self.metrics_rows.append({"time_ns": time_ns, "partid": partid, **metrics})
 
+        requester_runtimes = list(requesters)
         requester_rows = {
             requester.config.id: {
                 "issued": requester.issued,
@@ -118,8 +120,13 @@ class MetricsCollector:
                 "outstanding": requester.outstanding,
                 "backpressure_ns": requester.backpressure_ns,
             }
-            for requester in requesters
+            for requester in requester_runtimes
         }
+        for requester in requester_runtimes:
+            for row in requester.capture_partid_rows():
+                self.requester_rows.append(
+                    {"time_ns": time_ns, **row}
+                )
         for component in components:
             snapshot = component.monitor_snapshot(elapsed)
             self.msc_rows.append({"time_ns": time_ns, **snapshot, "requesters": requester_rows})

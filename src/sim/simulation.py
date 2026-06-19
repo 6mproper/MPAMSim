@@ -58,6 +58,10 @@ class SimulationResult:
         write_json(directory / "topology.json", self._topology())
         write_csv(directory / "metrics.csv", self.collector.metrics_rows)
         write_csv(
+            directory / "per_cpu_partid.csv",
+            self.collector.requester_rows,
+        )
+        write_csv(
             directory / "per_partid_latency.csv",
             [{"partid": partid, **metrics} for partid, metrics in cumulative.items()],
         )
@@ -115,8 +119,24 @@ class Simulation:
         self.config = config
         self.kernel = SimulationKernel()
         self.collector = MetricsCollector(config.outputs.trace_requests)
+        configured_partids_by_requester: Dict[str, set] = {
+            item.id: set()
+            for item in config.requesters
+        }
+        for workload in config.workloads:
+            for requester_id in workload.requesters:
+                configured_partids_by_requester[requester_id].add(
+                    workload.partid
+                )
         self.requesters = {
-            item.id: RequesterRuntime(item)
+            item.id: RequesterRuntime(
+                item,
+                tuple(
+                    sorted(
+                        configured_partids_by_requester[item.id]
+                    )
+                ),
+            )
             for item in config.requesters
         }
         self._request_id = 0
@@ -229,7 +249,9 @@ class Simulation:
         self.memory_controllers[mc_id].receive(request)
 
     def _complete(self, request: Request) -> None:
-        self.requesters[request.requester_id].on_completion()
+        self.requesters[request.requester_id].on_completion(
+            request.partid
+        )
         self.collector.on_complete(request, self.kernel.now_ns)
 
     def _control_interval(self) -> None:

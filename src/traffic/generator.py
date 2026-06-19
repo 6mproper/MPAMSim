@@ -81,7 +81,10 @@ class WorkloadGenerator:
             return
         if not self.requester.can_issue():
             retry_ns = min(10.0, self._interval_ns)
-            self.requester.backpressure_ns += retry_ns
+            self.requester.on_backpressure(
+                self.workload.partid,
+                retry_ns,
+            )
             self.kernel.schedule(retry_ns, self._issue, f"retry:{self.workload.name}")
             return
 
@@ -105,7 +108,7 @@ class WorkloadGenerator:
             source_attach_node=self.requester.config.attach_node,
             priority=self.default_priority,
         )
-        self.requester.on_issue()
+        self.requester.on_issue(self.workload.partid)
         self.submit(request)
         next_time = self.kernel.now_ns + self._sample_interval()
         if math.isfinite(next_time) and next_time < self._stop_ns:

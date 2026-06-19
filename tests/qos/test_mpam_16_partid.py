@@ -174,3 +174,45 @@ def test_monitor_groups_report_partid_pmg_utilization(tmp_path) -> None:
     assert mc_group["achieved_bandwidth_gbps"] > 0
     assert 0 <= mc_group["bandwidth_utilization"] <= 1
     assert mc_group["controller_bandwidth_gbps"] == 256
+
+
+def test_cpu_monitor_reports_outstanding_by_partid(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters.update(
+        {
+            "duration_ns": 40_000,
+            "control_interval_ns": 20_000,
+            "max_outstanding": 4,
+        }
+    )
+    for row in parameters["stimulus_configs"]:
+        row["enabled"] = row["slot"] == 0
+    parameters["stimulus_configs"][0].update(
+        {
+            "partid": 5,
+            "pmg": 3,
+            "workload_type": "pointer_chase",
+            "rate_value": 100,
+            "rate_unit": "mrps",
+        }
+    )
+
+    raw = build_config(parameters, str(tmp_path / "cpu_monitor"))
+    path = tmp_path / "cpu_monitor.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    result = Simulation.from_config(load_config(path)).run()
+
+    rows = [
+        row
+        for row in result.collector.requester_rows
+        if row["requester_id"] == "cpu0.t0"
+        and row["partid"] == 5
+    ]
+    assert len(rows) == 2
+    assert all(row["max_outstanding"] == 4 for row in rows)
+    assert all(
+        0 <= row["outstanding"] <= row["peak_outstanding"] <= 4
+        for row in rows
+    )
+    assert rows[-1]["issued"] >= rows[-1]["completed"]
+    assert rows[-1]["backpressure_ns"] >= 0

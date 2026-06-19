@@ -81,6 +81,17 @@ It provides:
 - A live `PARTID+PMG` monitor-group table updated at control intervals. It
   shows requester membership, estimated L3 occupancy/utilization, L3 sampled
   bandwidth, MC achieved bandwidth/utilization, requests, and throttle delay.
+- A resource-oriented PARTID dashboard with CPU, L3, and MC modes. CPU shows
+  current/interval-peak outstanding requests and source backpressure; L3 shows
+  sampled occupancy/bandwidth and effective cache controls; MC shows
+  bandwidth, queueing, throttling, and effective bandwidth controls.
+- Independent visibility toggles for PARTID 0 through 15. The selection
+  filters the resource table, per-PARTID trend charts, PARTID details, MPAM
+  aggregate monitor, monitor groups, and control trace without changing the
+  simulation configuration.
+- Per-PARTID feedback state that distinguishes no control, static control,
+  closed-loop monitoring, and runtime-adjusted control, with the latest update
+  target, field, time, and reason.
 
 ## 3. Visualization Requirements
 
@@ -111,6 +122,7 @@ The simulator should emit visualization-ready data:
 ```text
 run_summary.json
 metrics.csv
+per_cpu_partid.csv
 per_partid_latency.csv
 per_msc_utilization.csv
 control_trace.csv

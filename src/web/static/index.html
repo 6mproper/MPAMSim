@@ -201,13 +201,46 @@
 
       <section class="data-section">
         <div class="result-tabs">
+          <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
           <button class="result-tab" data-result-tab="partid">PARTID</button>
-          <button class="result-tab active" data-result-tab="monitor-group">监控组</button>
+          <button class="result-tab" data-result-tab="monitor-group">监控组</button>
           <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
           <button class="result-tab" data-result-tab="msc">MSC</button>
           <button class="result-tab" data-result-tab="controls">控制记录</button>
         </div>
-        <div class="result-view active" data-result-view="monitor-group">
+        <div class="result-view active" data-result-view="resource-monitor">
+          <div class="resource-monitor-toolbar">
+            <div class="resource-tabs" role="tablist" aria-label="监控资源">
+              <button class="resource-tab active" data-resource-view="cpu" data-help="查看 requester 侧每个 PARTID 的 outstanding、发出/完成请求和源端背压。">CPU</button>
+              <button class="resource-tab" data-resource-view="l3" data-help="查看每个 PARTID 在所有 L3 实例上的抽样占用、带宽和缓存控制状态。">L3</button>
+              <button class="resource-tab" data-resource-view="mc" data-help="查看每个 PARTID 在所有内存控制器上的带宽、排队、限速和调度状态。">MC</button>
+            </div>
+            <div class="resource-monitor-meta">
+              <span>最新采样 <output id="resourceMonitorTime">0 ns</output></span>
+              <span>已显示 <strong id="selectedPartidCount">16</strong> / 16</span>
+            </div>
+          </div>
+          <div class="partid-visibility-toolbar">
+            <div class="partid-visibility-heading">
+              <strong>PARTID 显示</strong>
+              <div>
+                <button id="selectAllPartids" type="button" class="small-command" data-help="显示全部 16 个 PARTID。">全选</button>
+                <button id="clearAllPartids" type="button" class="small-command" data-help="隐藏全部 PARTID；只改变显示，不改变仿真配置。">清空</button>
+              </div>
+            </div>
+            <div id="partidVisibility" class="partid-visibility" aria-label="选择显示的 PARTID"></div>
+          </div>
+          <div id="controlFeedbackSummary" class="control-feedback-summary"></div>
+          <div class="resource-table-wrap">
+            <table class="resource-monitor-table">
+              <thead id="resourceMonitorHead"></thead>
+              <tbody id="resourceMonitorTable">
+                <tr><td class="empty-cell">尚无资源监控结果</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="result-view" data-result-view="monitor-group">
           <div class="monitor-group-heading">
             <strong>软件可见监控组</strong>
             <span>最新采样 <output id="monitorGroupTime">0 ns</output></span>

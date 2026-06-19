@@ -110,6 +110,7 @@ class JobManager:
                     job.partial = {
                         "time_ns": collector.last_capture_ns,
                         "metrics": list(collector.metrics_rows),
+                        "cpu": list(collector.requester_rows),
                         "msc": _compact_msc_rows(collector.msc_rows),
                         "controls": list(collector.control_rows),
                     }
@@ -147,6 +148,7 @@ class JobManager:
                     for partid, metrics in cumulative.items()
                 },
                 "metrics": result.collector.metrics_rows,
+                "cpu": result.collector.requester_rows,
                 "msc": _compact_msc_rows(result.collector.msc_rows),
                 "controls": result.collector.control_rows,
                 "timeline": result.collector.timeline_rows[-3000:],
@@ -162,6 +164,7 @@ class JobManager:
                 job.partial = {
                     "time_ns": result.elapsed_ns,
                     "metrics": result.collector.metrics_rows,
+                    "cpu": result.collector.requester_rows,
                     "msc": _compact_msc_rows(result.collector.msc_rows),
                     "controls": result.collector.control_rows,
                 }

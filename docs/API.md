@@ -130,6 +130,18 @@ Columns:
 time_ns,partid,pmg,requests,bytes,avg_latency_ns,p99_latency_ns,p999_latency_ns,throughput_gbps,throttle_delay_ns
 ```
 
+### per_cpu_partid.csv
+
+Columns:
+
+```text
+time_ns,requester_id,partid,outstanding,peak_outstanding,max_outstanding,issued,completed,backpressure_ns
+```
+
+`outstanding` is sampled at the control-interval boundary. `peak_outstanding`
+is the maximum observed since the previous boundary and resets to the current
+outstanding value after capture.
+
 ### per_msc_utilization.csv
 
 Columns:
@@ -167,3 +179,12 @@ L3 group records include sampled traffic, estimated bandwidth, sampled-way owner
 Memory-controller group records include serviced requests and bytes, queue and service delay, throttle delay, achieved bandwidth, controller bandwidth, and `bandwidth_utilization`.
 
 PARTID remains the resource-control lookup key for CMIN, CMAX, CPBM, BMIN, BMAX, soft limit, and hard limit. PMG refines software-visible monitoring attribution only; it does not create an independent allocation or bandwidth-control partition.
+
+## 8. Interactive CPU/PARTID Snapshot
+
+The interactive job API includes a top-level `cpu` array in both partial and
+completed results. Each row corresponds to one requester/PARTID/control
+interval and contains the same fields as `per_cpu_partid.csv`.
+
+The CPU monitor is a requester and flow-control view. It does not model CPU
+pipeline occupancy, reorder buffers, SMT execution sharing, or coherency.

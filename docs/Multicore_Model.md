@@ -40,6 +40,11 @@ Per-core aggregation should track:
 - Outstanding requests.
 - Stall or backpressure time.
 
+The implemented control-interval monitor records these fields per
+requester/PARTID. Outstanding is exposed as both the boundary value and the
+peak observed during the interval. This is source-agent pressure, not CPU
+pipeline occupancy.
+
 The interactive reference scenario instantiates eight cores with two
 independent thread requesters each. SMT pipeline sharing is not modeled;
 sibling threads interact only through the modeled NoC, shared L3/SLC, and

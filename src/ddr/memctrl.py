@@ -498,6 +498,7 @@ class MemoryControllerMSC(Component):
         row = {
             "msc_id": self.component_id,
             "msc_type": "memory_controller",
+            "total_bandwidth_gbps": self.total_bandwidth_gbps,
             "utilization": utilization,
             "queue_occupancy": (
                 self._queue_sample_sum

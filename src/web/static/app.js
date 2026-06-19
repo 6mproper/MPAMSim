@@ -3,12 +3,14 @@ const state = {
   jobId: null,
   polling: null,
   result: null,
-  partial: { metrics: [], msc: [], controls: [], time_ns: 0 },
+  partial: { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 },
   selectedTime: 0,
   playing: false,
   playTimer: null,
   partidConfigs: [],
   stimulusConfigs: [],
+  resourceView: "cpu",
+  visiblePartids: new Set(Array.from({ length: 16 }, (_, partid) => partid)),
 };
 
 const colors = {
@@ -113,6 +115,18 @@ const headerHelp = {
   "MC BW Util %": "监控组 MC 带宽除以参与统计的 MC 总建模带宽。",
   "MC Requests": "最新采样周期内该监控组在 MC 完成调度的请求数。",
   "Throttle ns": "最新周期内 hard limit 等待累计时间。",
+  "OSTD Current / Peak": "采样时刻当前 outstanding requests，以及该控制周期内观察到的峰值。",
+  "OSTD Util %": "当前 outstanding 除以该 PARTID 所关联 requester 的最大 outstanding 容量之和。",
+  "Issued / Completed": "仿真开始以来该 PARTID 在 CPU requester 侧累计发出和完成的请求数。",
+  "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
+  "L3 Occupancy": "所有 L3 实例的 8-set 抽样占用估算之和。",
+  "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
+  "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
+  "Alloc Denials": "因 CPBM 或 CMAX 无可用 way 而拒绝抽样分配的次数。",
+  "MC Util %": "该 PARTID 在所有 MC 上的带宽之和除以这些 MC 的总建模带宽。",
+  "Avg Queue ns": "最新采样周期内该 PARTID 在 MC 队列中的平均等待时间。",
+  "Limit Events": "softlimit 低偏好请求数与 hardlimit 阻塞检查事件数。",
+  "Control State": "当前策略状态，以及该 PARTID 最近一次闭环控制更新。",
   "PARTID": "资源控制聚合标识；同一 PARTID 下的多个 PMG 会合并到该行。",
   "吞吐 Gbps": "该 PARTID 在最新采样周期内完成字节换算的有效带宽。",
   "命中率": "该 PARTID 的概率 L3 命中请求占比。",
@@ -139,6 +153,7 @@ const headerHelp = {
   "Hard Blocks": "因 hard BMAX token 不足而无法调度的检查事件数。",
 };
 const resultTabHelp = {
+  "资源监控": "在 CPU、L3、MC 之间切换，并用同一组 PARTID 开关查看资源状态和控制反馈。",
   "PARTID": "按 PARTID 聚合的吞吐、尾延迟、命中率和延迟分量。",
   "监控组": "按 PARTID+PMG 显示软件可见的实时 L3 占用和 MC 带宽使用。",
   "MPAM 监控": "按 PARTID 聚合所有 L3/MC 实例的控制值和限速事件。",
@@ -372,7 +387,7 @@ async function runSimulation() {
   stopPlayback();
   clearTimeout(state.polling);
   state.result = null;
-  state.partial = { metrics: [], msc: [], controls: [], time_ns: 0 };
+  state.partial = { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 };
   state.selectedTime = 0;
   $("#runButton").disabled = true;
   $("#reportLink").classList.add("disabled");
@@ -410,6 +425,7 @@ async function pollJob() {
       state.result = job.result;
       state.partial = {
         metrics: job.result.metrics,
+        cpu: job.result.cpu,
         msc: job.result.msc,
         controls: job.result.controls,
         time_ns: job.result.summary.simulation_time_ns,
@@ -471,9 +487,362 @@ function latestBy(rows, key) {
   return [...result.values()];
 }
 
+function latestByKeys(rows, keys) {
+  const result = new Map();
+  visibleRows(rows).forEach((row) => {
+    result.set(keys.map((key) => String(row[key])).join(":"), row);
+  });
+  return [...result.values()];
+}
+
+function isPartidVisible(partid) {
+  return state.visiblePartids.has(Number(partid));
+}
+
+function renderPartidVisibility() {
+  $("#partidVisibility").innerHTML = Array.from({ length: 16 }, (_, partid) => `
+    <label class="partid-visibility-toggle" data-partid-toggle="${partid}" style="--partid-color:${partidColor(partid)}" data-help="切换 PARTID ${partid} 在资源表、趋势图和明细表中的显示。">
+      <input type="checkbox" data-visible-partid="${partid}" ${isPartidVisible(partid) ? "checked" : ""}>
+      <span><i></i>P${partid}</span>
+    </label>
+  `).join("");
+  $("#selectedPartidCount").textContent = state.visiblePartids.size;
+  $$("#partidVisibility [data-help]").forEach(bindHelpTarget);
+}
+
+function emptyPartidResources() {
+  return Array.from({ length: 16 }, (_, partid) => ({
+    partid,
+    requesters: new Set(),
+  }));
+}
+
+function aggregateCpuResources() {
+  const result = emptyPartidResources().map((row) => ({
+    ...row,
+    outstanding: 0,
+    peakOutstanding: 0,
+    maxOutstanding: 0,
+    issued: 0,
+    completed: 0,
+    backpressureNs: 0,
+  }));
+  const configured = collectStimulusConfigs().filter((row) => row.enabled);
+  configured.forEach((row) => result[row.partid].requesters.add(row.requester));
+  latestByKeys(state.partial.cpu || [], ["requester_id", "partid"]).forEach((row) => {
+    const partid = Number(row.partid);
+    if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+    const target = result[partid];
+    target.requesters.add(String(row.requester_id));
+    target.outstanding += Number(row.outstanding || 0);
+    target.peakOutstanding += Number(row.peak_outstanding || 0);
+    target.maxOutstanding += Number(row.max_outstanding || 0);
+    target.issued += Number(row.issued || 0);
+    target.completed += Number(row.completed || 0);
+    target.backpressureNs += Number(row.backpressure_ns || 0);
+  });
+  const configuredMax = Number($('[data-param="max_outstanding"]')?.value || 0);
+  result.forEach((row) => {
+    if (row.maxOutstanding === 0 && row.requesters.size) {
+      row.maxOutstanding = row.requesters.size * configuredMax;
+    }
+    row.outstandingUtilization = Math.min(
+      1,
+      row.outstanding / Math.max(1, row.maxOutstanding),
+    );
+    row.completionRatio = row.completed / Math.max(1, row.issued);
+  });
+  return result;
+}
+
+function singleValue(values, fallback = "-") {
+  const entries = [...values].filter((value) => value !== "" && value != null);
+  if (!entries.length) return fallback;
+  if (entries.length === 1) return entries[0];
+  return entries.join(" / ");
+}
+
+function aggregateL3Resources() {
+  const result = emptyPartidResources().map((row) => ({
+    ...row,
+    bandwidth: 0,
+    occupancy: 0,
+    capacity: 0,
+    requests: 0,
+    hits: 0,
+    misses: 0,
+    allocationDenials: 0,
+    cminByMsc: new Map(),
+    cmaxByMsc: new Map(),
+    cpbmByMsc: new Map(),
+  }));
+  latestBy(state.partial.msc, "msc_id")
+    .filter((row) => row.msc_type === "cache")
+    .forEach((row) => {
+      Object.entries(row.per_partid || {}).forEach(([pidText, values]) => {
+        const partid = Number(pidText);
+        if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+        const target = result[partid];
+        target.bandwidth += Number(values.estimated_bandwidth_gbps || 0);
+        target.occupancy += Number(values.estimated_occupancy_bytes || 0);
+        target.capacity += Number(values.allowed_capacity_bytes || 0);
+        target.requests += Number(values.requests || 0);
+        target.hits += Number(values.hits || 0);
+        target.misses += Number(values.misses || 0);
+        target.allocationDenials += Number(values.allocation_denials || 0);
+        target.cminByMsc.set(String(row.msc_id), values.cmin);
+        target.cmaxByMsc.set(String(row.msc_id), values.cmax);
+        target.cpbmByMsc.set(String(row.msc_id), values.cpbm);
+      });
+    });
+  visibleRows(state.partial.controls).forEach((update) => {
+    const partid = Number(update.partid);
+    if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+    const target = result[partid];
+    const mscId = String(update.target_msc);
+    if (update.field === "cache_min_ways") {
+      target.cminByMsc.set(mscId, update.new_value);
+    } else if (update.field === "cache_max_ways") {
+      target.cmaxByMsc.set(mscId, update.new_value);
+    } else if (update.field === "cache_portion_bitmap") {
+      target.cpbmByMsc.set(mscId, update.new_value);
+    }
+  });
+  result.forEach((row) => {
+    const configured = state.partidConfigs[row.partid] || {};
+    const cminValues = new Set(row.cminByMsc.values());
+    const cmaxValues = new Set(row.cmaxByMsc.values());
+    const cpbmValues = new Set(row.cpbmByMsc.values());
+    if (!cminValues.size) cminValues.add(configured.cmin);
+    if (!cmaxValues.size) cmaxValues.add(configured.cmax);
+    if (!cpbmValues.size) cpbmValues.add(configured.cpbm);
+    row.occupancyUtilization = Math.min(
+      1,
+      row.occupancy / Math.max(1, row.capacity),
+    );
+    row.hitRate = row.hits / Math.max(1, row.hits + row.misses);
+    row.cmin = singleValue(cminValues);
+    row.cmax = singleValue(cmaxValues);
+    row.cpbm = singleValue(cpbmValues);
+  });
+  return result;
+}
+
+function aggregateMcResources() {
+  const result = emptyPartidResources().map((row) => ({
+    ...row,
+    bandwidth: 0,
+    capacity: 0,
+    requests: 0,
+    queueDelayNs: 0,
+    throttleNs: 0,
+    bminByMsc: new Map(),
+    bmaxByMsc: new Map(),
+    modeByMsc: new Map(),
+    priorityByMsc: new Map(),
+    softRequests: 0,
+    hardBlocks: 0,
+  }));
+  latestBy(state.partial.msc, "msc_id")
+    .filter((row) => row.msc_type === "memory_controller")
+    .forEach((row) => {
+      result.forEach((target) => {
+        target.capacity += Number(row.total_bandwidth_gbps || 0);
+      });
+      Object.entries(row.per_partid || {}).forEach(([pidText, values]) => {
+        const partid = Number(pidText);
+        if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+        const target = result[partid];
+        target.bandwidth += Number(values.achieved_bandwidth_gbps || 0);
+        target.requests += Number(values.requests || 0);
+        target.queueDelayNs += Number(values.queue_delay_ns || 0);
+        target.throttleNs += Number(values.throttle_delay_ns || 0);
+        target.bminByMsc.set(String(row.msc_id), values.bmin_gbps);
+        target.bmaxByMsc.set(String(row.msc_id), values.bmax_gbps);
+        target.modeByMsc.set(String(row.msc_id), values.limit_mode);
+        target.priorityByMsc.set(String(row.msc_id), values.priority);
+        target.softRequests += Number(values.softlimit_requests || 0);
+        target.hardBlocks += Number(values.hardlimit_block_events || 0);
+      });
+    });
+  visibleRows(state.partial.controls).forEach((update) => {
+    const partid = Number(update.partid);
+    if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+    const target = result[partid];
+    const mscId = String(update.target_msc);
+    if (update.field === "bw_min_gbps") {
+      target.bminByMsc.set(mscId, update.new_value);
+    } else if (update.field === "bw_max_gbps") {
+      target.bmaxByMsc.set(mscId, update.new_value);
+    } else if (update.field === "bw_limit_mode") {
+      target.modeByMsc.set(mscId, update.new_value);
+    } else if (update.field === "priority") {
+      target.priorityByMsc.set(mscId, update.new_value);
+    }
+  });
+  result.forEach((row) => {
+    const configured = state.partidConfigs[row.partid] || {};
+    if (!row.modeByMsc.size) {
+      row.modeByMsc.set("configured", configured.limit_mode);
+    }
+    if (!row.priorityByMsc.size) {
+      row.priorityByMsc.set("configured", configured.priority);
+    }
+    if (!row.bminByMsc.size && configured.bmin_gbps != null) {
+      row.bminByMsc.set("configured", configured.bmin_gbps);
+    }
+    if (!row.bmaxByMsc.size && configured.bmax_gbps != null) {
+      row.bmaxByMsc.set("configured", configured.bmax_gbps);
+    }
+    const bminValues = [...row.bminByMsc.values()]
+      .filter((value) => value != null);
+    const bmaxValues = [...row.bmaxByMsc.values()]
+      .filter((value) => value != null);
+    row.bmin = bminValues.reduce((sum, value) => sum + Number(value), 0);
+    row.bmax = bmaxValues.reduce((sum, value) => sum + Number(value), 0);
+    row.hasBmin = bminValues.length > 0;
+    row.hasBmax = bmaxValues.length > 0;
+    row.bandwidthUtilization = Math.min(
+      1,
+      row.bandwidth / Math.max(1e-9, row.capacity),
+    );
+    row.avgQueueDelayNs = row.queueDelayNs / Math.max(1, row.requests);
+    row.mode = singleValue(new Set(row.modeByMsc.values()));
+    row.priority = singleValue(new Set(row.priorityByMsc.values()));
+  });
+  return result;
+}
+
+function controlFeedback(partid) {
+  const updates = visibleRows(state.partial.controls)
+    .filter((row) => Number(row.partid) === Number(partid));
+  const latest = updates[updates.length - 1] || null;
+  const policy = $('input[name="policy"]:checked')?.value || "no_control";
+  if (policy === "no_control") {
+    return { state: "disabled", label: "无控制", latest, updates: updates.length };
+  }
+  if (policy === "static_mpam") {
+    return { state: "static", label: "静态", latest, updates: updates.length };
+  }
+  return {
+    state: latest ? "adjusted" : "monitoring",
+    label: latest ? "已调整" : "监控中",
+    latest,
+    updates: updates.length,
+  };
+}
+
+function controlStateCell(partid) {
+  const feedback = controlFeedback(partid);
+  const detail = feedback.latest
+    ? `${formatTime(Number(feedback.latest.time_ns || 0))} · ${escapeHtml(feedback.latest.target_msc)} · ${escapeHtml(feedback.latest.field)}`
+    : "暂无运行时更新";
+  const reason = feedback.latest
+    ? escapeHtml(feedback.latest.reason)
+    : "";
+  return `
+    <div class="control-state-cell">
+      <span class="control-state ${feedback.state}">${feedback.label}</span>
+      <small>${detail}</small>
+      ${reason ? `<small class="control-state-reason">${reason}</small>` : ""}
+    </div>`;
+}
+
+function renderControlFeedbackSummary() {
+  const policy = $('input[name="policy"]:checked')?.value || "no_control";
+  const policyLabel = {
+    no_control: "无控制",
+    static_mpam: "静态 MPAM",
+    closed_loop_qos: "闭环 QoS",
+  }[policy] || policy;
+  const updates = visibleRows(state.partial.controls)
+    .filter((row) => isPartidVisible(row.partid));
+  const latest = updates[updates.length - 1];
+  $("#controlFeedbackSummary").innerHTML = `
+    <span><b>反馈策略</b>${escapeHtml(policyLabel)}</span>
+    <span><b>所选 PARTID 更新</b>${updates.length}</span>
+    <span class="feedback-reason"><b>最近动作</b>${
+      latest
+        ? `${formatTime(Number(latest.time_ns || 0))} · P${escapeHtml(latest.partid)} · ${escapeHtml(latest.target_msc)}.${escapeHtml(latest.field)} · ${escapeHtml(latest.reason)}`
+        : "暂无运行时控制更新"
+    }</span>`;
+}
+
+function renderResourceMonitor() {
+  renderPartidVisibility();
+  renderControlFeedbackSummary();
+  $("#resourceMonitorTime").textContent = formatTime(state.selectedTime || 0);
+  const visible = (rows) => rows.filter((row) => isPartidVisible(row.partid));
+  let headers = [];
+  let rows = [];
+  if (state.resourceView === "cpu") {
+    headers = [
+      "PARTID", "Control State", "Requester", "OSTD Current / Peak",
+      "OSTD Util %", "Issued / Completed", "Backpressure ns",
+    ];
+    rows = visible(aggregateCpuResources()).map((row) => `
+      <tr>
+        <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
+        <td>${controlStateCell(row.partid)}</td>
+        <td>${escapeHtml([...row.requesters].join(", ") || "-")}</td>
+        <td><strong>${formatNumber(row.outstanding, 0)}</strong> / ${formatNumber(row.peakOutstanding, 0)} <small>of ${formatNumber(row.maxOutstanding, 0)}</small></td>
+        <td>${utilizationCell(row.outstandingUtilization, partidColor(row.partid))}</td>
+        <td>${formatNumber(row.issued, 0)} / ${formatNumber(row.completed, 0)} <small>${(row.completionRatio * 100).toFixed(1)}%</small></td>
+        <td>${formatNumber(row.backpressureNs, 2)}</td>
+      </tr>`);
+  } else if (state.resourceView === "l3") {
+    headers = [
+      "PARTID", "Control State", "L3 Occupancy", "L3 Util %",
+      "L3 Sample BW", "Hit Rate", "Alloc Denials", "CMIN", "CMAX", "CPBM",
+    ];
+    rows = visible(aggregateL3Resources()).map((row) => `
+      <tr>
+        <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
+        <td>${controlStateCell(row.partid)}</td>
+        <td>${formatNumber(row.occupancy, 0)} B <small>of ${formatNumber(row.capacity, 0)} B</small></td>
+        <td>${utilizationCell(row.occupancyUtilization, "#2d7a4c")}</td>
+        <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
+        <td>${(row.hitRate * 100).toFixed(2)}%</td>
+        <td>${formatNumber(row.allocationDenials, 0)}</td>
+        <td>${escapeHtml(row.cmin)}</td>
+        <td>${escapeHtml(row.cmax)}</td>
+        <td><code>${escapeHtml(row.cpbm)}</code></td>
+      </tr>`);
+  } else {
+    headers = [
+      "PARTID", "Control State", "MC BW", "MC Util %", "MC Requests",
+      "Avg Queue ns", "Throttle ns", "BMIN Σ", "BMAX Σ", "Mode", "Pri", "Limit Events",
+    ];
+    rows = visible(aggregateMcResources()).map((row) => `
+      <tr>
+        <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
+        <td>${controlStateCell(row.partid)}</td>
+        <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
+        <td>${utilizationCell(row.bandwidthUtilization, "#176b9c")}</td>
+        <td>${formatNumber(row.requests, 0)}</td>
+        <td>${formatNumber(row.avgQueueDelayNs, 2)}</td>
+        <td>${formatNumber(row.throttleNs, 2)}</td>
+        <td>${row.hasBmin ? formatNumber(row.bmin, 1) : "-"}</td>
+        <td>${row.hasBmax ? formatNumber(row.bmax, 1) : "-"}</td>
+        <td>${escapeHtml(row.mode)}</td>
+        <td>${escapeHtml(row.priority)}</td>
+        <td>${formatNumber(row.softRequests, 0)} soft / ${formatNumber(row.hardBlocks, 0)} hard</td>
+      </tr>`);
+  }
+  $("#resourceMonitorHead").innerHTML = `<tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>`;
+  $(".resource-monitor-table").dataset.resourceView = state.resourceView;
+  $("#resourceMonitorTable").innerHTML = rows.length
+    ? rows.join("")
+    : `<tr><td colspan="${headers.length}" class="empty-cell">未选择 PARTID；使用上方开关选择要显示的分区</td></tr>`;
+  $$("#resourceMonitorHead th").forEach((header) => {
+    setHelp(header, headerHelp[header.textContent.trim()]);
+  });
+}
+
 function renderAll() {
   renderKpis();
   renderCharts();
+  renderResourceMonitor();
   renderPartidTable();
   renderMonitorGroupTable();
   renderMpamMonitorTable();
@@ -564,7 +933,7 @@ function utilizationCell(value, color) {
 }
 
 function renderMonitorGroupTable() {
-  const rows = aggregateMonitorGroups();
+  const rows = aggregateMonitorGroups().filter((row) => isPartidVisible(row.partid));
   $("#monitorGroupTime").textContent = formatTime(state.selectedTime || 0);
   $("#monitorGroupTable").innerHTML = rows.length ? rows.map((row) => `
     <tr>
@@ -705,7 +1074,8 @@ function drawBarChart(canvas, bars) {
 }
 
 function metricSeries(key) {
-  const rows = visibleRows(state.partial.metrics);
+  const rows = visibleRows(state.partial.metrics)
+    .filter((row) => isPartidVisible(row.partid));
   const partids = [...new Set(rows.map((row) => String(row.partid)))].sort(
     (a, b) => Number(a) - Number(b),
   );
@@ -737,10 +1107,11 @@ function renderCharts() {
 
   const latest = latestBy(state.partial.metrics, "partid");
   const targetStimulus = collectStimulusConfigs().find(
-    (row) => row.enabled && row.target_p99_ns > 0,
+    (row) => row.enabled && row.target_p99_ns > 0 && isPartidVisible(row.partid),
   );
-  const protectedPartid = String(targetStimulus?.partid ?? latest[0]?.partid ?? 0);
-  const protectedRow = latest.find((row) => String(row.partid) === protectedPartid) || latest[0];
+  const visibleLatest = latest.filter((row) => isPartidVisible(row.partid));
+  const protectedPartid = String(targetStimulus?.partid ?? visibleLatest[0]?.partid ?? 0);
+  const protectedRow = visibleLatest.find((row) => String(row.partid) === protectedPartid) || visibleLatest[0];
   const bars = protectedRow ? [
     { label: "NoC", value: Number(protectedRow.avg_noc_delay_ns || 0), color: "#4a7a98" },
     { label: "L3", value: Number(protectedRow.avg_cache_delay_ns || 0), color: "#538867" },
@@ -752,7 +1123,8 @@ function renderCharts() {
 }
 
 function renderPartidTable() {
-  const rows = latestBy(state.partial.metrics, "partid");
+  const rows = latestBy(state.partial.metrics, "partid")
+    .filter((row) => isPartidVisible(row.partid));
   $("#partidTable").innerHTML = rows.length ? rows.map((row) => `
     <tr>
       <td><span class="partid-dot" style="background:${partidColor(row.partid)}"></span> ${escapeHtml(row.partid)}</td>
@@ -778,7 +1150,10 @@ function renderMscTable() {
 }
 
 function renderControlTable() {
-  const rows = visibleRows(state.partial.controls).slice().reverse();
+  const rows = visibleRows(state.partial.controls)
+    .filter((row) => isPartidVisible(row.partid))
+    .slice()
+    .reverse();
   $("#controlTable").innerHTML = rows.length ? rows.map((row) => `
     <tr>
       <td>${formatNumber(row.time_ns, 0)}</td>
@@ -836,8 +1211,9 @@ function aggregateMpamMonitors() {
 
 function renderMpamMonitorTable() {
   const hasData = visibleRows(state.partial.msc).length > 0;
-  const rows = aggregateMpamMonitors();
-  $("#mpamMonitorTable").innerHTML = hasData ? rows.map((row) => `
+  const rows = aggregateMpamMonitors()
+    .filter((row) => isPartidVisible(row.partid));
+  $("#mpamMonitorTable").innerHTML = hasData && rows.length ? rows.map((row) => `
     <tr>
       <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
       <td>${formatNumber(row.l3Bandwidth, 3)}</td>
@@ -1024,6 +1400,28 @@ function bindEvents() {
     $$(".result-tab").forEach((node) => node.classList.toggle("active", node === button));
     $$(".result-view").forEach((view) => view.classList.toggle("active", view.dataset.resultView === button.dataset.resultTab));
   }));
+  $$(".resource-tab").forEach((button) => button.addEventListener("click", () => {
+    state.resourceView = button.dataset.resourceView;
+    $$(".resource-tab").forEach((node) => node.classList.toggle("active", node === button));
+    renderResourceMonitor();
+  }));
+  $("#partidVisibility").addEventListener("change", (event) => {
+    const input = event.target.closest?.("[data-visible-partid]");
+    if (!input) return;
+    const partid = Number(input.dataset.visiblePartid);
+    if (input.checked) state.visiblePartids.add(partid);
+    else state.visiblePartids.delete(partid);
+    renderAll();
+  });
+  $("#selectAllPartids").addEventListener("click", () => {
+    state.visiblePartids = new Set(Array.from({ length: 16 }, (_, partid) => partid));
+    renderAll();
+  });
+  $("#clearAllPartids").addEventListener("click", () => {
+    state.visiblePartids = new Set();
+    renderAll();
+  });
+  $$('input[name="policy"]').forEach((input) => input.addEventListener("change", renderResourceMonitor));
   $("#runButton").addEventListener("click", runSimulation);
   $("#resetButton").addEventListener("click", () => fillForm(state.defaults));
   $("#resetPartidButton").addEventListener("click", () => {
