@@ -143,8 +143,8 @@ button {
   grid-template-columns: 350px minmax(0, 1fr);
 }
 
-.workspace.mpam-wide {
-  grid-template-columns: 650px minmax(0, 1fr);
+.workspace.config-wide {
+  grid-template-columns: 720px minmax(0, 1fr);
 }
 
 .config-panel {
@@ -322,6 +322,57 @@ input[readonly] {
   overflow: auto;
   border: 1px solid #b9c3ca;
   background: #fff;
+}
+
+.stimulus-config-wrap {
+  overflow: auto;
+  border: 1px solid #b9c3ca;
+  background: #fff;
+}
+
+.stimulus-config-table {
+  min-width: 690px;
+  table-layout: fixed;
+}
+
+.stimulus-config-table th,
+.stimulus-config-table td {
+  padding: 4px;
+  font-size: 10px;
+  text-align: center;
+}
+
+.stimulus-config-table th:nth-child(1) { width: 72px; }
+.stimulus-config-table th:nth-child(2) { width: 32px; }
+.stimulus-config-table th:nth-child(3),
+.stimulus-config-table th:nth-child(4) { width: 48px; }
+.stimulus-config-table th:nth-child(5) { width: 76px; }
+.stimulus-config-table th:nth-child(6) { width: 56px; }
+.stimulus-config-table th:nth-child(7) { width: 57px; }
+.stimulus-config-table th:nth-child(8) { width: 54px; }
+.stimulus-config-table th:nth-child(9) { width: 50px; }
+.stimulus-config-table th:nth-child(10),
+.stimulus-config-table th:nth-child(11) { width: 62px; }
+
+.stimulus-config-table input,
+.stimulus-config-table select {
+  height: 27px;
+  padding: 3px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+.stimulus-config-table input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+}
+
+.thread-chip {
+  display: inline-block;
+  color: #33434e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .mpam-config-table {
@@ -585,7 +636,7 @@ input[readonly] {
 }
 
 .chart-title {
-  height: 28px;
+  min-height: 28px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -593,6 +644,7 @@ input[readonly] {
 }
 
 .chart-title h3 {
+  flex: 0 0 auto;
   margin: 0;
   font-size: 13px;
 }
@@ -605,13 +657,19 @@ input[readonly] {
 
 .legend {
   display: flex;
-  gap: 9px;
+  max-width: 78%;
+  max-height: 32px;
+  overflow-y: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 3px 7px;
 }
 
 .legend span {
   display: flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .legend i {
@@ -703,8 +761,8 @@ th {
     grid-template-columns: 310px minmax(0, 1fr);
   }
 
-  .workspace.mpam-wide {
-    grid-template-columns: 540px minmax(0, 1fr);
+  .workspace.config-wide {
+    grid-template-columns: 560px minmax(0, 1fr);
   }
 
   .flow-path {
@@ -743,7 +801,7 @@ th {
     display: block;
   }
 
-  .workspace.mpam-wide {
+  .workspace.config-wide {
     display: block;
   }
 

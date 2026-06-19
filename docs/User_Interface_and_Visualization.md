@@ -62,7 +62,9 @@ python -m src.web.server --host 127.0.0.1 --port 8787
 It provides:
 
 - Direct numeric configuration for multicore topology, L3/SLC, NoC, and memory controllers.
-- Workload injection configuration for protected and background PARTIDs.
+- A 16-row stimulus editor mapped to `cpu0.t0` through `cpu7.t1`, with
+  independent PARTID, PMG, workload type, rate, request size, read ratio,
+  working set, and P99 target.
 - A 16-row PARTID editor for monitor enable, CMIN, CMAX, CPBM, BMIN, BMAX,
   softlimit/hardlimit, and priority.
 - Explicit L3 set count, ways per set, line size, and fixed eight-set

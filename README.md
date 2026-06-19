@@ -107,6 +107,11 @@ python -m src.web.server --host 127.0.0.1 --port 8787
 
 Then open `http://127.0.0.1:8787`. The console edits SoC, stimulus, MPAM, and policy parameters, starts simulations as background jobs, and refreshes intermediate control-interval metrics while the run is active.
 
+The interactive reference scenario uses eight cores and two threads per core.
+Its stimulus tab exposes 16 independent hardware-thread workloads, matching
+the 16 configurable PARTIDs. See `docs/MPAM_Capability_Map.md` for the model's
+implemented, approximated, reserved, and out-of-scope MPAM capabilities.
+
 ## OpenSpec Workflow
 
 Architecture and behavior changes use OpenSpec:

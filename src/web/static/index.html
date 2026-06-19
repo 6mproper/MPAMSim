@@ -35,8 +35,8 @@
             <label>仿真时间 ns<input data-param="duration_ns" type="number" min="10000" max="5000000" step="10000"></label>
             <label>控制周期 ns<input data-param="control_interval_ns" type="number" min="1000" step="1000"></label>
             <label>随机种子<input data-param="seed" type="number" min="0" step="1"></label>
-            <label>活跃核数<input data-param="active_cores" type="number" min="2" max="32" step="1"></label>
-            <label>每核线程<input data-param="threads_per_core" type="number" min="1" max="4" step="1"></label>
+            <label>活跃核数<input data-param="active_cores" type="number" value="8" readonly></label>
+            <label>每核线程<input data-param="threads_per_core" type="number" value="2" readonly></label>
             <label>最大 outstanding<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
           </div>
 
@@ -70,27 +70,32 @@
         </section>
 
         <section class="config-section" data-panel="traffic">
-          <h2>时延敏感流</h2>
-          <div class="field-grid">
-            <label>PARTID<select data-param="protected_partid" class="partid-select"></select></label>
-            <label>注入率 MRPS<input data-param="protected_rate_mrps" type="number" min="0.01" max="1000" step="0.1"></label>
-            <label>工作集 MB<input data-param="protected_working_set_mb" type="number" min="1" max="65536" step="1"></label>
-            <label>目标 P99 ns<input data-param="protected_target_p99_ns" type="number" min="1" max="1000000" step="1"></label>
+          <div class="mpam-editor-heading">
+            <div>
+              <h2>16 线程独立激励</h2>
+              <p>8 核 × 2 线程；每行固定绑定一个 requester，P99=0 表示不设目标。</p>
+            </div>
+            <button id="resetStimulusButton" type="button" class="small-command">重置 16 路</button>
           </div>
-
-          <h2>背景流</h2>
-          <div class="field-grid">
-            <label>PARTID<select data-param="background_partid" class="partid-select"></select></label>
-            <label>使用核数<input data-param="background_cores" type="number" min="1" max="31" step="1"></label>
-            <label>注入带宽 Gbps<input data-param="background_rate_gbps" type="number" min="0.01" max="4096" step="1"></label>
-            <label>工作集 MB<input data-param="background_working_set_mb" type="number" min="1" max="262144" step="1"></label>
-            <label>读比例<input data-param="background_read_ratio" type="number" min="0" max="1" step="0.05"></label>
-            <label>速率范围
-              <select data-param="background_rate_scope">
-                <option value="aggregate">整个 workload</option>
-                <option value="per_requester">每个 requester</option>
-              </select>
-            </label>
+          <div class="stimulus-config-wrap">
+            <table class="stimulus-config-table">
+              <thead>
+                <tr>
+                  <th>Requester</th>
+                  <th>En</th>
+                  <th>PID</th>
+                  <th>PMG</th>
+                  <th>Type</th>
+                  <th>Rate</th>
+                  <th>Unit</th>
+                  <th>Bytes</th>
+                  <th>Read</th>
+                  <th>WSS MB</th>
+                  <th>P99 ns</th>
+                </tr>
+              </thead>
+              <tbody id="stimulusConfigTable"></tbody>
+            </table>
           </div>
         </section>
 

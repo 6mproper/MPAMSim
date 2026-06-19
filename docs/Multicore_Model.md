@@ -40,6 +40,11 @@ Per-core aggregation should track:
 - Outstanding requests.
 - Stall or backpressure time.
 
+The interactive reference scenario instantiates eight cores with two
+independent thread requesters each. SMT pipeline sharing is not modeled;
+sibling threads interact only through the modeled NoC, shared L3/SLC, and
+memory-controller resources.
+
 ## 4. Shared-Resource Interference
 
 V1 multicore interference is caused by:

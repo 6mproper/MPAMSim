@@ -91,6 +91,32 @@ Supported workload types:
 - `phase_based`
 - `replay_trace` as a future extension.
 
+### 3.1 Interactive 8-Core / 16-Thread Matrix
+
+The local console uses a fixed reference topology of eight cores and two
+hardware threads per core. It exposes 16 stimulus rows with the mapping:
+
+```text
+row 0  -> cpu0.t0
+row 1  -> cpu0.t1
+...
+row 14 -> cpu7.t0
+row 15 -> cpu7.t1
+```
+
+Every enabled row creates one independent workload and configures:
+
+- PARTID and PMG.
+- workload type.
+- MRPS or Gbps injection rate.
+- request size and read ratio.
+- working-set size.
+- optional P99 target.
+
+Defaults map row N to PARTID N and PMG N. This is an experiment default, not
+an architectural restriction: multiple rows may share one PARTID while using
+different PMGs.
+
 ## 4. Injection Controls
 
 Stimulus must expose the variables that flow control will act on:

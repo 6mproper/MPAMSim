@@ -126,13 +126,65 @@ def _default_partid_configs(
     return rows
 
 
+def _thread_requester(slot: int) -> str:
+    return f"cpu{slot // 2}.t{slot % 2}"
+
+
+def _default_stimulus_configs() -> List[Dict[str, object]]:
+    rows = []
+    workload_types = [
+        "mixed_rw",
+        "pointer_chase",
+        "stream",
+        "random_read",
+    ]
+    for slot in range(16):
+        workload_type = workload_types[slot % len(workload_types)]
+        row = {
+            "slot": slot,
+            "enabled": True,
+            "requester": _thread_requester(slot),
+            "partid": slot,
+            "pmg": slot,
+            "workload_type": workload_type,
+            "rate_value": 6.0,
+            "rate_unit": "gbps",
+            "request_size_bytes": 64,
+            "read_ratio": (
+                0.75 if workload_type == "mixed_rw" else 1.0
+            ),
+            "working_set_mb": (
+                64 if workload_type == "pointer_chase" else 256
+            ),
+            "target_p99_ns": 0.0,
+        }
+        rows.append(row)
+    rows[1].update(
+        {
+            "rate_value": 4.0,
+            "rate_unit": "mrps",
+            "working_set_mb": 64,
+            "target_p99_ns": 500.0,
+        }
+    )
+    rows[2].update(
+        {
+            "rate_value": 12.0,
+            "rate_unit": "gbps",
+            "working_set_mb": 1024,
+            "read_ratio": 0.8,
+        }
+    )
+    return rows
+
+
 def default_parameters() -> Dict[str, object]:
     return {
         "duration_ns": 500_000,
         "control_interval_ns": 50_000,
         "seed": 1234,
         "active_cores": 8,
-        "threads_per_core": 1,
+        "threads_per_core": 2,
         "l3_instances": 2,
         "l3_sets": 32_768,
         "l3_ways": 16,
@@ -150,21 +202,12 @@ def default_parameters() -> Dict[str, object]:
         "mc_base_latency_ns": 80,
         "mc_queue_depth": 512,
         "max_outstanding": 32,
-        "protected_partid": 1,
-        "protected_rate_mrps": 20,
-        "protected_working_set_mb": 64,
-        "protected_target_p99_ns": 500,
-        "background_partid": 2,
-        "background_cores": 7,
-        "background_rate_gbps": 200,
-        "background_rate_scope": "aggregate",
-        "background_working_set_mb": 1024,
-        "background_read_ratio": 0.8,
         "policy": "closed_loop_qos",
         "max_bw_step_percent": 10,
         "p99_hysteresis": 0.1,
         "min_hold_intervals": 3,
         "partid_configs": _default_partid_configs(),
+        "stimulus_configs": _default_stimulus_configs(),
     }
 
 
@@ -260,6 +303,152 @@ def _parse_partid_configs(
     return sorted(parsed, key=lambda row: row["partid"])
 
 
+def _parse_stimulus_configs(
+    parameters: Dict[str, object],
+) -> List[Dict[str, object]]:
+    raw_rows = parameters.get("stimulus_configs")
+    if not isinstance(raw_rows, list) or len(raw_rows) != 16:
+        raise ParameterError(
+            "stimulus_configs must contain exactly 16 thread rows"
+        )
+    parsed = []
+    seen = set()
+    workload_types = {
+        "stream",
+        "pointer_chase",
+        "random_read",
+        "mixed_rw",
+        "bursty_dma",
+    }
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            raise ParameterError(
+                "Each stimulus configuration must be an object"
+            )
+        slot = int(raw.get("slot", index))
+        if slot < 0 or slot > 15 or slot in seen:
+            raise ParameterError(
+                "Stimulus slots must uniquely cover 0..15"
+            )
+        seen.add(slot)
+        enabled = bool(raw.get("enabled", True))
+        partid = int(raw.get("partid", slot))
+        pmg = int(raw.get("pmg", slot))
+        if not 0 <= partid <= 15:
+            raise ParameterError(
+                f"Stimulus {slot}: PARTID must be 0..15"
+            )
+        if not 0 <= pmg <= 15:
+            raise ParameterError(
+                f"Stimulus {slot}: PMG must be 0..15"
+            )
+        workload_type = str(
+            raw.get("workload_type", "stream")
+        )
+        if workload_type not in workload_types:
+            raise ParameterError(
+                f"Stimulus {slot}: unsupported workload type"
+            )
+        rate_unit = str(raw.get("rate_unit", "gbps")).lower()
+        if rate_unit not in {"mrps", "gbps"}:
+            raise ParameterError(
+                f"Stimulus {slot}: rate unit must be mrps or gbps"
+            )
+        try:
+            rate_value = float(raw.get("rate_value", 0.0))
+            request_size = int(raw.get("request_size_bytes", 64))
+            read_ratio = float(raw.get("read_ratio", 1.0))
+            working_set_mb = int(raw.get("working_set_mb", 64))
+            target_p99 = float(raw.get("target_p99_ns", 0.0) or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ParameterError(
+                f"Stimulus {slot}: numeric field is invalid"
+            ) from exc
+        rate_max = 1000.0 if rate_unit == "mrps" else 4096.0
+        if rate_value < 0 or rate_value > rate_max:
+            raise ParameterError(
+                f"Stimulus {slot}: rate exceeds {rate_max:g} {rate_unit}"
+            )
+        if enabled and rate_value <= 0:
+            raise ParameterError(
+                f"Stimulus {slot}: enabled rate must be positive"
+            )
+        if not 16 <= request_size <= 4096:
+            raise ParameterError(
+                f"Stimulus {slot}: request size must be 16..4096 bytes"
+            )
+        if not 0.0 <= read_ratio <= 1.0:
+            raise ParameterError(
+                f"Stimulus {slot}: read ratio must be in [0, 1]"
+            )
+        if not 1 <= working_set_mb <= 262_144:
+            raise ParameterError(
+                f"Stimulus {slot}: working set must be 1..262144 MB"
+            )
+        if not 0.0 <= target_p99 <= 1_000_000:
+            raise ParameterError(
+                f"Stimulus {slot}: target P99 must be 0..1000000 ns"
+            )
+        parsed.append(
+            {
+                "slot": slot,
+                "enabled": enabled,
+                "requester": _thread_requester(slot),
+                "partid": partid,
+                "pmg": pmg,
+                "workload_type": workload_type,
+                "rate_value": rate_value,
+                "rate_unit": rate_unit,
+                "request_size_bytes": request_size,
+                "read_ratio": read_ratio,
+                "working_set_mb": working_set_mb,
+                "target_p99_ns": target_p99,
+            }
+        )
+    if seen != set(range(16)):
+        raise ParameterError(
+            "Stimulus slots must cover every value 0..15"
+        )
+    enabled_rows = [row for row in parsed if row["enabled"]]
+    if not enabled_rows:
+        raise ParameterError(
+            "At least one thread stimulus must be enabled"
+        )
+    return sorted(parsed, key=lambda row: row["slot"])
+
+
+def _build_workloads(
+    stimulus_configs: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    workloads = []
+    for row in stimulus_configs:
+        if not row["enabled"]:
+            continue
+        workload = {
+            "name": f"thread_{row['slot']:02d}",
+            "type": row["workload_type"],
+            "requesters": [row["requester"]],
+            "partid": row["partid"],
+            "pmg": row["pmg"],
+            "request_size_bytes": row["request_size_bytes"],
+            "injection_scope": "per_requester",
+            "read_ratio": row["read_ratio"],
+            "working_set_bytes": (
+                row["working_set_mb"] * 1024 * 1024
+            ),
+        }
+        rate_field = (
+            "injection_rate_mrps"
+            if row["rate_unit"] == "mrps"
+            else "injection_rate_gbps"
+        )
+        workload[rate_field] = row["rate_value"]
+        if row["target_p99_ns"] > 0:
+            workload["target_p99_ns"] = row["target_p99_ns"]
+        workloads.append(workload)
+    return workloads
+
+
 def build_config(
     parameters: Dict[str, object],
     output_dir: str,
@@ -281,10 +470,10 @@ def build_config(
         values, "seed", 1234, 0, 2_147_483_647
     )
     active_cores = _integer(
-        values, "active_cores", 8, 2, 32
+        values, "active_cores", 8, 8, 8
     )
     threads_per_core = _integer(
-        values, "threads_per_core", 1, 1, 4
+        values, "threads_per_core", 2, 2, 2
     )
     l3_instances = _integer(
         values,
@@ -357,68 +546,8 @@ def build_config(
         l3_ways,
         total_mc_bandwidth,
     )
-
-    protected_partid = _integer(
-        values, "protected_partid", 1, 0, 15
-    )
-    background_partid = _integer(
-        values, "background_partid", 2, 0, 15
-    )
-    if protected_partid == background_partid:
-        raise ParameterError(
-            "Protected and background workloads need different PARTIDs"
-        )
-    protected_rate_mrps = _number(
-        values, "protected_rate_mrps", 20, 0.01, 1000
-    )
-    protected_wss_mb = _integer(
-        values,
-        "protected_working_set_mb",
-        64,
-        1,
-        65_536,
-    )
-    protected_target_p99_ns = _number(
-        values,
-        "protected_target_p99_ns",
-        500,
-        1,
-        1_000_000,
-    )
-    background_cores = _integer(
-        values,
-        "background_cores",
-        min(7, active_cores - 1),
-        1,
-        active_cores - 1,
-    )
-    background_rate_gbps = _number(
-        values,
-        "background_rate_gbps",
-        200,
-        0.01,
-        4096,
-    )
-    background_scope = _choice(
-        values,
-        "background_rate_scope",
-        "aggregate",
-        ["aggregate", "per_requester"],
-    )
-    background_wss_mb = _integer(
-        values,
-        "background_working_set_mb",
-        1024,
-        1,
-        262_144,
-    )
-    background_read_ratio = _number(
-        values,
-        "background_read_ratio",
-        0.8,
-        0,
-        1,
-    )
+    stimulus_configs = _parse_stimulus_configs(parameters)
+    workloads = _build_workloads(stimulus_configs)
 
     interval_count = math.ceil(
         duration_ns / control_interval_ns
@@ -427,23 +556,23 @@ def build_config(
         raise ParameterError(
             "duration_ns / control_interval_ns must not exceed 1000 intervals"
         )
-    protected_requests = (
-        duration_ns * protected_rate_mrps / 1000.0
-    )
-    requester_multiplier = (
-        background_cores
-        if background_scope == "per_requester"
-        else 1
-    )
-    background_requests = (
-        duration_ns
-        * background_rate_gbps
-        / (64.0 * 8.0)
-        * requester_multiplier
-    )
-    if protected_requests + background_requests > 2_000_000:
+    estimated_requests = 0.0
+    for row in stimulus_configs:
+        if not row["enabled"]:
+            continue
+        if row["rate_unit"] == "mrps":
+            estimated_requests += (
+                duration_ns * row["rate_value"] / 1000.0
+            )
+        else:
+            estimated_requests += (
+                duration_ns
+                * row["rate_value"]
+                / (row["request_size_bytes"] * 8.0)
+            )
+    if estimated_requests > 2_000_000:
         raise ParameterError(
-            "Estimated request count exceeds 2,000,000; reduce duration, rate, or active requesters"
+            "Estimated request count exceeds 2,000,000; reduce duration or thread rates"
         )
 
     policy = _choice(
@@ -551,10 +680,21 @@ def build_config(
         }
         for index in range(mc_count)
     ]
-    background_requesters = [
-        f"cpu{index}.t0"
-        for index in range(1, background_cores + 1)
-    ]
+    protected_partids = sorted(
+        {
+            int(row["partid"])
+            for row in stimulus_configs
+            if row["enabled"] and row["target_p99_ns"] > 0
+        }
+    )
+    active_partids = {
+        int(row["partid"])
+        for row in stimulus_configs
+        if row["enabled"]
+    }
+    background_partids = sorted(
+        active_partids - set(protected_partids)
+    )
 
     return {
         "simulation": {
@@ -604,37 +744,7 @@ def build_config(
             ],
             "msc_controls": cache_controls + mc_controls,
         },
-        "workloads": [
-            {
-                "name": "latency_service",
-                "type": "pointer_chase",
-                "requesters": ["cpu0.t0"],
-                "partid": protected_partid,
-                "pmg": protected_partid,
-                "request_size_bytes": 64,
-                "injection_rate_mrps": protected_rate_mrps,
-                "injection_scope": "aggregate",
-                "read_ratio": 1.0,
-                "working_set_bytes": (
-                    protected_wss_mb * 1024 * 1024
-                ),
-                "target_p99_ns": protected_target_p99_ns,
-            },
-            {
-                "name": "background_stream",
-                "type": "stream",
-                "requesters": background_requesters,
-                "partid": background_partid,
-                "pmg": background_partid,
-                "request_size_bytes": 64,
-                "injection_rate_gbps": background_rate_gbps,
-                "injection_scope": background_scope,
-                "read_ratio": background_read_ratio,
-                "working_set_bytes": (
-                    background_wss_mb * 1024 * 1024
-                ),
-            },
-        ],
+        "workloads": workloads,
         "policies": [
             {
                 "name": policy,
@@ -643,12 +753,8 @@ def build_config(
                     "max_bw_step_percent": max_bw_step,
                     "priority_min": 0,
                     "priority_max": 15,
-                    "background_partids": [
-                        background_partid
-                    ],
-                    "protected_partids": [
-                        protected_partid
-                    ],
+                    "background_partids": background_partids,
+                    "protected_partids": protected_partids,
                     "p99_hysteresis": hysteresis,
                     "min_hold_intervals": min_hold,
                 },

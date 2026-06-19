@@ -8,6 +8,7 @@ const state = {
   playing: false,
   playTimer: null,
   partidConfigs: [],
+  stimulusConfigs: [],
 };
 
 const colors = {
@@ -54,9 +55,11 @@ function setStatus(status, message, progress = 0) {
 }
 
 function fillForm(values) {
-  populatePartidSelects();
   renderPartidConfig(
     values.partid_configs || state.defaults.partid_configs || [],
+  );
+  renderStimulusConfig(
+    values.stimulus_configs || state.defaults.stimulus_configs || [],
   );
   $$("[data-param]").forEach((input) => {
     const key = input.dataset.param;
@@ -76,16 +79,14 @@ function collectParameters() {
     parameters[input.dataset.param] = value;
   });
   parameters.partid_configs = collectPartidConfigs();
+  parameters.stimulus_configs = collectStimulusConfigs();
   return parameters;
 }
 
-function populatePartidSelects() {
-  $$(".partid-select").forEach((select) => {
-    if (select.options.length === 16) return;
-    select.innerHTML = Array.from({ length: 16 }, (_, partid) =>
-      `<option value="${partid}">PARTID ${partid}</option>`
-    ).join("");
-  });
+function selectOptions(values, selected) {
+  return values.map(([value, label]) =>
+    `<option value="${escapeHtml(value)}" ${String(value) === String(selected) ? "selected" : ""}>${escapeHtml(label)}</option>`
+  ).join("");
 }
 
 function partidColor(partid) {
@@ -131,6 +132,57 @@ function collectPartidConfigs() {
   });
 }
 
+function renderStimulusConfig(rows) {
+  state.stimulusConfigs = rows.map((row) => ({ ...row }));
+  const partidOptions = Array.from(
+    { length: 16 },
+    (_, partid) => [partid, `P${partid}`],
+  );
+  const typeOptions = [
+    ["stream", "stream"],
+    ["pointer_chase", "pointer"],
+    ["random_read", "random"],
+    ["mixed_rw", "mixed"],
+    ["bursty_dma", "burst"],
+  ];
+  $("#stimulusConfigTable").innerHTML = state.stimulusConfigs.map((row) => `
+    <tr data-stimulus-row="${row.slot}">
+      <td><span class="thread-chip">${escapeHtml(row.requester)}</span></td>
+      <td><input data-stimulus-field="enabled" type="checkbox" ${row.enabled ? "checked" : ""}></td>
+      <td><select data-stimulus-field="partid">${selectOptions(partidOptions, row.partid)}</select></td>
+      <td><input data-stimulus-field="pmg" type="number" min="0" max="15" step="1" value="${row.pmg}"></td>
+      <td><select data-stimulus-field="workload_type">${selectOptions(typeOptions, row.workload_type)}</select></td>
+      <td><input data-stimulus-field="rate_value" type="number" min="0" max="4096" step="0.1" value="${row.rate_value}"></td>
+      <td><select data-stimulus-field="rate_unit">${selectOptions([["gbps", "Gbps"], ["mrps", "MRPS"]], row.rate_unit)}</select></td>
+      <td><input data-stimulus-field="request_size_bytes" type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
+      <td><input data-stimulus-field="read_ratio" type="number" min="0" max="1" step="0.05" value="${row.read_ratio}"></td>
+      <td><input data-stimulus-field="working_set_mb" type="number" min="1" max="262144" step="1" value="${row.working_set_mb}"></td>
+      <td><input data-stimulus-field="target_p99_ns" type="number" min="0" max="1000000" step="1" value="${row.target_p99_ns}"></td>
+    </tr>
+  `).join("");
+}
+
+function collectStimulusConfigs() {
+  return $$("[data-stimulus-row]").map((row) => {
+    const value = (field) => row.querySelector(`[data-stimulus-field="${field}"]`);
+    const slot = Number(row.dataset.stimulusRow);
+    return {
+      slot,
+      enabled: value("enabled").checked,
+      requester: `cpu${Math.floor(slot / 2)}.t${slot % 2}`,
+      partid: Number(value("partid").value),
+      pmg: Number(value("pmg").value),
+      workload_type: value("workload_type").value,
+      rate_value: Number(value("rate_value").value),
+      rate_unit: value("rate_unit").value,
+      request_size_bytes: Number(value("request_size_bytes").value),
+      read_ratio: Number(value("read_ratio").value),
+      working_set_mb: Number(value("working_set_mb").value),
+      target_p99_ns: Number(value("target_p99_ns").value),
+    };
+  });
+}
+
 function normalizePartidMasks() {
   const ways = Number($('[data-param="l3_ways"]').value || 1);
   const maximum = (1n << BigInt(ways)) - 1n;
@@ -156,10 +208,7 @@ function normalizePartidMasks() {
 }
 
 function clampDependentInputs() {
-  const cores = Number($('[data-param="active_cores"]').value || 2);
-  const bg = $('[data-param="background_cores"]');
-  bg.max = Math.max(1, cores - 1);
-  if (Number(bg.value) > Number(bg.max)) bg.value = bg.max;
+  const cores = Number($('[data-param="active_cores"]').value || 8);
   const l3 = $('[data-param="l3_instances"]');
   l3.max = Math.min(8, cores);
   if (Number(l3.value) > Number(l3.max)) l3.value = l3.max;
@@ -450,7 +499,10 @@ function renderCharts() {
   drawLineChart($("#queueChart"), [...groups.values()]);
 
   const latest = latestBy(state.partial.metrics, "partid");
-  const protectedPartid = String($('[data-param="protected_partid"]').value);
+  const targetStimulus = collectStimulusConfigs().find(
+    (row) => row.enabled && row.target_p99_ns > 0,
+  );
+  const protectedPartid = String(targetStimulus?.partid ?? latest[0]?.partid ?? 0);
   const protectedRow = latest.find((row) => String(row.partid) === protectedPartid) || latest[0];
   const bars = protectedRow ? [
     { label: "NoC", value: Number(protectedRow.avg_noc_delay_ns || 0), color: "#4a7a98" },
@@ -604,7 +656,10 @@ function bindEvents() {
   $$(".tab-button").forEach((button) => button.addEventListener("click", () => {
     $$(".tab-button").forEach((node) => node.classList.toggle("active", node === button));
     $$(".config-section").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
-    $(".workspace").classList.toggle("mpam-wide", button.dataset.tab === "mpam");
+    $(".workspace").classList.toggle(
+      "config-wide",
+      button.dataset.tab === "mpam" || button.dataset.tab === "traffic",
+    );
   }));
   $$(".result-tab").forEach((button) => button.addEventListener("click", () => {
     $$(".result-tab").forEach((node) => node.classList.toggle("active", node === button));
@@ -616,6 +671,9 @@ function bindEvents() {
     renderPartidConfig(state.defaults.partid_configs || []);
     normalizePartidMasks();
   });
+  $("#resetStimulusButton").addEventListener("click", () => {
+    renderStimulusConfig(state.defaults.stimulus_configs || []);
+  });
   $("#playButton").addEventListener("click", togglePlayback);
   $("#timeSlider").addEventListener("input", (event) => {
     stopPlayback();
@@ -623,7 +681,6 @@ function bindEvents() {
     $("#timeOutput").textContent = formatTime(state.selectedTime);
     renderAll();
   });
-  $('[data-param="active_cores"]').addEventListener("input", clampDependentInputs);
   $('[data-param="duration_ns"]').addEventListener("input", clampDependentInputs);
   $('[data-param="l3_ways"]').addEventListener("input", normalizePartidMasks);
   $("#partidConfigTable").addEventListener("change", (event) => {

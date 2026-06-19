@@ -15,8 +15,6 @@ def test_l3_sample_monitor_reports_16_partids(tmp_path) -> None:
             "control_interval_ns": 10_000,
             "l3_sets": 1024,
             "l3_ways": 8,
-            "protected_partid": 5,
-            "background_partid": 11,
         }
     )
     rows = parameters["partid_configs"]
@@ -48,10 +46,6 @@ def test_softlimit_is_work_conserving_but_hardlimit_caps(tmp_path) -> None:
         {
             "duration_ns": 100_000,
             "control_interval_ns": 20_000,
-            "active_cores": 2,
-            "background_cores": 1,
-            "protected_rate_mrps": 0.01,
-            "background_rate_gbps": 40,
             "policy": "static_mpam",
         }
     )
@@ -59,6 +53,15 @@ def test_softlimit_is_work_conserving_but_hardlimit_caps(tmp_path) -> None:
     def run(mode: str, name: str):
         parameters = default_parameters()
         parameters.update(base)
+        for row in parameters["stimulus_configs"]:
+            row["enabled"] = row["slot"] == 2
+        parameters["stimulus_configs"][2].update(
+            {
+                "rate_value": 40,
+                "rate_unit": "gbps",
+                "request_size_bytes": 64,
+            }
+        )
         parameters["partid_configs"][2].update(
             {
                 "bmin_gbps": 0,
