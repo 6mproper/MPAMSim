@@ -1,0 +1,4 @@
+sweep:
+  cores_active: [4, 8]
+  background_rate_gbps: [100, 200]
+  policy: [no_control, closed_loop_qos]

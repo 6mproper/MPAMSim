@@ -1,0 +1,127 @@
+# User Interface and Visualization
+
+## 1. Interface Goal
+
+V1 does not require a full GUI, but it must provide a user-facing control surface and visualization-ready outputs. Users must be able to configure topology, stimulus, MPAM controls, flow-control policies, and output reports without editing simulator code.
+
+The interface stack is:
+
+```text
+YAML/JSON config -> CLI/Python API -> simulation outputs -> generated plots or HTML report
+```
+
+## 2. Required V1 User Interfaces
+
+### 2.1 Configuration Files
+
+Configuration files are the primary user interface for V1.
+
+They must cover:
+
+- SoC topology.
+- Requesters and multicore mapping.
+- Workload stimulus.
+- MPAM PARTID/PMG mapping.
+- MSC capabilities and control settings.
+- Flow-control policy parameters.
+- Sweep parameters.
+- Output and visualization settings.
+
+### 2.2 CLI
+
+The CLI must support:
+
+```bash
+python -m src.config.validate --config examples/baseline_soc.yaml
+python -m src.sim.run --config examples/baseline_soc.yaml
+python -m src.sim.run --config examples/baseline_soc.yaml --scenario tests/noisy_neighbor/basic.yaml
+python -m src.sim.run_sweep --config examples/baseline_soc.yaml --sweep tests/qos/core_l3_sweep.yaml
+python -m src.monitor.report --run outputs/noisy_neighbor --format html
+```
+
+### 2.3 Python API
+
+The Python API is required for architecture experiments, notebooks, and regression tests.
+
+```python
+cfg = load_config("examples/baseline_soc.yaml")
+sim = Simulation.from_config(cfg)
+result = sim.run()
+result.export("outputs/run_001")
+result.render_report("outputs/run_001/report.html")
+```
+
+### 2.4 Interactive Local Console
+
+The implemented local console is started with:
+
+```bash
+python -m src.web.server --host 127.0.0.1 --port 8787
+```
+
+It provides:
+
+- Direct numeric configuration for multicore topology, L3/SLC, NoC, and memory controllers.
+- Workload injection configuration for protected and background PARTIDs.
+- A 16-row PARTID editor for monitor enable, CMIN, CMAX, CPBM, BMIN, BMAX,
+  softlimit/hardlimit, and priority.
+- Explicit L3 set count, ways per set, line size, and fixed eight-set
+  approximate-monitor grouping.
+- Policy selection and closed-loop stability parameters.
+- Background simulation jobs with control-interval progress updates.
+- Dynamic charts, time-slider playback, MSC tables, control traces, and links to static reports.
+- A 16-row MPAM monitor table with sampled L3 bandwidth/occupancy and
+  memory-controller bandwidth/limit events. Columns marked `Σ` are sums
+  across all configured L3 or memory-controller instances.
+
+## 3. Visualization Requirements
+
+V1 visualization may be static HTML/PNG/CSV. It does not need a live web GUI.
+
+Required report views:
+
+- Run summary: topology, policies, workloads, key KPIs.
+- Per-PARTID latency: average, p95, p99, p999 over time.
+- Per-PARTID bandwidth over time.
+- Per-MSC queue occupancy over time.
+- L3/SLC occupancy and hit/miss rate per PARTID.
+- Memory-controller utilization and throttle delay.
+- Control timeline: every policy update with old value, new value, target MSC, PARTID, and reason.
+- Bottleneck attribution: NoC delay, cache delay, memory queue delay, service delay, throttle delay.
+
+Recommended views:
+
+- Topology graph with requesters, NoC nodes, L3/SLC, and memory controllers.
+- Heatmap for per-MSC utilization.
+- Baseline-vs-controlled comparison.
+- Policy stability plot showing cap and priority changes.
+
+## 4. Visualization Output Files
+
+The simulator should emit visualization-ready data:
+
+```text
+run_summary.json
+metrics.csv
+per_partid_latency.csv
+per_msc_utilization.csv
+control_trace.csv
+timeline_trace.csv
+topology.json
+report.html
+```
+
+`report.html` may be generated after the simulation from the CSV/JSON files. Keeping report generation separate prevents visualization from polluting simulation semantics.
+
+## 5. Live UI Boundary
+
+A live GUI is a deferred extension. If added later, it should consume the same config and output schemas rather than introducing a new internal control path.
+
+Future GUI panels should map to existing concepts:
+
+- Topology editor.
+- Workload/stimulus editor.
+- MPAM MSC control table editor.
+- Policy parameter editor.
+- Timeline viewer.
+- Result comparison dashboard.

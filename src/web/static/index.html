@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoC Flow / MPAM Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-bar">
+    <div>
+      <h1>SoC Flow / MPAM Console</h1>
+      <p>系统级流控与资源分区仿真</p>
+    </div>
+    <div class="app-actions">
+      <span id="statusBadge" class="status-badge ready">READY</span>
+      <button id="resetButton" class="icon-button" title="恢复默认配置" aria-label="恢复默认配置">↺</button>
+      <button id="runButton" class="run-button"><span>▶</span>运行仿真</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="config-panel">
+      <nav class="config-tabs" aria-label="配置分类">
+        <button class="tab-button active" data-tab="soc">SoC</button>
+        <button class="tab-button" data-tab="traffic">激励</button>
+        <button class="tab-button" data-tab="mpam">MPAM</button>
+        <button class="tab-button" data-tab="policy">策略</button>
+      </nav>
+
+      <form id="configForm">
+        <section class="config-section active" data-panel="soc">
+          <h2>仿真与多核</h2>
+          <div class="field-grid">
+            <label>仿真时间 ns<input data-param="duration_ns" type="number" min="10000" max="5000000" step="10000"></label>
+            <label>控制周期 ns<input data-param="control_interval_ns" type="number" min="1000" step="1000"></label>
+            <label>随机种子<input data-param="seed" type="number" min="0" step="1"></label>
+            <label>活跃核数<input data-param="active_cores" type="number" min="2" max="32" step="1"></label>
+            <label>每核线程<input data-param="threads_per_core" type="number" min="1" max="4" step="1"></label>
+            <label>最大 outstanding<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
+          </div>
+
+          <h2>L3 / SLC</h2>
+          <div class="field-grid">
+            <label>L3 实例数<input data-param="l3_instances" type="number" min="1" max="8" step="1"></label>
+            <label>Set 数<input data-param="l3_sets" type="number" min="8" max="262144" step="8"></label>
+            <label>Ways / Set<input data-param="l3_ways" type="number" min="1" max="32" step="1"></label>
+            <label>Line bytes<input data-param="l3_line_size" type="number" min="16" max="256" step="16"></label>
+            <label>监控分组 Sets<input data-param="l3_monitor_group_sets" type="number" value="8" readonly></label>
+            <label>命中延迟 ns<input data-param="l3_hit_latency_ns" type="number" min="1" max="500" step="1"></label>
+          </div>
+
+          <h2>NoC</h2>
+          <div class="field-grid">
+            <label>Router 数<input data-param="noc_routers" type="number" min="1" max="64" step="1"></label>
+            <label>链路带宽 Gbps<input data-param="noc_link_gbps" type="number" min="1" max="4096" step="1"></label>
+            <label>Router 延迟 ns<input data-param="noc_router_latency_ns" type="number" min="0.1" max="500" step="0.1"></label>
+            <label>队列深度<input data-param="noc_queue_depth" type="number" min="1" max="4096" step="1"></label>
+            <label>虚通道数<input data-param="noc_virtual_channels" type="number" min="1" max="16" step="1"></label>
+          </div>
+
+          <h2>Memory Controller</h2>
+          <div class="field-grid">
+            <label>控制器数<input data-param="memory_controllers" type="number" min="1" max="8" step="1"></label>
+            <label>每控制器通道<input data-param="channels_per_mc" type="number" min="1" max="16" step="1"></label>
+            <label>单通道 Gbps<input data-param="channel_bandwidth_gbps" type="number" min="1" max="2048" step="1"></label>
+            <label>基础延迟 ns<input data-param="mc_base_latency_ns" type="number" min="1" max="2000" step="1"></label>
+            <label>请求队列深度<input data-param="mc_queue_depth" type="number" min="1" max="8192" step="1"></label>
+          </div>
+        </section>
+
+        <section class="config-section" data-panel="traffic">
+          <h2>时延敏感流</h2>
+          <div class="field-grid">
+            <label>PARTID<select data-param="protected_partid" class="partid-select"></select></label>
+            <label>注入率 MRPS<input data-param="protected_rate_mrps" type="number" min="0.01" max="1000" step="0.1"></label>
+            <label>工作集 MB<input data-param="protected_working_set_mb" type="number" min="1" max="65536" step="1"></label>
+            <label>目标 P99 ns<input data-param="protected_target_p99_ns" type="number" min="1" max="1000000" step="1"></label>
+          </div>
+
+          <h2>背景流</h2>
+          <div class="field-grid">
+            <label>PARTID<select data-param="background_partid" class="partid-select"></select></label>
+            <label>使用核数<input data-param="background_cores" type="number" min="1" max="31" step="1"></label>
+            <label>注入带宽 Gbps<input data-param="background_rate_gbps" type="number" min="0.01" max="4096" step="1"></label>
+            <label>工作集 MB<input data-param="background_working_set_mb" type="number" min="1" max="262144" step="1"></label>
+            <label>读比例<input data-param="background_read_ratio" type="number" min="0" max="1" step="0.05"></label>
+            <label>速率范围
+              <select data-param="background_rate_scope">
+                <option value="aggregate">整个 workload</option>
+                <option value="per_requester">每个 requester</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="config-section" data-panel="mpam">
+          <div class="mpam-editor-heading">
+            <div>
+              <h2>16 PARTID Cache / Memory 控制</h2>
+              <p>CMIN/CMAX 单位为 way/set；每 8 sets 抽样首 set 的 way owner。</p>
+            </div>
+            <button id="resetPartidButton" type="button" class="small-command">重置 16 组</button>
+          </div>
+          <div class="mpam-config-wrap">
+            <table class="mpam-config-table">
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>Name</th>
+                  <th>Mon</th>
+                  <th>CMIN</th>
+                  <th>CMAX</th>
+                  <th>CPBM</th>
+                  <th>BMIN</th>
+                  <th>BMAX</th>
+                  <th>Mode</th>
+                  <th>Pri</th>
+                </tr>
+              </thead>
+              <tbody id="partidConfigTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="config-section" data-panel="policy">
+          <h2>控制模式</h2>
+          <div class="segmented" role="radiogroup" aria-label="控制策略">
+            <label><input type="radio" name="policy" value="no_control" data-param="policy"><span>无控制</span></label>
+            <label><input type="radio" name="policy" value="static_mpam" data-param="policy"><span>静态 MPAM</span></label>
+            <label><input type="radio" name="policy" value="closed_loop_qos" data-param="policy"><span>闭环 QoS</span></label>
+          </div>
+          <h2>闭环参数</h2>
+          <div class="field-grid">
+            <label>带宽步长 %<input data-param="max_bw_step_percent" type="number" min="1" max="100" step="1"></label>
+            <label>P99 滞回比例<input data-param="p99_hysteresis" type="number" min="0" max="1" step="0.01"></label>
+            <label>最小保持周期<input data-param="min_hold_intervals" type="number" min="1" max="100" step="1"></label>
+          </div>
+        </section>
+      </form>
+    </aside>
+
+    <main class="results-panel">
+      <section class="flow-section">
+        <div class="section-heading">
+          <div><h2>流控路径</h2><p id="runMessage">等待配置并运行</p></div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+        </div>
+        <div class="flow-path">
+          <div class="flow-stage" data-stage="0"><b>PE</b><span>Requester</span></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-stage" data-stage="1"><b>NoC</b><span>Queue / VC</span></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-stage" data-stage="2"><b>L3</b><span>Portion MSC</span></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-stage" data-stage="3"><b>MC</b><span>Token bucket</span></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-stage" data-stage="4"><b>Scheduler</b><span>Priority / aging</span></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-stage" data-stage="5"><b>Monitor</b><span>Feedback</span></div>
+        </div>
+      </section>
+
+      <section class="kpi-strip" aria-live="polite">
+        <div><span>总吞吐</span><strong id="kpiThroughput">--</strong><small>Gbps</small></div>
+        <div><span>最大 P99</span><strong id="kpiP99">--</strong><small>ns</small></div>
+        <div><span>完成请求</span><strong id="kpiRequests">--</strong><small>requests</small></div>
+        <div><span>完成率</span><strong id="kpiCompletion">--</strong><small>%</small></div>
+      </section>
+
+      <section class="timeline-toolbar">
+        <button id="playButton" class="icon-button" title="播放时间线" aria-label="播放时间线">▶</button>
+        <input id="timeSlider" type="range" min="0" max="100" value="100" aria-label="仿真时间">
+        <output id="timeOutput">0 ns</output>
+        <a id="reportLink" class="report-link disabled" href="#" target="_blank" rel="noopener">静态报告 ↗</a>
+      </section>
+
+      <section class="chart-grid">
+        <article class="chart-panel">
+          <div class="chart-title"><h3>P99 延迟</h3><div id="latencyLegend" class="legend"></div></div>
+          <canvas id="latencyChart"></canvas>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-title"><h3>有效带宽</h3><span>Gbps</span></div>
+          <canvas id="bandwidthChart"></canvas>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-title"><h3>MSC 队列占用</h3><span>entries</span></div>
+          <canvas id="queueChart"></canvas>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-title"><h3>延迟分解</h3><span>selected time</span></div>
+          <canvas id="delayChart"></canvas>
+        </article>
+      </section>
+
+      <section class="data-section">
+        <div class="result-tabs">
+          <button class="result-tab active" data-result-tab="partid">PARTID</button>
+          <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
+          <button class="result-tab" data-result-tab="msc">MSC</button>
+          <button class="result-tab" data-result-tab="controls">控制记录</button>
+        </div>
+        <div class="result-view" data-result-view="mpam-monitor">
+          <table>
+            <thead>
+              <tr>
+                <th>PID</th><th>L3 Sample BW Σ</th><th>L3 Est. Occupancy Σ</th>
+                <th>Ways Σ</th><th>CMIN</th><th>CMAX</th><th>CPBM</th>
+                <th>MC BW Σ</th><th>BMIN Σ</th><th>BMAX Σ</th><th>Mode</th>
+                <th>Soft Req</th><th>Hard Blocks</th>
+              </tr>
+            </thead>
+            <tbody id="mpamMonitorTable"><tr><td colspan="13" class="empty-cell">尚无 MPAM 监控结果</td></tr></tbody>
+          </table>
+        </div>
+        <div class="result-view active" data-result-view="partid">
+          <table>
+            <thead><tr><th>PARTID</th><th>吞吐 Gbps</th><th>P99 ns</th><th>命中率</th><th>MC Queue ns</th><th>Throttle ns</th></tr></thead>
+            <tbody id="partidTable"><tr><td colspan="6" class="empty-cell">尚无仿真结果</td></tr></tbody>
+          </table>
+        </div>
+        <div class="result-view" data-result-view="msc">
+          <table>
+            <thead><tr><th>MSC</th><th>类型</th><th>利用率</th><th>队列占用</th><th>请求数</th><th>传输字节</th></tr></thead>
+            <tbody id="mscTable"><tr><td colspan="6" class="empty-cell">尚无仿真结果</td></tr></tbody>
+          </table>
+        </div>
+        <div class="result-view" data-result-view="controls">
+          <table>
+            <thead><tr><th>时间 ns</th><th>目标</th><th>PARTID</th><th>字段</th><th>旧值</th><th>新值</th><th>原因</th></tr></thead>
+            <tbody id="controlTable"><tr><td colspan="7" class="empty-cell">暂无控制更新</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="alert"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
