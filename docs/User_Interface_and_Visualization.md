@@ -75,6 +75,12 @@ It provides:
 - A 16-row MPAM monitor table with sampled L3 bandwidth/occupancy and
   memory-controller bandwidth/limit events. Columns marked `Σ` are sums
   across all configured L3 or memory-controller instances.
+- Contextual help on configuration categories, fields, abbreviated table
+  columns, policies, and result views. Hover and keyboard focus use the same
+  tooltip content.
+- A live `PARTID+PMG` monitor-group table updated at control intervals. It
+  shows requester membership, estimated L3 occupancy/utilization, L3 sampled
+  bandwidth, MC achieved bandwidth/utilization, requests, and throttle delay.
 
 ## 3. Visualization Requirements
 

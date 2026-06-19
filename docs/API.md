@@ -157,3 +157,13 @@ time_ns,partid,requester_id,msc_id,noc_delay_ns,cache_delay_ns,mem_queue_delay_n
 ### topology.json
 
 Contains requesters, clusters, cores, NoC attachment nodes, L3/SLC instances, memory controllers, and links for visualization.
+
+## 7. Interactive Monitor-Group Snapshot
+
+The interactive job API includes `monitor_groups` in every L3 and memory-controller snapshot. Keys use the stable `"<partid>:<pmg>"` form so software can correlate a configured stimulus row with one monitoring group.
+
+L3 group records include sampled traffic, estimated bandwidth, sampled-way ownership, estimated occupancy bytes, allowed capacity bytes, and `occupancy_rate`. Occupancy is an approximation derived from the first set of each eight-set sample group and scaled to the configured cache geometry.
+
+Memory-controller group records include serviced requests and bytes, queue and service delay, throttle delay, achieved bandwidth, controller bandwidth, and `bandwidth_utilization`.
+
+PARTID remains the resource-control lookup key for CMIN, CMAX, CPBM, BMIN, BMAX, soft limit, and hard limit. PMG refines software-visible monitoring attribution only; it does not create an independent allocation or bandwidth-control partition.

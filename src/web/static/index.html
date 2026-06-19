@@ -22,10 +22,10 @@
   <div class="workspace">
     <aside class="config-panel">
       <nav class="config-tabs" aria-label="配置分类">
-        <button class="tab-button active" data-tab="soc">SoC</button>
-        <button class="tab-button" data-tab="traffic">激励</button>
-        <button class="tab-button" data-tab="mpam">MPAM</button>
-        <button class="tab-button" data-tab="policy">策略</button>
+        <button class="tab-button active" data-tab="soc" data-help="配置核/线程、L3、NoC 与内存控制器等系统拓扑和容量参数。">SoC</button>
+        <button class="tab-button" data-tab="traffic" data-help="配置 16 个硬件线程各自的流量类型、PARTID、PMG、速率与工作集。">激励</button>
+        <button class="tab-button" data-tab="mpam" data-help="配置每个 PARTID 在 L3 与内存控制器上的资源控制参数。">MPAM</button>
+        <button class="tab-button" data-tab="policy" data-help="选择不控制、静态控制或基于监控反馈的慢速闭环策略。">策略</button>
       </nav>
 
       <form id="configForm">
@@ -201,10 +201,33 @@
 
       <section class="data-section">
         <div class="result-tabs">
-          <button class="result-tab active" data-result-tab="partid">PARTID</button>
+          <button class="result-tab" data-result-tab="partid">PARTID</button>
+          <button class="result-tab active" data-result-tab="monitor-group">监控组</button>
           <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
           <button class="result-tab" data-result-tab="msc">MSC</button>
           <button class="result-tab" data-result-tab="controls">控制记录</button>
+        </div>
+        <div class="result-view active" data-result-view="monitor-group">
+          <div class="monitor-group-heading">
+            <strong>软件可见监控组</strong>
+            <span>最新采样 <output id="monitorGroupTime">0 ns</output></span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>PARTID / PMG</th>
+                <th>Requester</th>
+                <th>L3 Sample BW</th>
+                <th>L3 Est. Occupancy</th>
+                <th>L3 Occupancy %</th>
+                <th>MC BW</th>
+                <th>MC BW Util %</th>
+                <th>MC Requests</th>
+                <th>Throttle ns</th>
+              </tr>
+            </thead>
+            <tbody id="monitorGroupTable"><tr><td colspan="9" class="empty-cell">尚无监控组结果</td></tr></tbody>
+          </table>
         </div>
         <div class="result-view" data-result-view="mpam-monitor">
           <table>
@@ -219,7 +242,7 @@
             <tbody id="mpamMonitorTable"><tr><td colspan="13" class="empty-cell">尚无 MPAM 监控结果</td></tr></tbody>
           </table>
         </div>
-        <div class="result-view active" data-result-view="partid">
+        <div class="result-view" data-result-view="partid">
           <table>
             <thead><tr><th>PARTID</th><th>吞吐 Gbps</th><th>P99 ns</th><th>命中率</th><th>MC Queue ns</th><th>Throttle ns</th></tr></thead>
             <tbody id="partidTable"><tr><td colspan="6" class="empty-cell">尚无仿真结果</td></tr></tbody>
@@ -242,6 +265,7 @@
   </div>
 
   <div id="toast" class="toast" role="alert"></div>
+  <div id="helpTooltip" class="help-tooltip" role="tooltip"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>

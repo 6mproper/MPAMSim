@@ -130,3 +130,47 @@ def test_no_control_keeps_16_monitors_without_enforcement(tmp_path) -> None:
     assert cache_row["per_partid"]["2"]["enforcement_enabled"] is False
     assert mc_row["per_partid"]["2"]["limit_mode"] == "disabled"
     assert mc_row["per_partid"]["2"]["hardlimit_block_events"] == 0
+
+
+def test_monitor_groups_report_partid_pmg_utilization(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters.update(
+        {
+            "duration_ns": 30_000,
+            "control_interval_ns": 10_000,
+        }
+    )
+    for row in parameters["stimulus_configs"]:
+        row["enabled"] = row["slot"] == 0
+    parameters["stimulus_configs"][0].update(
+        {
+            "partid": 3,
+            "pmg": 7,
+            "rate_value": 20,
+            "rate_unit": "gbps",
+        }
+    )
+    raw = build_config(parameters, str(tmp_path / "groups"))
+    path = tmp_path / "groups.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    result = Simulation.from_config(load_config(path)).run()
+
+    cache_group = next(
+        row["monitor_groups"]["3:7"]
+        for row in reversed(result.collector.msc_rows)
+        if row["msc_type"] == "cache"
+        and "3:7" in row["monitor_groups"]
+    )
+    mc_group = next(
+        row["monitor_groups"]["3:7"]
+        for row in reversed(result.collector.msc_rows)
+        if row["msc_type"] == "memory_controller"
+        and "3:7" in row["monitor_groups"]
+    )
+    assert cache_group["partid"] == 3
+    assert cache_group["pmg"] == 7
+    assert 0 <= cache_group["occupancy_rate"] <= 1
+    assert cache_group["allowed_capacity_bytes"] > 0
+    assert mc_group["achieved_bandwidth_gbps"] > 0
+    assert 0 <= mc_group["bandwidth_utilization"] <= 1
+    assert mc_group["controller_bandwidth_gbps"] == 256

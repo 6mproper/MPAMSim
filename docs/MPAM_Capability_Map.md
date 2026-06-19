@@ -21,7 +21,7 @@ sources:
 | Capability area | Arm MPAM role | Current model status | Fidelity and gap |
 | --- | --- | --- | --- |
 | PARTID | Primary resource-control identity | Implemented, 4-bit, 16 values | Carried on every abstract request and used by L3/MC tables |
-| PMG | Monitoring/filter identity | Implemented as request metadata | Carried and traced; MSC counters are currently aggregated primarily by PARTID |
+| PMG | Monitoring/filter identity | Implemented behaviorally | Carried and traced; L3 and MC expose live `PARTID+PMG` monitor groups while controls remain PARTID-indexed |
 | PARTID space | Secure/Non-secure/Root/Realm namespace | Interface reserved | No security-state model or per-space tables |
 | PE instruction/data tags | Separate PARTID/PMG for instruction and data accesses | Not implemented | Each workload emits one tag pair |
 | Virtual PARTID mapping | Guest-to-physical identifier mapping | Not implemented | Hypervisor and register behavior are outside V1 |

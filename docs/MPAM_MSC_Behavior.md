@@ -93,6 +93,18 @@ Required counters:
 - evictions or allocation denials if modeled.
 - cache delay by PARTID.
 
+The implementation additionally exposes `monitor_groups` keyed by
+`PARTID:PMG`. Each group reports sampled traffic, estimated bandwidth,
+sampled-way ownership, estimated occupancy bytes, the PARTID's allowed
+capacity, and:
+
+```text
+occupancy_rate = estimated_group_occupancy / PARTID_allowed_capacity
+```
+
+PMG affects monitor attribution only. CPBM, CMIN, and CMAX remain indexed by
+PARTID.
+
 ## 4. NoC MSC Behavior
 
 NoC behavior is included because MPAM-style priority and flow-control policies often need an interconnect enforcement point.
@@ -175,6 +187,17 @@ Required counters:
 - queue delay.
 - service delay.
 - channel utilization.
+
+The implementation also reports `monitor_groups` keyed by `PARTID:PMG`.
+These include serviced requests/bytes, queue and service delay, limit events,
+achieved bandwidth, controller capacity, and:
+
+```text
+bandwidth_utilization = group_bandwidth / controller_total_bandwidth
+```
+
+BMIN, BMAX, and priority remain PARTID controls; PMG does not create a
+separate token bucket.
 
 ## 6. Control Update Semantics
 

@@ -3,7 +3,6 @@
 ## Purpose
 Define per-memory-controller, per-PARTID bandwidth reservation, limiting,
 scheduling, and monitoring behavior.
-
 ## Requirements
 ### Requirement: Sixteen PARTID memory settings
 Each memory-controller MSC SHALL expose independent bandwidth settings, token state, priority, and monitoring entries for exactly 16 PARTIDs numbered 0 through 15.
@@ -43,3 +42,14 @@ The memory-controller monitor SHALL report achieved bandwidth, configured BMIN a
 #### Scenario: Display aggregate results
 - **WHEN** the interactive console combines multiple memory-controller snapshots
 - **THEN** aggregate bandwidth and configured limits are labeled as sums across controller instances
+
+### Requirement: PMG-scoped memory bandwidth monitoring
+The memory-controller monitor SHALL attribute serviced requests and bytes to `(PARTID, PMG)` monitor groups while retaining PARTID-only bandwidth enforcement.
+
+#### Scenario: Service a monitor-group request
+- **WHEN** the memory controller dispatches a request with PARTID P and PMG G
+- **THEN** the corresponding group counters record requests, bytes, queue delay, service delay, and applicable limit events
+
+#### Scenario: Report group bandwidth utilization
+- **WHEN** a memory-controller interval snapshot is captured
+- **THEN** each active monitor group reports achieved bandwidth and utilization relative to that controller's total modeled bandwidth

@@ -17,6 +17,20 @@ class TokenState:
     last_update_ns: float = 0.0
 
 
+def _mc_counters() -> Dict[str, float]:
+    return {
+        "requests": 0,
+        "bytes": 0,
+        "throttle_delay_ns": 0.0,
+        "queue_delay_ns": 0.0,
+        "service_delay_ns": 0.0,
+        "bmin_priority_requests": 0,
+        "softlimit_requests": 0,
+        "softlimit_bytes": 0,
+        "hardlimit_block_events": 0,
+    }
+
+
 class MemoryControllerMSC(Component):
     def __init__(
         self,
@@ -51,17 +65,12 @@ class MemoryControllerMSC(Component):
         self._interval_per_partid: DefaultDict[
             int, Dict[str, float]
         ] = defaultdict(
-            lambda: {
-                "requests": 0,
-                "bytes": 0,
-                "throttle_delay_ns": 0.0,
-                "queue_delay_ns": 0.0,
-                "service_delay_ns": 0.0,
-                "bmin_priority_requests": 0,
-                "softlimit_requests": 0,
-                "softlimit_bytes": 0,
-                "hardlimit_block_events": 0,
-            }
+            _mc_counters
+        )
+        self._interval_per_group: DefaultDict[
+            Tuple[int, int], Dict[str, float]
+        ] = defaultdict(
+            _mc_counters
         )
 
     @property
@@ -167,6 +176,9 @@ class MemoryControllerMSC(Component):
             self._interval_per_partid[partid][
                 "hardlimit_block_events"
             ] += 1
+            self._interval_per_group[
+                (partid, request.pmg)
+            ]["hardlimit_block_events"] += 1
         return available
 
     def _next_token_wait(
@@ -327,6 +339,9 @@ class MemoryControllerMSC(Component):
                 self._interval_per_partid[partid][
                     "throttle_delay_ns"
                 ] += wait_ns
+                self._interval_per_group[
+                    (partid, request.pmg)
+                ]["throttle_delay_ns"] += wait_ns
                 request.throttle_delay_ns += wait_ns
             self._schedule_dispatch(wait_ns)
             return
@@ -355,11 +370,21 @@ class MemoryControllerMSC(Component):
         counters["bytes"] += request.size_bytes
         counters["queue_delay_ns"] += queue_delay
         counters["service_delay_ns"] += service_delay
+        group_counters = self._interval_per_group[
+            (request.partid, request.pmg)
+        ]
+        group_counters["requests"] += 1
+        group_counters["bytes"] += request.size_bytes
+        group_counters["queue_delay_ns"] += queue_delay
+        group_counters["service_delay_ns"] += service_delay
         if getattr(request, "_mc_under_bmin", False):
             counters["bmin_priority_requests"] += 1
+            group_counters["bmin_priority_requests"] += 1
         if getattr(request, "_mc_soft_over", False):
             counters["softlimit_requests"] += 1
             counters["softlimit_bytes"] += request.size_bytes
+            group_counters["softlimit_requests"] += 1
+            group_counters["softlimit_bytes"] += request.size_bytes
 
         self._interval_busy_ns += serialization_ns
         self._interval_requests += 1
@@ -427,6 +452,49 @@ class MemoryControllerMSC(Component):
                 "enforcement_enabled": self.enforce_controls,
             }
 
+        monitor_groups = {}
+        for partid, pmg in sorted(self._interval_per_group):
+            values = dict(
+                self._interval_per_group[(partid, pmg)]
+            )
+            bandwidth = (
+                values["bytes"]
+                * 8.0
+                / max(interval_ns, 1e-9)
+            )
+            setting = self.settings.lookup(partid)
+            monitor_groups[f"{partid}:{pmg}"] = {
+                "partid": partid,
+                "pmg": pmg,
+                **values,
+                "achieved_bandwidth_gbps": bandwidth,
+                "controller_bandwidth_gbps": self.total_bandwidth_gbps,
+                "bandwidth_utilization": min(
+                    1.0,
+                    bandwidth / max(self.total_bandwidth_gbps, 1e-9),
+                ),
+                "bmax_gbps": (
+                    setting.bw_max_gbps
+                    if self.enforce_controls
+                    else None
+                ),
+                "bmin_gbps": (
+                    setting.bw_min_gbps
+                    if self.enforce_controls
+                    else None
+                ),
+                "limit_mode": (
+                    setting.bw_limit_mode
+                    if self.enforce_controls
+                    else "disabled"
+                ),
+                "priority": (
+                    setting.priority
+                    if self.enforce_controls
+                    else 0
+                ),
+            }
+
         row = {
             "msc_id": self.component_id,
             "msc_type": "memory_controller",
@@ -439,6 +507,7 @@ class MemoryControllerMSC(Component):
             "requests": self._interval_requests,
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
+            "monitor_groups": monitor_groups,
         }
         self._interval_busy_ns = 0.0
         self._interval_requests = 0
@@ -446,4 +515,5 @@ class MemoryControllerMSC(Component):
         self._queue_sample_sum = 0
         self._queue_samples = 0
         self._interval_per_partid.clear()
+        self._interval_per_group.clear()
         return row

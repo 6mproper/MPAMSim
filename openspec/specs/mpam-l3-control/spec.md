@@ -3,7 +3,6 @@
 ## Purpose
 Define 16-PARTID L3/SLC allocation controls and the bounded-cost approximate
 set/way monitor used for system architecture exploration.
-
 ## Requirements
 ### Requirement: Sixteen PARTID cache settings
 Each configured L3/SLC MSC SHALL expose independent settings and monitoring entries for exactly 16 PARTIDs numbered 0 through 15.
@@ -40,3 +39,14 @@ The no-control policy SHALL preserve all 16 monitor entries while reporting unre
 #### Scenario: Run without MPAM enforcement
 - **WHEN** the selected policy is `no_control`
 - **THEN** CPBM, CMIN, and CMAX do not restrict allocation, but all PARTID monitor rows remain available
+
+### Requirement: PMG-scoped sampled cache monitoring
+The L3 monitor SHALL attribute sampled traffic and sampled way ownership to `(PARTID, PMG)` monitor groups while retaining PARTID-only cache controls.
+
+#### Scenario: Allocate a sampled cache line
+- **WHEN** a miss from a request with PARTID P and PMG G allocates a sampled way
+- **THEN** the sampled way records P and G for occupancy attribution
+
+#### Scenario: Report group occupancy
+- **WHEN** a cache interval snapshot is captured
+- **THEN** each active monitor group reports sampled requests, estimated access bandwidth, estimated occupancy bytes, allowed PARTID capacity, and estimated occupancy utilization

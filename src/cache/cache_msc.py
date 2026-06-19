@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable, DefaultDict, Dict, List, Optional
+from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
 
 from src.config.schema import CacheConfig
 from src.mpam.settings import MPAMSetting, SettingsTable
@@ -15,8 +15,23 @@ from src.traffic.request import Request
 @dataclass
 class SampleWay:
     owner_partid: Optional[int] = None
+    owner_pmg: Optional[int] = None
     tag: Optional[int] = None
     last_touch: int = 0
+
+
+def _cache_counters() -> Dict[str, float]:
+    return {
+        "requests": 0,
+        "hits": 0,
+        "misses": 0,
+        "bytes": 0,
+        "delay_ns": 0.0,
+        "sampled_requests": 0,
+        "sampled_bytes": 0,
+        "allocation_denials": 0,
+        "cmin_protected_evictions": 0,
+    }
 
 
 class CacheMSC(Component):
@@ -41,17 +56,12 @@ class CacheMSC(Component):
         self._touch_sequence = 0
         self._sample_sets: Dict[int, List[SampleWay]] = {}
         self._interval: DefaultDict[int, Dict[str, float]] = defaultdict(
-            lambda: {
-                "requests": 0,
-                "hits": 0,
-                "misses": 0,
-                "bytes": 0,
-                "delay_ns": 0.0,
-                "sampled_requests": 0,
-                "sampled_bytes": 0,
-                "allocation_denials": 0,
-                "cmin_protected_evictions": 0,
-            }
+            _cache_counters
+        )
+        self._interval_groups: DefaultDict[
+            Tuple[int, int], Dict[str, float]
+        ] = defaultdict(
+            _cache_counters
         )
 
     def receive(self, request: Request) -> None:
@@ -67,11 +77,20 @@ class CacheMSC(Component):
         counters["bytes"] += request.size_bytes
         counters["delay_ns"] += self.config.hit_latency_ns
         counters["hits" if is_hit else "misses"] += 1
+        group_counters = self._interval_groups[
+            (request.partid, request.pmg)
+        ]
+        group_counters["requests"] += 1
+        group_counters["bytes"] += request.size_bytes
+        group_counters["delay_ns"] += self.config.hit_latency_ns
+        group_counters["hits" if is_hit else "misses"] += 1
 
         set_index = self._set_index(request.addr)
         if set_index % self.config.monitor_group_sets == 0:
             counters["sampled_requests"] += 1
             counters["sampled_bytes"] += request.size_bytes
+            group_counters["sampled_requests"] += 1
+            group_counters["sampled_bytes"] += request.size_bytes
             self._sample_access(request, set_index, is_hit)
 
         callback = self.on_hit if is_hit else self.on_miss
@@ -120,9 +139,13 @@ class CacheMSC(Component):
         victim = self._choose_victim(ways, request.partid, eligible)
         if victim is None:
             self._interval[request.partid]["allocation_denials"] += 1
+            self._interval_groups[
+                (request.partid, request.pmg)
+            ]["allocation_denials"] += 1
             return
         ways[victim] = SampleWay(
             owner_partid=request.partid,
+            owner_pmg=request.pmg,
             tag=tag,
             last_touch=self._touch_sequence,
         )
@@ -236,6 +259,21 @@ class CacheMSC(Component):
                     counts[way.owner_partid] += 1
         return dict(counts)
 
+    def _sampled_group_owner_counts(
+        self,
+    ) -> Dict[Tuple[int, int], int]:
+        counts: DefaultDict[Tuple[int, int], int] = defaultdict(int)
+        for ways in self._sample_sets.values():
+            for way in ways:
+                if (
+                    way.owner_partid is not None
+                    and way.owner_pmg is not None
+                ):
+                    counts[
+                        (way.owner_partid, way.owner_pmg)
+                    ] += 1
+        return dict(counts)
+
     def monitor_snapshot(self, interval_ns: float) -> Dict[str, object]:
         total_requests = sum(
             int(values["requests"]) for values in self._interval.values()
@@ -244,6 +282,7 @@ class CacheMSC(Component):
             int(values["hits"]) for values in self._interval.values()
         )
         owner_counts = self._sampled_owner_counts()
+        group_owner_counts = self._sampled_group_owner_counts()
         configured_partids = {partid for partid, _ in self.settings.items()}
         partids = sorted(configured_partids | set(self._interval))
         sample_scale = self.config.monitor_group_sets
@@ -282,6 +321,41 @@ class CacheMSC(Component):
                 "enforcement_enabled": self.enforce_controls,
             }
 
+        monitor_groups = {}
+        group_keys = sorted(
+            set(self._interval_groups) | set(group_owner_counts)
+        )
+        for partid, pmg in group_keys:
+            values = dict(self._interval_groups[(partid, pmg)])
+            sampled_bytes = values["sampled_bytes"]
+            estimated_access_bytes = sampled_bytes * sample_scale
+            sampled_ways = group_owner_counts.get((partid, pmg), 0)
+            estimated_occupancy = (
+                sampled_ways
+                * sample_scale
+                * self.config.line_size
+            )
+            allowed_capacity = self.allowed_capacity_bytes(partid)
+            monitor_groups[f"{partid}:{pmg}"] = {
+                "partid": partid,
+                "pmg": pmg,
+                **values,
+                "estimated_access_bytes": estimated_access_bytes,
+                "estimated_bandwidth_gbps": (
+                    estimated_access_bytes
+                    * 8.0
+                    / max(interval_ns, 1e-9)
+                ),
+                "sampled_way_count": sampled_ways,
+                "estimated_occupancy_bytes": estimated_occupancy,
+                "allowed_capacity_bytes": allowed_capacity,
+                "occupancy_rate": min(
+                    1.0,
+                    estimated_occupancy
+                    / max(1.0, allowed_capacity),
+                ),
+            }
+
         row = {
             "msc_id": self.component_id,
             "msc_type": "cache",
@@ -297,6 +371,8 @@ class CacheMSC(Component):
             "sampled_set_count": len(self._sample_sets),
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
+            "monitor_groups": monitor_groups,
         }
         self._interval.clear()
+        self._interval_groups.clear()
         return row
