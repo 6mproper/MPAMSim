@@ -202,6 +202,8 @@ def default_parameters() -> Dict[str, object]:
         "l3_line_size": 64,
         "l3_monitor_group_sets": 8,
         "l3_hit_latency_ns": 20,
+        "l3_queue_depth": 128,
+        "l3_lookup_parallelism": 16,
         "noc_routers": 8,
         "noc_link_gbps": 256,
         "noc_router_latency_ns": 5,
@@ -212,6 +214,11 @@ def default_parameters() -> Dict[str, object]:
         "channel_bandwidth_gbps": 128,
         "mc_base_latency_ns": 80,
         "mc_queue_depth": 512,
+        "mc_token_bucket_window_ns": 100,
+        "mc_aging_ns": 500,
+        "mc_aging_priority_cap": 15,
+        "mc_bmin_priority_boost": 16,
+        "mc_softlimit_priority_penalty": 16,
         "max_outstanding": 32,
         "cbusy_sample_ns": 1_000,
         "cbusy_feedback_latency_ns": 50,
@@ -565,6 +572,12 @@ def build_config(
     l3_hit_latency_ns = _number(
         values, "l3_hit_latency_ns", 20, 1, 500
     )
+    l3_queue_depth = _integer(
+        values, "l3_queue_depth", 128, 1, 8192
+    )
+    l3_lookup_parallelism = _integer(
+        values, "l3_lookup_parallelism", 16, 1, 1024
+    )
     noc_routers = _integer(
         values, "noc_routers", 8, 1, 64
     )
@@ -602,6 +615,21 @@ def build_config(
     )
     mc_queue_depth = _integer(
         values, "mc_queue_depth", 512, 1, 8192
+    )
+    mc_token_bucket_window_ns = _number(
+        values, "mc_token_bucket_window_ns", 100, 0.1, 1_000_000
+    )
+    mc_aging_ns = _number(
+        values, "mc_aging_ns", 500, 0.1, 1_000_000
+    )
+    mc_aging_priority_cap = _integer(
+        values, "mc_aging_priority_cap", 15, 0, 255
+    )
+    mc_bmin_priority_boost = _integer(
+        values, "mc_bmin_priority_boost", 16, 0, 255
+    )
+    mc_softlimit_priority_penalty = _integer(
+        values, "mc_softlimit_priority_penalty", 16, 0, 255
     )
     max_outstanding = _integer(
         values, "max_outstanding", 32, 1, 1024
@@ -730,6 +758,8 @@ def build_config(
             "ways": l3_ways,
             "monitor_group_sets": monitor_group_sets,
             "hit_latency_ns": l3_hit_latency_ns,
+            "queue_depth": l3_queue_depth,
+            "lookup_parallelism": l3_lookup_parallelism,
             "shared_by_cores": cache_core_map[cache_id],
         }
         for cache_id in cache_core_map
@@ -742,8 +772,11 @@ def build_config(
             "scheduler": "priority_rr",
             "queue_depth": mc_queue_depth,
             "base_latency_ns": mc_base_latency_ns,
-            "token_bucket_window_ns": 100,
-            "aging_ns": 500,
+            "token_bucket_window_ns": mc_token_bucket_window_ns,
+            "aging_ns": mc_aging_ns,
+            "aging_priority_cap": mc_aging_priority_cap,
+            "bmin_priority_boost": mc_bmin_priority_boost,
+            "softlimit_priority_penalty": mc_softlimit_priority_penalty,
             "cbusy_sample_ns": cbusy_sample_ns,
             "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,
             "cbusy_release_hold_samples": cbusy_release_hold_samples,

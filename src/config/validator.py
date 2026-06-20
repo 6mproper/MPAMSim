@@ -37,11 +37,39 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(f"Cache {cache.id} sets must be positive")
         if cache.ways <= 0:
             raise ConfigError(f"Cache {cache.id} ways must be positive")
+        if cache.queue_depth <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} queue_depth must be positive"
+            )
+        if cache.lookup_parallelism <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} lookup_parallelism must be positive"
+            )
         if cache.monitor_group_sets != 8:
             raise ConfigError(
                 f"Cache {cache.id} monitor_group_sets must be 8 in this model"
             )
     for mc in config.memory_controllers:
+        if mc.token_bucket_window_ns <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} token window must be positive"
+            )
+        if mc.aging_ns <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} aging quantum must be positive"
+            )
+        if not 0 <= mc.aging_priority_cap <= 255:
+            raise ConfigError(
+                f"Memory controller {mc.id} aging cap must be in [0, 255]"
+            )
+        if not 0 <= mc.bmin_priority_boost <= 255:
+            raise ConfigError(
+                f"Memory controller {mc.id} BMIN boost must be in [0, 255]"
+            )
+        if not 0 <= mc.softlimit_priority_penalty <= 255:
+            raise ConfigError(
+                f"Memory controller {mc.id} soft penalty must be in [0, 255]"
+            )
         if mc.cbusy_sample_ns <= 0:
             raise ConfigError(
                 f"Memory controller {mc.id} CBusy sample must be positive"

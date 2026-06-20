@@ -27,6 +27,7 @@ def _mc_counters() -> Dict[str, float]:
         "bmin_priority_requests": 0,
         "softlimit_requests": 0,
         "softlimit_bytes": 0,
+        "softlimit_penalty_events": 0,
         "hardlimit_block_events": 0,
     }
 
@@ -259,7 +260,7 @@ class MemoryControllerMSC(Component):
                 age / max(1.0, self.config.aging_ns)
             )
             bmin_bonus = (
-                16
+                self.config.bmin_priority_boost
                 if (
                     self.enforce_controls
                     and setting.bmin_enable
@@ -278,7 +279,18 @@ class MemoryControllerMSC(Component):
                     partid, request.size_bytes
                 )
             )
-            soft_penalty = 16 if soft_over and contended else 0
+            soft_penalty = (
+                self.config.softlimit_priority_penalty
+                if soft_over and contended
+                else 0
+            )
+            if soft_penalty > 0:
+                self._interval_per_partid[partid][
+                    "softlimit_penalty_events"
+                ] += 1
+                self._interval_per_group[
+                    (partid, request.pmg)
+                ]["softlimit_penalty_events"] += 1
             effective_priority = (
                 (
                     setting.priority
@@ -288,7 +300,7 @@ class MemoryControllerMSC(Component):
                     )
                     else 0
                 )
-                + min(15, aging_bonus)
+                + min(self.config.aging_priority_cap, aging_bonus)
                 + bmin_bonus
                 - soft_penalty
             )
@@ -774,6 +786,13 @@ class MemoryControllerMSC(Component):
             ),
             "bytes": self._interval_bytes,
             "requests": self._interval_requests,
+            "token_bucket_window_ns": self.config.token_bucket_window_ns,
+            "aging_ns": self.config.aging_ns,
+            "aging_priority_cap": self.config.aging_priority_cap,
+            "bmin_priority_boost": self.config.bmin_priority_boost,
+            "softlimit_priority_penalty": (
+                self.config.softlimit_priority_penalty
+            ),
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
             "monitor_groups": monitor_groups,

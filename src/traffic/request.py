@@ -24,10 +24,12 @@ class Request:
     memory_controller_id: str = ""
     noc_delay_ns: float = 0.0
     cache_delay_ns: float = 0.0
+    cache_queue_delay_ns: float = 0.0
     mem_queue_delay_ns: float = 0.0
     mem_service_delay_ns: float = 0.0
     throttle_delay_ns: float = 0.0
     noc_enqueue_time_ns: float = 0.0
+    cache_enqueue_time_ns: float = 0.0
     mem_enqueue_time_ns: float = 0.0
     cache_hit: bool = False
 

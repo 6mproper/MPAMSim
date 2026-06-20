@@ -122,6 +122,19 @@ Peak captures the worst instantaneous pressure. Queue area captures how much
 pressure persists over time; lower is better when offered load and run length
 are held constant.
 
+For L3 admission, also track:
+
+```text
+l3_queue_delay_ns
+l3_admission_backpressure_ns
+l3_queue_full_events
+l3_active_lookup_slots
+```
+
+Queue depth defines waiting capacity; lookup parallelism defines service
+concurrency. Both are needed to interpret whether source OSTD is accumulating
+at L3 or passing pressure downstream.
+
 ### Policy Stability
 
 Track:

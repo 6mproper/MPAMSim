@@ -49,6 +49,8 @@
             <label>Line bytes<input data-param="l3_line_size" type="number" min="16" max="256" step="16"></label>
             <label>监控分组 Sets<input data-param="l3_monitor_group_sets" type="number" value="8" readonly></label>
             <label>命中延迟 ns<input data-param="l3_hit_latency_ns" type="number" min="1" max="500" step="1"></label>
+            <label>请求队列深度<input data-param="l3_queue_depth" type="number" min="1" max="8192" step="1"></label>
+            <label>Lookup 并发槽<input data-param="l3_lookup_parallelism" type="number" min="1" max="1024" step="1"></label>
           </div>
 
           <h2>NoC</h2>
@@ -143,6 +145,14 @@
             <label>P99 滞回比例<input data-param="p99_hysteresis" type="number" min="0" max="1" step="0.01"></label>
             <label>最小保持周期<input data-param="min_hold_intervals" type="number" min="1" max="100" step="1"></label>
           </div>
+          <h2>MC 调度算法参数</h2>
+          <div class="field-grid">
+            <label>Token 窗口 ns<input data-param="mc_token_bucket_window_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
+            <label>Aging 周期 ns<input data-param="mc_aging_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
+            <label>Aging 加分上限<input data-param="mc_aging_priority_cap" type="number" min="0" max="255" step="1"></label>
+            <label>BMIN 优先级加分<input data-param="mc_bmin_priority_boost" type="number" min="0" max="255" step="1"></label>
+            <label>Softlimit 降权<input data-param="mc_softlimit_priority_penalty" type="number" min="0" max="255" step="1"></label>
+          </div>
           <h2>CBusy 快反馈</h2>
           <div class="field-grid">
             <label>采样周期 ns<input data-param="cbusy_sample_ns" type="number" min="1" max="1000000" step="10"></label>
@@ -218,6 +228,7 @@
         <div class="result-tabs">
           <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
           <button class="result-tab" data-result-tab="experiment">对照实验</button>
+          <button class="result-tab" data-result-tab="verification">算法验证</button>
           <button class="result-tab" data-result-tab="causal">因果时间线</button>
           <button class="result-tab" data-result-tab="partid">PARTID</button>
           <button class="result-tab" data-result-tab="monitor-group">监控组</button>
@@ -291,6 +302,37 @@
                 </tr>
               </thead>
               <tbody id="experimentPartidTable"><tr><td colspan="8" class="empty-cell">请选择PARTID</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="result-view" data-result-view="verification">
+          <div class="evidence-toolbar">
+            <div>
+              <strong>MPAM 控制算法验证</strong>
+              <span>确定性微基准；验证当前模型实现，不代表特定芯片微架构</span>
+            </div>
+            <button id="controlVerificationButton" type="button" class="verification-button">运行验证</button>
+          </div>
+          <div id="verificationProgress" class="experiment-progress">尚未运行算法验证</div>
+          <div class="resource-table-wrap">
+            <table class="verification-table">
+              <thead>
+                <tr><th>机制</th><th>状态</th><th>判据</th><th>实测证据</th></tr>
+              </thead>
+              <tbody id="verificationCheckTable"><tr><td colspan="4" class="empty-cell">运行验证后显示机制判据</td></tr></tbody>
+            </table>
+          </div>
+          <div class="resource-table-wrap">
+            <table class="verification-case-table">
+              <thead>
+                <tr>
+                  <th>Case</th><th>P0 吞吐</th><th>P0 P99</th>
+                  <th>Sampled Ways</th><th>CMIN Protect</th>
+                  <th>BMIN Preferred</th><th>Soft Penalty</th>
+                  <th>Hard Blocks</th><th>报告</th>
+                </tr>
+              </thead>
+              <tbody id="verificationCaseTable"><tr><td colspan="9" class="empty-cell">尚无验证 case</td></tr></tbody>
             </table>
           </div>
         </div>

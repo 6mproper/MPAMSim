@@ -18,6 +18,7 @@ class PartidStats:
     latencies: List[float] = field(default_factory=list)
     noc_delay_ns: float = 0.0
     cache_delay_ns: float = 0.0
+    cache_queue_delay_ns: float = 0.0
     mem_queue_delay_ns: float = 0.0
     mem_service_delay_ns: float = 0.0
     throttle_delay_ns: float = 0.0
@@ -31,6 +32,7 @@ class PartidStats:
         self.latencies.append(latency)
         self.noc_delay_ns += request.noc_delay_ns
         self.cache_delay_ns += request.cache_delay_ns
+        self.cache_queue_delay_ns += request.cache_queue_delay_ns
         self.mem_queue_delay_ns += request.mem_queue_delay_ns
         self.mem_service_delay_ns += request.mem_service_delay_ns
         self.throttle_delay_ns += request.throttle_delay_ns
@@ -51,6 +53,7 @@ class PartidStats:
             "max_latency_ns": max(self.latencies) if self.latencies else 0.0,
             "avg_noc_delay_ns": self.noc_delay_ns / count,
             "avg_cache_delay_ns": self.cache_delay_ns / count,
+            "avg_cache_queue_delay_ns": self.cache_queue_delay_ns / count,
             "avg_mem_queue_delay_ns": self.mem_queue_delay_ns / count,
             "avg_mem_service_delay_ns": self.mem_service_delay_ns / count,
             "avg_throttle_delay_ns": self.throttle_delay_ns / count,
@@ -92,6 +95,7 @@ class MetricsCollector:
                         "cache_hit": request.cache_hit,
                         "noc_delay_ns": request.noc_delay_ns,
                         "cache_delay_ns": request.cache_delay_ns,
+                        "cache_queue_delay_ns": request.cache_queue_delay_ns,
                         "mem_queue_delay_ns": request.mem_queue_delay_ns,
                         "mem_service_delay_ns": request.mem_service_delay_ns,
                         "throttle_delay_ns": request.throttle_delay_ns,

@@ -136,6 +136,8 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 )
             ),
             monitor_group_sets=int(item.get("monitor_group_sets", 8)),
+            queue_depth=int(item.get("queue_depth", 128)),
+            lookup_parallelism=int(item.get("lookup_parallelism", 16)),
         )
         for item in soc.get("caches", [])
     ]
@@ -159,6 +161,11 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             base_latency_ns=float(item.get("base_latency_ns", 80.0)),
             token_bucket_window_ns=float(item.get("token_bucket_window_ns", 100.0)),
             aging_ns=float(item.get("aging_ns", 500.0)),
+            aging_priority_cap=int(item.get("aging_priority_cap", 15)),
+            bmin_priority_boost=int(item.get("bmin_priority_boost", 16)),
+            softlimit_priority_penalty=int(
+                item.get("softlimit_priority_penalty", 16)
+            ),
             cbusy_sample_ns=float(item.get("cbusy_sample_ns", 1_000.0)),
             cbusy_feedback_latency_ns=float(
                 item.get("cbusy_feedback_latency_ns", 50.0)

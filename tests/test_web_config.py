@@ -6,7 +6,13 @@ import yaml
 from src.config.loader import load_config
 from src.sim.simulation import Simulation
 from src.web.config_builder import ParameterError, build_config, default_parameters
-from src.web.server import derive_experiment_cases, summarize_experiment_result
+from src.web.server import (
+    ControlVerificationManager,
+    Job,
+    derive_control_verification_cases,
+    derive_experiment_cases,
+    summarize_experiment_result,
+)
 
 
 def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
@@ -47,9 +53,14 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert len(config.controls_by_msc["mc0"]) == 16
     assert config.caches[0].sets == 32_768
     assert config.caches[0].monitor_group_sets == 8
+    assert config.caches[0].queue_depth == 128
+    assert config.caches[0].lookup_parallelism == 16
     assert config.controls_by_msc["slc0"][0].cpbm_enable is True
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
+    assert config.memory_controllers[0].token_bucket_window_ns == 100
+    assert config.memory_controllers[0].bmin_priority_boost == 16
+    assert config.memory_controllers[0].softlimit_priority_penalty == 16
 
 
 def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:
@@ -151,3 +162,38 @@ def test_experiment_summary_contains_system_and_partid_evidence(tmp_path) -> Non
     assert summary["mc_queue_area_entry_ns"] >= 0
     assert set(summary["per_partid"]) >= {"0", "1"}
     assert "effective_ostd_min" in summary["per_partid"]["0"]
+
+
+def test_control_verification_cases_isolate_mechanisms() -> None:
+    cases = derive_control_verification_cases(default_parameters())
+
+    assert len(cases) == 11
+    assert cases["cmin_on"]["partid_configs"][0]["cmin_enable"] is True
+    assert cases["cmax_limited"]["partid_configs"][0]["cmax"] == 2
+    assert cases["bmin_on"]["partid_configs"][0]["bmin_enable"] is True
+    assert cases["bmax_solo_soft"]["partid_configs"][0]["limit_mode"] == "softlimit"
+    assert cases["bmax_solo_hard"]["partid_configs"][0]["limit_mode"] == "hardlimit"
+    assert cases["bmax_contended_soft"]["stimulus_configs"][1]["enabled"] is True
+
+
+def test_control_verification_suite_passes_default_algorithms(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import src.web.server as web_server
+
+    monkeypatch.setattr(web_server, "RUN_ROOT", tmp_path)
+    job = Job(id="verification", parameters=default_parameters())
+
+    ControlVerificationManager()._run(job)
+
+    assert job.status == "completed"
+    assert job.result["passed"] == job.result["total"] == 6
+    assert {row["id"] for row in job.result["checks"]} == {
+        "cmin",
+        "cmax",
+        "bmin",
+        "bmax_soft_uncontended",
+        "bmax_hard",
+        "bmax_soft_contended",
+    }

@@ -156,6 +156,22 @@ button {
   opacity: 0.65;
 }
 
+.verification-button {
+  min-height: 32px;
+  padding: 4px 11px;
+  color: #fff;
+  background: #176b9c;
+  border: 1px solid #4b8eb4;
+  border-radius: 3px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.verification-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .workspace {
   height: calc(100% - 70px);
   display: grid;
@@ -860,6 +876,38 @@ canvas {
   min-width: 1120px;
 }
 
+.verification-table {
+  min-width: 980px;
+}
+
+.verification-case-table {
+  min-width: 1120px;
+  border-top: 8px solid #edf0f2;
+}
+
+.verification-status {
+  min-width: 46px;
+  padding: 3px 6px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.verification-status.pass {
+  color: #176046;
+  background: #e8f3ed;
+  border-color: #8db8a1;
+}
+
+.verification-status.fail {
+  color: #8a2525;
+  background: #fde2e2;
+  border-color: #cf7777;
+}
+
 .partid-experiment-table {
   min-width: 880px;
   border-top: 8px solid #edf0f2;
@@ -1101,7 +1149,7 @@ canvas {
 }
 
 .resource-monitor-table[data-resource-view="l3"] {
-  min-width: 1080px;
+  min-width: 1420px;
 }
 
 .resource-monitor-table[data-resource-view="mc"] {

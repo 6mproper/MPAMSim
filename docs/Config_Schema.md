@@ -32,6 +32,8 @@ soc:
       line_size: 64
       ways: 16
       monitor_group_sets: 8
+      queue_depth: 128
+      lookup_parallelism: 16
       shared_by_cores: [cpu0, cpu1, cpu2, cpu3, cpu4, cpu5, cpu6, cpu7]
     - id: slc1
       level: L3
@@ -52,6 +54,12 @@ soc:
         channels: 2
         bandwidth_gbps_per_channel: 128
         scheduler: priority_rr
+        queue_depth: 256
+        token_bucket_window_ns: 100
+        aging_ns: 500
+        aging_priority_cap: 15
+        bmin_priority_boost: 16
+        softlimit_priority_penalty: 16
       - id: mc1
         channels: 2
         bandwidth_gbps_per_channel: 128

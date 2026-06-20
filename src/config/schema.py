@@ -30,6 +30,8 @@ class CacheConfig:
     hit_latency_ns: float = 20.0
     sets: int = 1024
     monitor_group_sets: int = 8
+    queue_depth: int = 128
+    lookup_parallelism: int = 16
 
 
 @dataclass
@@ -53,6 +55,9 @@ class MemoryControllerConfig:
     base_latency_ns: float = 80.0
     token_bucket_window_ns: float = 100.0
     aging_ns: float = 500.0
+    aging_priority_cap: int = 15
+    bmin_priority_boost: int = 16
+    softlimit_priority_penalty: int = 16
     cbusy_sample_ns: float = 1_000.0
     cbusy_feedback_latency_ns: float = 50.0
     cbusy_release_hold_samples: int = 3

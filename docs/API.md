@@ -166,7 +166,7 @@ Fast feedback transitions use `policy=mc_cbusy`,
 Columns:
 
 ```text
-time_ns,partid,requester_id,msc_id,noc_delay_ns,cache_delay_ns,mem_queue_delay_ns,mem_service_delay_ns,throttle_delay_ns,total_latency_ns
+time_ns,partid,requester_id,msc_id,noc_delay_ns,cache_delay_ns,cache_queue_delay_ns,mem_queue_delay_ns,mem_service_delay_ns,throttle_delay_ns,total_latency_ns
 ```
 
 ### topology.json
@@ -225,3 +225,37 @@ include throughput, maximum P99, completion ratio, MC queue peak and
 time-integrated queue area, throttle delay, hard blocks, CBusy source stall,
 configured-OSTD stall, and CBusy transitions. Each case also links to its
 static report under `/runs/experiment-<job_id>/<case>/report.html`.
+
+## 10. Control Verification API
+
+Submit the deterministic model-algorithm verification suite:
+
+```http
+POST /api/verifications
+Content-Type: application/json
+
+{"parameters": {...}}
+```
+
+Poll with:
+
+```http
+GET /api/verifications/<job_id>
+```
+
+The suite runs 11 microbenchmark cases and emits six checks:
+
+- CMIN sampled replacement protection;
+- CMAX sampled ownership bound;
+- BMIN credit-based scheduler preference;
+- BMAX soft-limit work conservation without contention;
+- BMAX hard token blocking and throttle;
+- BMAX soft-limit priority penalty under contention.
+
+Each check contains `passed`, `expected`, and measured `evidence`. Case reports
+are exported under `/runs/verification-<job_id>/<case>/`. The suite validates
+this simulator's implementation; it is not an Arm MPAM architectural
+compliance test. To isolate mechanisms, the suite uses a fixed one-L3,
+one-MC microbenchmark topology with one sampled eight-set group and 32 Gbps
+MC service capacity. It preserves the submitted random seed, L3 queue
+parameters, and configurable MC algorithm constants.

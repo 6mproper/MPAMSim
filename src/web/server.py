@@ -353,6 +353,373 @@ def summarize_experiment_result(result) -> Dict[str, object]:
     }
 
 
+CONTROL_VERIFICATION_CASES = (
+    ("cmin_off", "CMIN 关闭"),
+    ("cmin_on", "CMIN = 8"),
+    ("cmax_full", "CMAX = 16"),
+    ("cmax_limited", "CMAX = 2"),
+    ("bmin_off", "BMIN 关闭"),
+    ("bmin_on", "BMIN = 24 Gbps"),
+    ("bmax_solo_off", "BMAX 关闭 / 单流"),
+    ("bmax_solo_soft", "BMAX soft / 单流"),
+    ("bmax_solo_hard", "BMAX hard / 单流"),
+    ("bmax_contended_off", "BMAX 关闭 / 竞争"),
+    ("bmax_contended_soft", "BMAX soft / 竞争"),
+)
+
+
+def derive_control_verification_cases(
+    parameters: Dict[str, object],
+) -> Dict[str, Dict[str, object]]:
+    def base_case() -> Dict[str, object]:
+        case = copy.deepcopy(parameters)
+        case.update(
+            {
+                "duration_ns": 120_000,
+                "control_interval_ns": 20_000,
+                "policy": "static_mpam",
+                "l3_instances": 1,
+                "l3_sets": 8,
+                "l3_ways": 16,
+                "memory_controllers": 1,
+                "channels_per_mc": 1,
+                "channel_bandwidth_gbps": 32,
+                "max_outstanding": 64,
+            }
+        )
+        for row in case.get("stimulus_configs", []):
+            row["enabled"] = False
+        for row in case.get("partid_configs", []):
+            row.update(
+                {
+                    "cpbm_enable": False,
+                    "cmin_enable": False,
+                    "cmax_enable": False,
+                    "cpbm": "ffff",
+                    "cmin": 0,
+                    "cmax": 16,
+                    "bmin_enable": False,
+                    "bmax_enable": False,
+                    "priority_enable": False,
+                    "cbusy_enable": False,
+                    "bmin_gbps": 0,
+                    "bmax_gbps": 10,
+                    "limit_mode": "softlimit",
+                    "priority": 0,
+                }
+            )
+        return case
+
+    def stimulus(
+        case: Dict[str, object],
+        slot: int,
+        partid: int,
+        rate_gbps: float,
+        workload_type: str = "stream",
+    ) -> None:
+        row = case["stimulus_configs"][slot]
+        row.update(
+            {
+                "enabled": True,
+                "partid": partid,
+                "pmg": partid,
+                "workload_type": workload_type,
+                "rate_value": rate_gbps,
+                "rate_unit": "gbps",
+                "request_size_bytes": 64,
+                "read_ratio": 1.0,
+                "working_set_mb": 64,
+                "target_p99_ns": 0,
+            }
+        )
+
+    cases: Dict[str, Dict[str, object]] = {}
+    for case_id, _ in CONTROL_VERIFICATION_CASES:
+        case = base_case()
+        p0 = case["partid_configs"][0]
+        if case_id.startswith("cmin"):
+            stimulus(case, 0, 0, 20, "random_read")
+            stimulus(case, 1, 1, 80, "random_read")
+            p0.update(
+                {
+                    "cpbm_enable": True,
+                    "cmin_enable": case_id == "cmin_on",
+                    "cmin": 8,
+                    "cmax": 16,
+                }
+            )
+            case["partid_configs"][1]["cpbm_enable"] = True
+        elif case_id.startswith("cmax"):
+            stimulus(case, 0, 0, 80, "random_read")
+            p0.update(
+                {
+                    "cpbm_enable": True,
+                    "cmax_enable": True,
+                    "cmax": 2 if case_id == "cmax_limited" else 16,
+                }
+            )
+        elif case_id.startswith("bmin"):
+            stimulus(case, 0, 0, 64)
+            stimulus(case, 1, 1, 64)
+            for partid in (0, 1):
+                case["partid_configs"][partid].update(
+                    {
+                        "cpbm_enable": True,
+                        "cmax_enable": True,
+                        "cpbm": "0000",
+                        "cmax": 0,
+                    }
+                )
+            p0.update(
+                {
+                    "bmin_enable": case_id == "bmin_on",
+                    "bmin_gbps": 24,
+                    "bmax_gbps": 32,
+                }
+            )
+        elif case_id.startswith("bmax_solo"):
+            stimulus(case, 0, 0, 64)
+            p0.update(
+                {
+                    "cpbm_enable": True,
+                    "cmax_enable": True,
+                    "cpbm": "0000",
+                    "cmax": 0,
+                    "bmax_enable": case_id != "bmax_solo_off",
+                    "limit_mode": (
+                        "hardlimit"
+                        if case_id == "bmax_solo_hard"
+                        else "softlimit"
+                    ),
+                }
+            )
+        else:
+            stimulus(case, 0, 0, 64)
+            stimulus(case, 1, 1, 64)
+            for partid in (0, 1):
+                case["partid_configs"][partid].update(
+                    {
+                        "cpbm_enable": True,
+                        "cmax_enable": True,
+                        "cpbm": "0000",
+                        "cmax": 0,
+                    }
+                )
+            p0.update(
+                {
+                    "bmax_enable": case_id == "bmax_contended_soft",
+                    "limit_mode": "softlimit",
+                }
+            )
+        cases[case_id] = case
+    return cases
+
+
+def summarize_control_verification_case(result) -> Dict[str, object]:
+    cumulative = result.collector.cumulative_metrics(result.elapsed_ns)
+    cache_rows = [
+        row
+        for row in result.collector.msc_rows
+        if row.get("msc_type") == "cache"
+    ]
+    mc_rows = [
+        row
+        for row in result.collector.msc_rows
+        if row.get("msc_type") == "memory_controller"
+    ]
+    partids = sorted(
+        set(cumulative)
+        | {
+            int(partid)
+            for row in cache_rows + mc_rows
+            for partid in row.get("per_partid", {})
+        }
+    )
+    per_partid = {}
+    for partid in partids:
+        key = str(partid)
+        latest_cache = next(
+            (
+                row.get("per_partid", {}).get(key, {})
+                for row in reversed(cache_rows)
+                if key in row.get("per_partid", {})
+            ),
+            {},
+        )
+        per_partid[key] = {
+            "throughput_gbps": float(
+                cumulative.get(partid, {}).get("throughput_gbps", 0)
+            ),
+            "p99_latency_ns": float(
+                cumulative.get(partid, {}).get("p99_latency_ns", 0)
+            ),
+            "sampled_way_count": int(
+                latest_cache.get("sampled_way_count", 0)
+            ),
+            "cmin_protected_candidates": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("cmin_protected_evictions", 0)
+                )
+                for row in cache_rows
+            ),
+            "allocation_denials": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("allocation_denials", 0)
+                )
+                for row in cache_rows
+            ),
+            "bmin_priority_requests": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("bmin_priority_requests", 0)
+                )
+                for row in mc_rows
+            ),
+            "softlimit_requests": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("softlimit_requests", 0)
+                )
+                for row in mc_rows
+            ),
+            "softlimit_penalty_events": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("softlimit_penalty_events", 0)
+                )
+                for row in mc_rows
+            ),
+            "hardlimit_block_events": sum(
+                int(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("hardlimit_block_events", 0)
+                )
+                for row in mc_rows
+            ),
+            "throttle_delay_ns": sum(
+                float(
+                    row.get("per_partid", {})
+                    .get(key, {})
+                    .get("throttle_delay_ns", 0)
+                )
+                for row in mc_rows
+            ),
+        }
+    return {
+        "simulation_time_ns": result.elapsed_ns,
+        "l3_queue_peak": max(
+            (float(row.get("queue_peak", 0)) for row in cache_rows),
+            default=0.0,
+        ),
+        "per_partid": per_partid,
+    }
+
+
+def evaluate_control_verification(
+    results: Dict[str, Dict[str, object]],
+) -> list:
+    def p(case_id: str, field: str) -> float:
+        return float(
+            results[case_id]["per_partid"]["0"].get(field, 0)
+        )
+
+    checks = []
+
+    def add(
+        check_id: str,
+        label: str,
+        passed: bool,
+        expected: str,
+        evidence: str,
+    ) -> None:
+        checks.append(
+            {
+                "id": check_id,
+                "label": label,
+                "passed": bool(passed),
+                "expected": expected,
+                "evidence": evidence,
+            }
+        )
+
+    cmin_off = p("cmin_off", "sampled_way_count")
+    cmin_on = p("cmin_on", "sampled_way_count")
+    cmin_protected = p("cmin_on", "cmin_protected_candidates")
+    add(
+        "cmin",
+        "CMIN 替换保护",
+        cmin_on >= 8 and cmin_on > cmin_off and cmin_protected > 0,
+        "CMIN=8 时至少保留 8 个 sampled ways，并跳过受保护 victim",
+        f"关闭={cmin_off:.0f} ways，启用={cmin_on:.0f} ways，保护跳过={cmin_protected:.0f}",
+    )
+
+    cmax_full = p("cmax_full", "sampled_way_count")
+    cmax_limited = p("cmax_limited", "sampled_way_count")
+    add(
+        "cmax",
+        "CMAX 分配上界",
+        cmax_limited <= 2 and cmax_full > cmax_limited,
+        "CMAX=2 时隔离 sampled set 的 ownership 不超过 2 ways",
+        f"全量={cmax_full:.0f} ways，限制={cmax_limited:.0f} ways",
+    )
+
+    bmin_off = p("bmin_off", "throughput_gbps")
+    bmin_on = p("bmin_on", "throughput_gbps")
+    bmin_requests = p("bmin_on", "bmin_priority_requests")
+    add(
+        "bmin",
+        "BMIN 调度偏好",
+        bmin_requests > 0 and bmin_on > bmin_off * 1.05,
+        "BMIN credit 产生优先请求并提高受保护 PARTID 吞吐",
+        f"关闭={bmin_off:.2f} Gbps，启用={bmin_on:.2f} Gbps，优先请求={bmin_requests:.0f}",
+    )
+
+    solo_off = p("bmax_solo_off", "throughput_gbps")
+    solo_soft = p("bmax_solo_soft", "throughput_gbps")
+    solo_hard = p("bmax_solo_hard", "throughput_gbps")
+    soft_requests = p("bmax_solo_soft", "softlimit_requests")
+    add(
+        "bmax_soft_uncontended",
+        "BMAX soft 无竞争借用",
+        soft_requests > 0 and solo_soft >= solo_off * 0.85,
+        "无竞争时 softlimit 吞吐接近关闭 BMAX，保持 work-conserving",
+        f"关闭={solo_off:.2f} Gbps，soft={solo_soft:.2f} Gbps，超限选中={soft_requests:.0f}",
+    )
+
+    hard_blocks = p("bmax_solo_hard", "hardlimit_block_events")
+    hard_throttle = p("bmax_solo_hard", "throttle_delay_ns")
+    add(
+        "bmax_hard",
+        "BMAX hard token 阻塞",
+        hard_blocks > 0 and hard_throttle > 0 and solo_hard <= 12.5,
+        "10 Gbps hardlimit 阻塞 dispatch，并使吞吐接近配置上限",
+        f"吞吐={solo_hard:.2f} Gbps，阻塞={hard_blocks:.0f}，throttle={hard_throttle:.1f} ns",
+    )
+
+    contended_off = p("bmax_contended_off", "throughput_gbps")
+    contended_soft = p("bmax_contended_soft", "throughput_gbps")
+    contended_events = p(
+        "bmax_contended_soft",
+        "softlimit_penalty_events",
+    )
+    add(
+        "bmax_soft_contended",
+        "BMAX soft 竞争降权",
+        contended_events > 0 and contended_soft < contended_off * 0.95,
+        "存在竞争时，超限 soft 流量失去调度偏好",
+        f"关闭={contended_off:.2f} Gbps，soft={contended_soft:.2f} Gbps，降权事件={contended_events:.0f}",
+    )
+    return checks
+
+
 class ExperimentManager:
     def __init__(self) -> None:
         self._jobs: Dict[str, Job] = {}
@@ -455,6 +822,111 @@ JOBS = JobManager()
 EXPERIMENTS = ExperimentManager()
 
 
+class ControlVerificationManager(ExperimentManager):
+    def _run(self, job: Job) -> None:
+        verification_dir = RUN_ROOT / f"verification-{job.id}"
+        try:
+            cases = derive_control_verification_cases(job.parameters)
+            completed = []
+            results = {}
+            for index, (case_id, label) in enumerate(
+                CONTROL_VERIFICATION_CASES
+            ):
+                with job.lock:
+                    job.status = "running"
+                    job.progress = index / len(CONTROL_VERIFICATION_CASES)
+                    job.message = f"Verifying {label}"
+                    job.partial = {
+                        "completed_cases": list(completed),
+                        "results": dict(results),
+                    }
+                case_dir = verification_dir / case_id
+                raw = build_config(cases[case_id], str(case_dir))
+                if case_id.startswith("cmin_"):
+                    raw["workloads"][1]["start_ns"] = 40_000
+                RUN_ROOT.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".yaml",
+                    prefix=f"soc-flow-verify-{job.id}-{case_id}-",
+                    delete=False,
+                    encoding="utf-8",
+                ) as handle:
+                    yaml.safe_dump(raw, handle, sort_keys=False)
+                    config_path = Path(handle.name)
+                try:
+                    result = Simulation.from_config(
+                        load_config(config_path)
+                    ).run()
+                finally:
+                    config_path.unlink(missing_ok=True)
+                result.export(str(case_dir))
+                summary = summarize_control_verification_case(result)
+                summary.update(
+                    {
+                        "id": case_id,
+                        "label": label,
+                        "report_url": (
+                            f"/runs/verification-{job.id}/{case_id}/report.html"
+                        ),
+                    }
+                )
+                results[case_id] = summary
+                completed.append(case_id)
+
+            checks = evaluate_control_verification(results)
+            payload = {
+                "checks": checks,
+                "passed": sum(int(row["passed"]) for row in checks),
+                "total": len(checks),
+                "algorithm_parameters": {
+                    key: cases["cmin_off"].get(key)
+                    for key in (
+                        "l3_queue_depth",
+                        "l3_lookup_parallelism",
+                        "mc_token_bucket_window_ns",
+                        "mc_aging_ns",
+                        "mc_aging_priority_cap",
+                        "mc_bmin_priority_boost",
+                        "mc_softlimit_priority_penalty",
+                    )
+                },
+                "cases": [
+                    results[case_id]
+                    for case_id, _ in CONTROL_VERIFICATION_CASES
+                ],
+                "seed": int(job.parameters.get("seed", 0)),
+            }
+            verification_dir.mkdir(parents=True, exist_ok=True)
+            (verification_dir / "verification_summary.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            with job.lock:
+                job.status = "completed"
+                job.progress = 1.0
+                job.message = "Control verification completed"
+                job.result = payload
+                job.partial = {
+                    "completed_cases": list(completed),
+                    "results": dict(results),
+                }
+        except (ParameterError, ValueError) as exc:
+            with job.lock:
+                job.status = "failed"
+                job.error = str(exc)
+                job.message = "Verification configuration rejected"
+        except Exception as exc:  # pragma: no cover
+            traceback.print_exc()
+            with job.lock:
+                job.status = "failed"
+                job.error = f"{type(exc).__name__}: {exc}"
+                job.message = "Control verification failed"
+
+
+VERIFICATIONS = ControlVerificationManager()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SoCFlowConsole/0.1"
 
@@ -483,6 +955,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(job.snapshot())
             return
+        if path.startswith("/api/verifications/"):
+            job_id = path.rsplit("/", 1)[-1]
+            job = VERIFICATIONS.get(job_id)
+            if job is None:
+                self._json(
+                    {"error": "Unknown verification"},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._json(job.snapshot())
+            return
         if path.startswith("/runs/"):
             relative = path[len("/runs/") :]
             self._serve_file(RUN_ROOT, relative)
@@ -496,7 +979,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/jobs", "/api/experiments"}:
+        if self.path not in {
+            "/api/jobs",
+            "/api/experiments",
+            "/api/verifications",
+        }:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -507,11 +994,12 @@ class Handler(BaseHTTPRequestHandler):
             parameters = payload.get("parameters", {})
             if not isinstance(parameters, dict):
                 raise ValueError("parameters must be an object")
-            job = (
-                EXPERIMENTS.create(parameters)
-                if self.path == "/api/experiments"
-                else JOBS.create(parameters)
-            )
+            if self.path == "/api/experiments":
+                job = EXPERIMENTS.create(parameters)
+            elif self.path == "/api/verifications":
+                job = VERIFICATIONS.create(parameters)
+            else:
+                job = JOBS.create(parameters)
             self._json(
                 {"job_id": job.id, "status": job.status},
                 HTTPStatus.ACCEPTED,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
+from typing import Callable, DefaultDict, Deque, Dict, List, Optional, Tuple
 
 from src.config.schema import CacheConfig
 from src.mpam.settings import MPAMSetting, SettingsTable
@@ -31,6 +31,9 @@ def _cache_counters() -> Dict[str, float]:
         "sampled_bytes": 0,
         "allocation_denials": 0,
         "cmin_protected_evictions": 0,
+        "queue_delay_ns": 0.0,
+        "admission_backpressure_ns": 0.0,
+        "queue_full_events": 0,
     }
 
 
@@ -53,6 +56,13 @@ class CacheMSC(Component):
         self.on_hit = on_hit
         self.on_miss = on_miss
         self.enforce_controls = enforce_controls
+        self._queue: Deque[Request] = deque()
+        self._active_lookups = 0
+        self._interval_lookup_busy_ns = 0.0
+        self._queue_sample_sum = 0
+        self._queue_samples = 0
+        self._queue_peak = 0
+        self._active_peak = 0
         self._touch_sequence = 0
         self._sample_sets: Dict[int, List[SampleWay]] = {}
         self._interval: DefaultDict[int, Dict[str, float]] = defaultdict(
@@ -66,6 +76,56 @@ class CacheMSC(Component):
 
     def receive(self, request: Request) -> None:
         request.cache_id = self.component_id
+        if len(self._queue) >= self.config.queue_depth:
+            retry_ns = 2.0
+            request.cache_queue_delay_ns += retry_ns
+            request.cache_delay_ns += retry_ns
+            counters = self._interval[request.partid]
+            counters["admission_backpressure_ns"] += retry_ns
+            counters["queue_full_events"] += 1
+            group_counters = self._interval_groups[
+                (request.partid, request.pmg)
+            ]
+            group_counters["admission_backpressure_ns"] += retry_ns
+            group_counters["queue_full_events"] += 1
+            self.kernel.schedule(
+                retry_ns,
+                lambda: self.receive(request),
+                "cache-admission-retry",
+            )
+            return
+        request.cache_enqueue_time_ns = self.kernel.now_ns
+        self._queue.append(request)
+        self._sample_queue()
+        self._dispatch()
+
+    def _dispatch(self) -> None:
+        while (
+            self._queue
+            and self._active_lookups < self.config.lookup_parallelism
+        ):
+            request = self._queue.popleft()
+            queue_delay = max(
+                0.0,
+                self.kernel.now_ns - request.cache_enqueue_time_ns,
+            )
+            request.cache_queue_delay_ns += queue_delay
+            request.cache_delay_ns += queue_delay
+            self._interval[request.partid][
+                "queue_delay_ns"
+            ] += queue_delay
+            self._interval_groups[
+                (request.partid, request.pmg)
+            ]["queue_delay_ns"] += queue_delay
+            self._active_lookups += 1
+            self._active_peak = max(
+                self._active_peak,
+                self._active_lookups,
+            )
+            self._sample_queue()
+            self._start_lookup(request)
+
+    def _start_lookup(self, request: Request) -> None:
         allowed_capacity = self.allowed_capacity_bytes(request.partid)
         hit_probability = self._hit_probability(request, allowed_capacity)
         is_hit = self.rng.random() < hit_probability
@@ -94,11 +154,27 @@ class CacheMSC(Component):
             self._sample_access(request, set_index, is_hit)
 
         callback = self.on_hit if is_hit else self.on_miss
+        self._interval_lookup_busy_ns += self.config.hit_latency_ns
         self.kernel.schedule(
             self.config.hit_latency_ns,
-            lambda: callback(request),
+            lambda: self._finish_lookup(request, callback),
             "cache-result",
         )
+
+    def _finish_lookup(
+        self,
+        request: Request,
+        callback: Callable[[Request], None],
+    ) -> None:
+        self._active_lookups = max(0, self._active_lookups - 1)
+        callback(request)
+        self._sample_queue()
+        self._dispatch()
+
+    def _sample_queue(self) -> None:
+        self._queue_sample_sum += len(self._queue)
+        self._queue_samples += 1
+        self._queue_peak = max(self._queue_peak, len(self._queue))
 
     def _set_index(self, address: int) -> int:
         return (address // self.config.line_size) % self.config.sets
@@ -162,19 +238,25 @@ class CacheMSC(Component):
         )
         cmax = self._effective_max_ways(setting)
 
-        empty = [index for index in eligible if ways[index].owner_partid is None]
-        if empty and current_count < cmax:
-            return empty[0]
+        if current_count >= cmax:
+            own = [
+                index
+                for index in eligible
+                if ways[index].owner_partid == partid
+            ]
+            return (
+                min(own, key=lambda index: ways[index].last_touch)
+                if own
+                else None
+            )
 
-        own = [
+        empty = [
             index
             for index in eligible
-            if ways[index].owner_partid == partid
+            if ways[index].owner_partid is None
         ]
-        if own:
-            return min(own, key=lambda index: ways[index].last_touch)
-        if current_count >= cmax:
-            return None
+        if empty:
+            return empty[0]
 
         owner_counts: DefaultDict[int, int] = defaultdict(int)
         for way in ways:
@@ -374,8 +456,24 @@ class CacheMSC(Component):
         row = {
             "msc_id": self.component_id,
             "msc_type": "cache",
-            "utilization": total_hits / max(1, total_requests),
-            "queue_occupancy": 0.0,
+            "utilization": min(
+                1.0,
+                self._interval_lookup_busy_ns
+                / max(
+                    interval_ns * self.config.lookup_parallelism,
+                    1e-9,
+                ),
+            ),
+            "hit_rate": total_hits / max(1, total_requests),
+            "queue_occupancy": (
+                self._queue_sample_sum
+                / max(1, self._queue_samples)
+            ),
+            "queue_peak": self._queue_peak,
+            "queue_depth": self.config.queue_depth,
+            "lookup_parallelism": self.config.lookup_parallelism,
+            "active_lookups": self._active_lookups,
+            "active_lookup_peak": self._active_peak,
             "bytes": sum(
                 int(values["bytes"]) for values in self._interval.values()
             ),
@@ -390,4 +488,9 @@ class CacheMSC(Component):
         }
         self._interval.clear()
         self._interval_groups.clear()
+        self._interval_lookup_busy_ns = 0.0
+        self._queue_sample_sum = 0
+        self._queue_samples = 0
+        self._queue_peak = len(self._queue)
+        self._active_peak = self._active_lookups
         return row

@@ -67,9 +67,11 @@ It provides:
   working set, and P99 target.
 - A 16-row PARTID editor for monitor enable, CMIN, CMAX, CPBM, BMIN, BMAX,
   softlimit/hardlimit, and priority.
-- Explicit L3 set count, ways per set, line size, and fixed eight-set
-  approximate-monitor grouping.
+- Explicit L3 set count, ways per set, line size, bounded request queue,
+  lookup parallelism, and fixed eight-set approximate-monitor grouping.
 - Policy selection and closed-loop stability parameters.
+- Configurable MC token-bucket window, aging quantum/cap, BMIN priority boost,
+  and soft-limit priority penalty.
 - Background simulation jobs with control-interval progress updates.
 - Dynamic charts, time-slider playback, MSC tables, control traces, and links to static reports.
 - A 16-row MPAM monitor table with sampled L3 bandwidth/occupancy and
@@ -112,6 +114,9 @@ It provides:
   as BMIN/BMAX inversion, aggregate BMIN overcommit, unordered CBusy
   thresholds/caps, disabled monitoring on active PARTIDs, and stacked hard
   BMAX plus CBusy throttling. Diagnostics never rewrite the user's values.
+- A built-in algorithm-verification view runs deterministic CMIN, CMAX, BMIN,
+  BMAX soft-limit, and BMAX hard-limit microbenchmarks and reports explicit
+  pass criteria, evidence, case counters, and report links.
 
 ## 3. Visualization Requirements
 

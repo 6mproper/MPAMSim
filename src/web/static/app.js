@@ -2,11 +2,15 @@ const state = {
   defaults: {},
   jobId: null,
   experimentJobId: null,
+  verificationJobId: null,
   polling: null,
   experimentPolling: null,
+  verificationPolling: null,
   result: null,
   experiment: null,
   experimentPartial: null,
+  verification: null,
+  verificationPartial: null,
   partial: { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 },
   selectedTime: 0,
   playing: false,
@@ -55,6 +59,8 @@ const parameterHelp = {
   l3_line_size: "缓存行字节数；影响地址映射、占用估算和请求成本。",
   l3_monitor_group_sets: "近似监控固定每 8 个 set 抽样第一个 set，并将观察值按 8 倍估算。",
   l3_hit_latency_ns: "L3 查询固定延迟；命中和未命中都先支付该延迟。",
+  l3_queue_depth: "每个 L3 实例的 FIFO 等待队列 entries；队列满时请求在 L3 入口重试并累计 cache admission backpressure。",
+  l3_lookup_parallelism: "每个 L3 同时执行的抽象 tag/data lookup 槽位数；与命中延迟共同决定 lookup 吞吐。",
   noc_routers: "抽象 NoC router 数，影响 requester 附着和平均跳数。",
   noc_link_gbps: "NoC 瓶颈链路的建模带宽。",
   noc_router_latency_ns: "每跳固定 router 延迟。",
@@ -65,6 +71,11 @@ const parameterHelp = {
   channel_bandwidth_gbps: "单通道理论带宽；控制器总带宽为通道数乘以该值。",
   mc_base_latency_ns: "内存控制器服务的固定基础延迟，不含排队和序列化。",
   mc_queue_depth: "每个内存控制器可接收的请求队列深度。",
+  mc_token_bucket_window_ns: "BMIN/BMAX token bucket 的突发窗口；容量=max(64B, 配置带宽×窗口)。窗口越大，允许的短时突发越大。",
+  mc_aging_ns: "请求每等待该时间获得一级 aging 加分，防止长期饥饿。",
+  mc_aging_priority_cap: "Aging 对 effective priority 的最大加分。",
+  mc_bmin_priority_boost: "请求有足够 BMIN credit 时增加的调度优先级；0 表示 BMIN 不产生调度偏好。",
+  mc_softlimit_priority_penalty: "Soft BMAX 超限且存在竞争时扣减的调度优先级；无竞争时不扣减。",
   max_bw_step_percent: "闭环每次调整背景 PARTID BMAX 的最大百分比。",
   p99_hysteresis: "P99 超过或低于目标的滞回区间，避免控制值频繁抖动。",
   min_hold_intervals: "两次闭环调整之间至少保持的采样周期数。",
@@ -149,6 +160,8 @@ const headerHelp = {
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
   "Alloc Denials": "因 CPBM 或 CMAX 无可用 way 而拒绝抽样分配的次数。",
+  "L3 Queue": "所有 L3 实例的平均等待 entries / 配置深度，以及采样周期内峰值。",
+  "Queue Delay / Full": "该 PARTID 在 L3 FIFO 中累计等待时间，以及入口队列满导致的重试事件。",
   "MC Util %": "该 PARTID 在所有 MC 上的带宽之和除以这些 MC 的总建模带宽。",
   "Avg Queue ns": "最新采样周期内该 PARTID 在 MC 队列中的平均等待时间。",
   "Limit Events": "softlimit 低偏好请求数与 hardlimit 阻塞检查事件数。",
@@ -182,6 +195,7 @@ const headerHelp = {
 const resultTabHelp = {
   "资源监控": "在 CPU、L3、MC 之间切换，并用同一组 PARTID 开关查看资源状态和控制反馈。",
   "对照实验": "使用相同输入自动比较参考、BMAX-only、CBusy-only和组合控制的收益与代价。",
+  "算法验证": "运行内置确定性微基准，分别验证 CMIN、CMAX、BMIN、BMAX softlimit 和 hardlimit 的模型算法。",
   "因果时间线": "按控制周期对齐MC压力、CBusy、effective OSTD、源端stall和业务性能。",
   "PARTID": "按 PARTID 聚合的吞吐、尾延迟、命中率和延迟分量。",
   "监控组": "按 PARTID+PMG 显示软件可见的实时 L3 占用和 MC 带宽使用。",
@@ -198,6 +212,7 @@ const sectionHeadingHelp = {
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 分配、MC 带宽、优先级和监控开关。",
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
+  "MC 调度算法参数": "配置当前模型的 token burst、aging、BMIN credit 加分和 soft-BMAX 竞争降权；这些不是架构固定编码。",
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
 };
 
@@ -469,6 +484,7 @@ async function runSimulation() {
   state.selectedTime = 0;
   $("#runButton").disabled = true;
   $("#experimentButton").disabled = true;
+  $("#controlVerificationButton").disabled = true;
   $("#reportLink").classList.add("disabled");
   $("#reportLink").href = "#";
   setStatus("running", "提交仿真配置", 0.01);
@@ -493,6 +509,7 @@ async function runExperiment() {
   state.experimentPartial = null;
   $("#experimentButton").disabled = true;
   $("#runButton").disabled = true;
+  $("#controlVerificationButton").disabled = true;
   setStatus("running", "准备四组对照实验", 0.01);
   activateResultTab("experiment");
   renderExperiment();
@@ -525,6 +542,7 @@ async function pollExperiment() {
       state.experiment = job.result;
       $("#experimentButton").disabled = false;
       $("#runButton").disabled = false;
+      $("#controlVerificationButton").disabled = false;
       setStatus("completed", "四组机制对照完成", 1);
       renderExperiment();
       return;
@@ -543,7 +561,78 @@ function failExperiment(message) {
   clearTimeout(state.experimentPolling);
   $("#experimentButton").disabled = false;
   $("#runButton").disabled = false;
+  $("#controlVerificationButton").disabled = false;
   setStatus("failed", "对照实验失败", 0);
+  showToast(message);
+}
+
+async function runControlVerification() {
+  clearTimeout(state.verificationPolling);
+  state.verification = null;
+  state.verificationPartial = null;
+  $("#controlVerificationButton").disabled = true;
+  $("#experimentButton").disabled = true;
+  $("#runButton").disabled = true;
+  setStatus("running", "准备控制算法验证", 0.01);
+  activateResultTab("verification");
+  renderControlVerification();
+  try {
+    const payload = await requestJson("/api/verifications", {
+      method: "POST",
+      body: JSON.stringify({ parameters: collectParameters() }),
+    });
+    state.verificationJobId = payload.job_id;
+    pollControlVerification();
+  } catch (error) {
+    failControlVerification(error.message);
+  }
+}
+
+async function pollControlVerification() {
+  try {
+    const job = await requestJson(
+      `/api/verifications/${state.verificationJobId}`,
+    );
+    state.verificationPartial = job.partial || state.verificationPartial;
+    setStatus(
+      job.status === "completed" ? "completed" :
+        job.status === "failed" ? "failed" : "running",
+      job.message,
+      job.progress,
+    );
+    renderControlVerification();
+    if (job.status === "completed") {
+      state.verification = job.result;
+      $("#controlVerificationButton").disabled = false;
+      $("#experimentButton").disabled = false;
+      $("#runButton").disabled = false;
+      setStatus(
+        "completed",
+        `控制算法验证 ${job.result.passed}/${job.result.total}`,
+        1,
+      );
+      renderControlVerification();
+      return;
+    }
+    if (job.status === "failed") {
+      failControlVerification(job.error || "控制算法验证失败");
+      return;
+    }
+    state.verificationPolling = setTimeout(
+      pollControlVerification,
+      300,
+    );
+  } catch (error) {
+    failControlVerification(error.message);
+  }
+}
+
+function failControlVerification(message) {
+  clearTimeout(state.verificationPolling);
+  $("#controlVerificationButton").disabled = false;
+  $("#experimentButton").disabled = false;
+  $("#runButton").disabled = false;
+  setStatus("failed", "控制算法验证失败", 0);
   showToast(message);
 }
 
@@ -574,6 +663,7 @@ async function pollJob() {
       state.selectedTime = state.partial.time_ns;
       $("#runButton").disabled = false;
       $("#experimentButton").disabled = false;
+      $("#controlVerificationButton").disabled = false;
       $("#reportLink").href = job.result.report_url;
       $("#reportLink").classList.remove("disabled");
       syncTimeline();
@@ -594,6 +684,7 @@ function failRun(message) {
   clearTimeout(state.polling);
   $("#runButton").disabled = false;
   $("#experimentButton").disabled = false;
+  $("#controlVerificationButton").disabled = false;
   setStatus("failed", "仿真失败", 0);
   showToast(message);
 }
@@ -740,6 +831,13 @@ function aggregateL3Resources() {
     hits: 0,
     misses: 0,
     allocationDenials: 0,
+    queueDelayNs: 0,
+    admissionBackpressureNs: 0,
+    queueFullEvents: 0,
+    queueOccupancy: 0,
+    queuePeak: 0,
+    queueDepth: 0,
+    lookupParallelism: 0,
     cminByMsc: new Map(),
     cmaxByMsc: new Map(),
     cpbmByMsc: new Map(),
@@ -753,6 +851,12 @@ function aggregateL3Resources() {
   latestBy(state.partial.msc, "msc_id")
     .filter((row) => row.msc_type === "cache")
     .forEach((row) => {
+      result.forEach((target) => {
+        target.queueOccupancy += Number(row.queue_occupancy || 0);
+        target.queuePeak += Number(row.queue_peak || 0);
+        target.queueDepth += Number(row.queue_depth || 0);
+        target.lookupParallelism += Number(row.lookup_parallelism || 0);
+      });
       Object.entries(row.per_partid || {}).forEach(([pidText, values]) => {
         const partid = Number(pidText);
         if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
@@ -764,6 +868,11 @@ function aggregateL3Resources() {
         target.hits += Number(values.hits || 0);
         target.misses += Number(values.misses || 0);
         target.allocationDenials += Number(values.allocation_denials || 0);
+        target.queueDelayNs += Number(values.queue_delay_ns || 0);
+        target.admissionBackpressureNs += Number(
+          values.admission_backpressure_ns || 0,
+        );
+        target.queueFullEvents += Number(values.queue_full_events || 0);
         target.cminByMsc.set(String(row.msc_id), values.cmin);
         target.cmaxByMsc.set(String(row.msc_id), values.cmax);
         target.cpbmByMsc.set(String(row.msc_id), values.cpbm);
@@ -853,6 +962,7 @@ function aggregateMcResources() {
     bmaxEnabled: false,
     priorityEnabled: false,
     softRequests: 0,
+    softPenaltyEvents: 0,
     hardBlocks: 0,
     cbusyEnabled: false,
     cbusyLevel: 0,
@@ -896,6 +1006,9 @@ function aggregateMcResources() {
         target.bmaxEnabled ||= Boolean(values.bmax_enable);
         target.priorityEnabled ||= Boolean(values.priority_enable);
         target.softRequests += Number(values.softlimit_requests || 0);
+        target.softPenaltyEvents += Number(
+          values.softlimit_penalty_events || 0,
+        );
         target.hardBlocks += Number(values.hardlimit_block_events || 0);
         target.cbusyEnabled ||= Boolean(values.cbusy_enable);
         target.cbusyLevel = Math.max(
@@ -1088,7 +1201,8 @@ function renderResourceMonitor() {
   } else if (state.resourceView === "l3") {
     headers = [
       "PARTID", "Control State", "L3 Occupancy", "L3 Util %",
-      "L3 Sample BW", "Hit Rate", "Alloc Denials", "CMIN", "CMAX", "CPBM",
+      "L3 Sample BW", "Hit Rate", "L3 Queue", "Queue Delay / Full",
+      "Alloc Denials", "CMIN", "CMAX", "CPBM",
     ];
     rows = visible(aggregateL3Resources()).map((row) => `
       <tr>
@@ -1098,6 +1212,8 @@ function renderResourceMonitor() {
         <td>${utilizationCell(row.occupancyUtilization, "#2d7a4c")}</td>
         <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
         <td>${(row.hitRate * 100).toFixed(2)}%</td>
+        <td>${formatNumber(row.queueOccupancy, 2)} / ${formatNumber(row.queueDepth, 0)} <small>peak ${formatNumber(row.queuePeak, 0)} · slots ${formatNumber(row.lookupParallelism, 0)}</small></td>
+        <td>${formatNumber(row.queueDelayNs, 2)} ns <small>${formatNumber(row.queueFullEvents, 0)} full · ${formatNumber(row.admissionBackpressureNs, 2)} ns retry</small></td>
         <td>${formatNumber(row.allocationDenials, 0)}</td>
         <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => escapeHtml(value))}</td>
         <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => escapeHtml(value))}</td>
@@ -1126,7 +1242,7 @@ function renderResourceMonitor() {
         <td>${controlValue(row.bmaxEnabled, row.hasBmax ? row.bmax : 0, row.configuredBmax, (value) => formatNumber(value, 1))}</td>
         <td>${row.bmaxEnabled ? escapeHtml(row.mode) : '<span class="control-value disabled">off</span>'}</td>
         <td>${controlValue(row.priorityEnabled, row.priority, row.configuredPriority, (value) => escapeHtml(value))}</td>
-        <td>${formatNumber(row.softRequests, 0)} soft / ${formatNumber(row.hardBlocks, 0)} hard</td>
+        <td>${formatNumber(row.softPenaltyEvents, 0)} soft penalty / ${formatNumber(row.hardBlocks, 0)} hard <small>${formatNumber(row.softRequests, 0)} selected over</small></td>
       </tr>`);
   }
   $("#resourceMonitorHead").innerHTML = `<tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>`;
@@ -1144,6 +1260,7 @@ function renderAll() {
   renderCharts();
   renderResourceMonitor();
   renderExperiment();
+  renderControlVerification();
   renderCausalTimeline();
   renderPartidTable();
   renderMonitorGroupTable();
@@ -1240,6 +1357,55 @@ function renderExperiment() {
   $("#experimentPartidTable").innerHTML = partidRows.length
     ? partidRows.join("")
     : '<tr><td colspan="8" class="empty-cell">该 PARTID 在当前激励中没有请求</td></tr>';
+}
+
+function verificationCases() {
+  if (state.verification?.cases) return state.verification.cases;
+  const results = state.verificationPartial?.results || {};
+  return [
+    "cmin_off", "cmin_on", "cmax_full", "cmax_limited",
+    "bmin_off", "bmin_on", "bmax_solo_off", "bmax_solo_soft",
+    "bmax_solo_hard", "bmax_contended_off", "bmax_contended_soft",
+  ].map((caseId) => results[caseId]).filter(Boolean);
+}
+
+function renderControlVerification() {
+  const cases = verificationCases();
+  const completed = state.verificationPartial?.completed_cases || [];
+  const algorithm = state.verification?.algorithm_parameters
+    || ($$("[data-partid-row]").length
+      ? collectParameters()
+      : state.defaults);
+  const algorithmText = `token ${formatNumber(algorithm.mc_token_bucket_window_ns, 1)} ns · aging ${formatNumber(algorithm.mc_aging_ns, 1)} ns/+${formatNumber(algorithm.mc_aging_priority_cap, 0)} · BMIN +${formatNumber(algorithm.mc_bmin_priority_boost, 0)} · soft -${formatNumber(algorithm.mc_softlimit_priority_penalty, 0)}`;
+  $("#verificationProgress").textContent = state.verification
+    ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
+    : completed.length
+      ? `已完成 ${completed.length}/11：${cases.map((row) => row.label).join("、")}`
+      : `尚未运行算法验证 · ${algorithmText}`;
+  const checks = state.verification?.checks || [];
+  $("#verificationCheckTable").innerHTML = checks.length ? checks.map((row) => `
+    <tr>
+      <td><strong>${escapeHtml(row.label)}</strong></td>
+      <td><span class="verification-status ${row.passed ? "pass" : "fail"}">${row.passed ? "PASS" : "FAIL"}</span></td>
+      <td>${escapeHtml(row.expected)}</td>
+      <td>${escapeHtml(row.evidence)}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="4" class="empty-cell">运行验证后显示机制判据</td></tr>';
+  $("#verificationCaseTable").innerHTML = cases.length ? cases.map((row) => {
+    const p0 = row.per_partid?.["0"] || {};
+    return `
+      <tr>
+        <td><strong>${escapeHtml(row.label)}</strong></td>
+        <td>${formatNumber(p0.throughput_gbps, 3)} Gbps</td>
+        <td>${formatNumber(p0.p99_latency_ns, 2)} ns</td>
+        <td>${formatNumber(p0.sampled_way_count, 0)}</td>
+        <td>${formatNumber(p0.cmin_protected_candidates, 0)}</td>
+        <td>${formatNumber(p0.bmin_priority_requests, 0)}</td>
+        <td>${formatNumber(p0.softlimit_penalty_events, 0)}</td>
+        <td>${formatNumber(p0.hardlimit_block_events, 0)}</td>
+        <td><a class="case-report-link" href="${escapeHtml(row.report_url)}" target="_blank">打开</a></td>
+      </tr>`;
+  }).join("") : '<tr><td colspan="9" class="empty-cell">尚无验证 case</td></tr>';
 }
 
 function buildCausalRows(partid) {
@@ -1362,6 +1528,31 @@ function configurationDiagnostics() {
       add("warning", `PARTID ${partid} 有激励但监控开关关闭。`);
     }
   });
+  if (
+    Number(parameters.l3_lookup_parallelism)
+    >= Number(parameters.l3_queue_depth)
+  ) {
+    add(
+      "warning",
+      "L3 lookup 并发槽不少于等待队列深度，常规流量下可能很难形成可观察的 L3 排队。",
+    );
+  }
+  if (
+    partids.some((row) => row.bmin_enable && activePartids.has(row.partid))
+    && Number(parameters.mc_bmin_priority_boost) === 0
+  ) {
+    add("warning", "存在活动 BMIN，但 BMIN 优先级加分为 0；当前算法不会产生调度偏好。");
+  }
+  if (
+    partids.some(
+      (row) => row.bmax_enable
+        && row.limit_mode === "softlimit"
+        && activePartids.has(row.partid),
+    )
+    && Number(parameters.mc_softlimit_priority_penalty) === 0
+  ) {
+    add("warning", "存在活动 softlimit BMAX，但降权为 0；超限流量仍保持原调度优先级。");
+  }
 
   partids.forEach((row) => {
     if (row.cmin_enable && row.cmax_enable && row.cmin > row.cmax) {
@@ -2018,6 +2209,10 @@ function bindEvents() {
   $$('input[name="policy"]').forEach((input) => input.addEventListener("change", renderResourceMonitor));
   $("#runButton").addEventListener("click", runSimulation);
   $("#experimentButton").addEventListener("click", runExperiment);
+  $("#controlVerificationButton").addEventListener(
+    "click",
+    runControlVerification,
+  );
   $("#experimentPartid").addEventListener("change", (event) => {
     state.experimentPartid = Number(event.target.value);
     renderExperiment();

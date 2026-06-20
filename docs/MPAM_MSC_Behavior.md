@@ -44,10 +44,23 @@ An MSC may support only a subset. The validator must reject controls unsupported
 
 On request arrival:
 
-1. Read `request.partid`.
-2. Lookup the L3/SLC MSC setting for that PARTID.
-3. Derive allowed cache capacity or allowed ways from `cache_portion_bitmap`.
-4. Estimate hit/miss and update occupancy.
+1. Enter the bounded FIFO queue or retry when it is full.
+2. Wait until one of `lookup_parallelism` lookup slots is available.
+3. Read `request.partid` and lookup its L3/SLC setting.
+4. Derive allowed cache capacity or allowed ways.
+5. Estimate hit/miss, update sampled ownership, and hold the lookup slot for
+   `hit_latency_ns`.
+
+The queue is an abstract L3 transaction/MSHR-pressure model:
+
+```text
+waiting entries <= queue_depth
+active lookups <= lookup_parallelism
+cache_delay = admission_backpressure + queue_delay + lookup_latency
+```
+
+It does not model banks, ports, snoop slots, coherence transactions, or tag
+and data pipeline timing separately.
 
 ### 3.2 Set/Way Model and Approximate Monitor
 
@@ -71,6 +84,20 @@ set in each eight-set group stores sampled way ownership and tags. The hit
 probability remains a deterministic capacity/locality approximation under a
 fixed seed.
 
+The sampled replacement algorithm is:
+
+```text
+eligible = ways selected by effective CPBM
+if owned_ways >= effective_CMAX:
+    replace requester's own eligible LRU way
+else:
+    use an empty eligible way, if present
+    otherwise replace the global eligible LRU victim whose owner_count > owner_CMIN
+```
+
+An owner at or below effective CMIN is skipped. CMIN is therefore replacement
+protection, not immediate pre-allocation; a PARTID must first populate ways.
+
 ### 3.3 L3/SLC Enforcement
 
 L3/SLC enforcement effects:
@@ -92,6 +119,8 @@ Required counters:
 - allowed capacity bytes by PARTID.
 - evictions or allocation denials if modeled.
 - cache delay by PARTID.
+- queue delay and admission backpressure by PARTID/PMG.
+- average/peak queue occupancy, queue-full events, and active lookup slots.
 
 The implementation additionally exposes `monitor_groups` keyed by
 `PARTID:PMG`. Each group reports sampled traffic, estimated bandwidth,
@@ -152,12 +181,22 @@ else:
 
 Record token wait as `throttle_delay_ns`, separate from queue and service delay.
 
+Bucket capacity is:
+
+```text
+capacity_bytes = max(64, rate_gbps / 8 * token_bucket_window_ns)
+```
+
 `hardlimit` blocks a request until tokens are available. `softlimit` applies
 a priority penalty only under contention and remains work-conserving.
 
 ### 5.3 Bandwidth Minimum
 
 `bw_min_gbps` is a reservation approximation in V1. The scheduler should use it as a floor when sharing service among contending PARTIDs, but it is not a full real-time guarantee unless a later model implements stricter admission control.
+
+The current implementation uses an independent BMIN credit bucket. If the
+head request can consume BMIN credit, it receives
+`bmin_priority_boost`. Credit is consumed when that request is dispatched.
 
 Each memory controller has an independent BMIN/BMAX setting and token state.
 The interactive monitor displays the sum across memory-controller instances,
@@ -168,10 +207,16 @@ so a per-MC BMAX of 20 Gbps appears as 40 Gbps when two MCs are configured.
 Priority affects arbitration among ready requests:
 
 ```text
-higher priority -> earlier service when queues are contended
+effective_priority =
+    configured_priority
+  + min(aging_priority_cap, floor(queue_age_ns / aging_ns))
+  + bmin_priority_boost when BMIN credit covers the request
+  - softlimit_priority_penalty when over BMAX and contended
 ```
 
-Priority must not allow permanent starvation. The scheduler must include aging, round-robin within class, or a configured minimum service share.
+The highest score wins; sequence order provides FIFO tie-breaking. Hard BMAX
+requests without tokens are not candidates. These constants are configurable
+model behavior, not architected MPAM encodings.
 
 ### 5.5 Memory-Controller Monitors
 
@@ -259,4 +304,7 @@ effective unrestricted cache settings and disabled memory-bandwidth controls.
 - Credit/backpressure reduces sustained queue occupancy.
 - BMAX-only, CBusy-only, and combined runs can be isolated with independent
   enables and compared under identical workload and seed.
+- The built-in verification suite isolates CMIN retention, CMAX ownership,
+  BMIN preference, soft-limit work conservation/contended penalty, and hard
+  BMAX token blocking with deterministic microbenchmarks.
 - Monitors make the bottleneck visible instead of only reporting final latency.
