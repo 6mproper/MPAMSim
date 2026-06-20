@@ -1,8 +1,12 @@
 const state = {
   defaults: {},
   jobId: null,
+  experimentJobId: null,
   polling: null,
+  experimentPolling: null,
   result: null,
+  experiment: null,
+  experimentPartial: null,
   partial: { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 },
   selectedTime: 0,
   playing: false,
@@ -10,6 +14,8 @@ const state = {
   partidConfigs: [],
   stimulusConfigs: [],
   resourceView: "cpu",
+  causalPartid: 0,
+  experimentPartid: 0,
   visiblePartids: new Set(Array.from({ length: 16 }, (_, partid) => partid)),
 };
 
@@ -175,6 +181,8 @@ const headerHelp = {
 };
 const resultTabHelp = {
   "资源监控": "在 CPU、L3、MC 之间切换，并用同一组 PARTID 开关查看资源状态和控制反馈。",
+  "对照实验": "使用相同输入自动比较参考、BMAX-only、CBusy-only和组合控制的收益与代价。",
+  "因果时间线": "按控制周期对齐MC压力、CBusy、effective OSTD、源端stall和业务性能。",
   "PARTID": "按 PARTID 聚合的吞吐、尾延迟、命中率和延迟分量。",
   "监控组": "按 PARTID+PMG 显示软件可见的实时 L3 占用和 MC 带宽使用。",
   "MPAM 监控": "按 PARTID 聚合所有 L3/MC 实例的控制值和限速事件。",
@@ -460,6 +468,7 @@ async function runSimulation() {
   state.partial = { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 };
   state.selectedTime = 0;
   $("#runButton").disabled = true;
+  $("#experimentButton").disabled = true;
   $("#reportLink").classList.add("disabled");
   $("#reportLink").href = "#";
   setStatus("running", "提交仿真配置", 0.01);
@@ -474,6 +483,68 @@ async function runSimulation() {
   } catch (error) {
     failRun(error.message);
   }
+}
+
+async function runExperiment() {
+  clearTimeout(state.experimentPolling);
+  state.partidConfigs = collectPartidConfigs();
+  state.stimulusConfigs = collectStimulusConfigs();
+  state.experiment = null;
+  state.experimentPartial = null;
+  $("#experimentButton").disabled = true;
+  $("#runButton").disabled = true;
+  setStatus("running", "准备四组对照实验", 0.01);
+  activateResultTab("experiment");
+  renderExperiment();
+  try {
+    const payload = await requestJson("/api/experiments", {
+      method: "POST",
+      body: JSON.stringify({ parameters: collectParameters() }),
+    });
+    state.experimentJobId = payload.job_id;
+    pollExperiment();
+  } catch (error) {
+    failExperiment(error.message);
+  }
+}
+
+async function pollExperiment() {
+  try {
+    const job = await requestJson(
+      `/api/experiments/${state.experimentJobId}`,
+    );
+    state.experimentPartial = job.partial || state.experimentPartial;
+    setStatus(
+      job.status === "completed" ? "completed" :
+        job.status === "failed" ? "failed" : "running",
+      job.message,
+      job.progress,
+    );
+    renderExperiment();
+    if (job.status === "completed") {
+      state.experiment = job.result;
+      $("#experimentButton").disabled = false;
+      $("#runButton").disabled = false;
+      setStatus("completed", "四组机制对照完成", 1);
+      renderExperiment();
+      return;
+    }
+    if (job.status === "failed") {
+      failExperiment(job.error || "对照实验失败");
+      return;
+    }
+    state.experimentPolling = setTimeout(pollExperiment, 300);
+  } catch (error) {
+    failExperiment(error.message);
+  }
+}
+
+function failExperiment(message) {
+  clearTimeout(state.experimentPolling);
+  $("#experimentButton").disabled = false;
+  $("#runButton").disabled = false;
+  setStatus("failed", "对照实验失败", 0);
+  showToast(message);
 }
 
 async function pollJob() {
@@ -502,6 +573,7 @@ async function pollJob() {
       };
       state.selectedTime = state.partial.time_ns;
       $("#runButton").disabled = false;
+      $("#experimentButton").disabled = false;
       $("#reportLink").href = job.result.report_url;
       $("#reportLink").classList.remove("disabled");
       syncTimeline();
@@ -521,8 +593,18 @@ async function pollJob() {
 function failRun(message) {
   clearTimeout(state.polling);
   $("#runButton").disabled = false;
+  $("#experimentButton").disabled = false;
   setStatus("failed", "仿真失败", 0);
   showToast(message);
+}
+
+function activateResultTab(name) {
+  $$(".result-tab").forEach((node) => {
+    node.classList.toggle("active", node.dataset.resultTab === name);
+  });
+  $$(".result-view").forEach((view) => {
+    view.classList.toggle("active", view.dataset.resultView === name);
+  });
 }
 
 function syncTimeline() {
@@ -1061,11 +1143,304 @@ function renderAll() {
   renderKpis();
   renderCharts();
   renderResourceMonitor();
+  renderExperiment();
+  renderCausalTimeline();
   renderPartidTable();
   renderMonitorGroupTable();
   renderMpamMonitorTable();
   renderMscTable();
   renderControlTable();
+}
+
+function syncPartidSelect(selector, selected) {
+  const select = $(selector);
+  if (!select) return;
+  const current = String(selected);
+  if (select.options.length !== 16) {
+    select.innerHTML = Array.from(
+      { length: 16 },
+      (_, partid) => `<option value="${partid}">PARTID ${partid}</option>`,
+    ).join("");
+  }
+  select.value = current;
+}
+
+function experimentCases() {
+  if (state.experiment?.cases) return state.experiment.cases;
+  const results = state.experimentPartial?.results || {};
+  return ["reference", "bmax_only", "cbusy_only", "combined"]
+    .map((caseId) => results[caseId])
+    .filter(Boolean);
+}
+
+function deltaCell(value, baseline, lowerIsBetter, formatter) {
+  const rendered = formatter(value);
+  const base = Number(baseline);
+  const current = Number(value);
+  if (!Number.isFinite(base) || !Number.isFinite(current) || base === 0) {
+    return rendered;
+  }
+  const change = (current - base) / Math.abs(base);
+  if (Math.abs(change) < 0.001) {
+    return `${rendered}<small class="delta neutral">0.0%</small>`;
+  }
+  const improvement = lowerIsBetter ? change < 0 : change > 0;
+  return `${rendered}<small class="delta ${improvement ? "good" : "bad"}">${change > 0 ? "+" : ""}${(change * 100).toFixed(1)}%</small>`;
+}
+
+function renderExperiment() {
+  syncPartidSelect("#experimentPartid", state.experimentPartid);
+  const cases = experimentCases();
+  const completed = state.experimentPartial?.completed_cases || [];
+  $("#experimentProgress").textContent = state.experiment
+    ? `已完成 4/4，seed ${state.experiment.seed}`
+    : completed.length
+      ? `已完成 ${completed.length}/4：${cases.map((row) => row.label).join("、")}`
+      : "尚未运行对照实验";
+  if (!cases.length) {
+    $("#experimentTable").innerHTML = '<tr><td colspan="10" class="empty-cell">运行四组对照后显示结果</td></tr>';
+    $("#experimentPartidTable").innerHTML = '<tr><td colspan="8" class="empty-cell">运行四组对照后显示所选 PARTID</td></tr>';
+    return;
+  }
+
+  const baseline = cases.find((row) => row.id === "reference") || cases[0];
+  $("#experimentTable").innerHTML = cases.map((row) => `
+    <tr class="${row.id === "reference" ? "baseline-row" : ""}">
+      <td><strong>${escapeHtml(row.label)}</strong>${row.report_url ? ` <a class="case-report-link" href="${escapeHtml(row.report_url)}" target="_blank">报告</a>` : ""}</td>
+      <td>${deltaCell(row.total_throughput_gbps, baseline.total_throughput_gbps, false, (value) => formatNumber(value, 3))}</td>
+      <td>${deltaCell(row.max_p99_latency_ns, baseline.max_p99_latency_ns, true, (value) => formatNumber(value, 2))}</td>
+      <td>${deltaCell(row.completion_ratio, baseline.completion_ratio, false, (value) => `${(Number(value) * 100).toFixed(2)}%`)}</td>
+      <td>${deltaCell(row.mc_queue_peak, baseline.mc_queue_peak, true, (value) => formatNumber(value, 2))}</td>
+      <td>${deltaCell(row.mc_queue_area_entry_ns, baseline.mc_queue_area_entry_ns, true, (value) => formatNumber(value, 2))}</td>
+      <td>${deltaCell(row.throttle_delay_ns, baseline.throttle_delay_ns, true, (value) => formatNumber(value, 2))}</td>
+      <td>${deltaCell(row.cbusy_stall_ns, baseline.cbusy_stall_ns, true, (value) => formatNumber(value, 2))}</td>
+      <td>${formatNumber(row.hard_blocks, 0)}</td>
+      <td>${formatNumber(row.cbusy_transitions, 0)}</td>
+    </tr>
+  `).join("");
+
+  const partid = String(state.experimentPartid);
+  const baselinePartid = baseline.per_partid?.[partid] || {};
+  const partidRows = cases
+    .filter((row) => row.per_partid?.[partid])
+    .map((row) => {
+      const values = row.per_partid[partid];
+      return `
+        <tr class="${row.id === "reference" ? "baseline-row" : ""}">
+          <td><strong>${escapeHtml(row.label)}</strong></td>
+          <td>${deltaCell(values.throughput_gbps, baselinePartid.throughput_gbps, false, (value) => formatNumber(value, 3))}</td>
+          <td>${deltaCell(values.p99_latency_ns, baselinePartid.p99_latency_ns, true, (value) => formatNumber(value, 2))}</td>
+          <td>${deltaCell(values.queue_ratio_peak, baselinePartid.queue_ratio_peak, true, (value) => `${(Number(value) * 100).toFixed(1)}%`)}</td>
+          <td>${formatNumber(values.effective_ostd_min, 0)}</td>
+          <td>${formatNumber(values.cbusy_stall_ns, 2)}</td>
+          <td>${formatNumber(values.throttle_delay_ns, 2)}</td>
+          <td>${formatNumber(values.hard_blocks, 0)}</td>
+        </tr>`;
+    });
+  $("#experimentPartidTable").innerHTML = partidRows.length
+    ? partidRows.join("")
+    : '<tr><td colspan="8" class="empty-cell">该 PARTID 在当前激励中没有请求</td></tr>';
+}
+
+function buildCausalRows(partid) {
+  const pid = Number(partid);
+  const times = new Set();
+  visibleRows(state.partial.metrics)
+    .filter((row) => Number(row.partid) === pid)
+    .forEach((row) => times.add(Number(row.time_ns)));
+  visibleRows(state.partial.cpu)
+    .filter((row) => Number(row.partid) === pid)
+    .forEach((row) => times.add(Number(row.time_ns)));
+  visibleRows(state.partial.msc)
+    .filter((row) => row.msc_type === "memory_controller")
+    .forEach((row) => times.add(Number(row.time_ns)));
+
+  const controls = visibleRows(state.partial.controls)
+    .filter((row) => Number(row.partid) === pid);
+  let previousTime = -1;
+  return [...times].sort((a, b) => a - b).map((timeNs) => {
+    const metrics = visibleRows(state.partial.metrics).find(
+      (row) => Number(row.time_ns) === timeNs && Number(row.partid) === pid,
+    ) || {};
+    const cpuRows = visibleRows(state.partial.cpu).filter(
+      (row) => Number(row.time_ns) === timeNs && Number(row.partid) === pid,
+    );
+    const mcRows = visibleRows(state.partial.msc).filter(
+      (row) => Number(row.time_ns) === timeNs
+        && row.msc_type === "memory_controller",
+    );
+    const mcValues = mcRows.map(
+      (row) => row.per_partid?.[String(pid)] || {},
+    );
+    const events = controls.filter(
+      (row) => Number(row.time_ns) > previousTime
+        && Number(row.time_ns) <= timeNs,
+    );
+    previousTime = timeNs;
+    return {
+      timeNs,
+      bandwidth: mcValues.reduce(
+        (sum, row) => sum + Number(row.achieved_bandwidth_gbps || 0),
+        0,
+      ),
+      queuePeak: Math.max(
+        0,
+        ...mcValues.map((row) => Number(
+          row.cbusy_peak_queue_ratio ?? row.cbusy_queue_ratio ?? 0,
+        )),
+      ),
+      cbusyLevel: Math.max(
+        0,
+        ...cpuRows.map((row) => Number(row.cbusy_level || 0)),
+        ...mcValues.map((row) => Number(row.cbusy_level || 0)),
+      ),
+      outstanding: cpuRows.reduce(
+        (sum, row) => sum + Number(row.outstanding || 0),
+        0,
+      ),
+      effectiveCap: cpuRows.reduce(
+        (sum, row) => sum + Number(
+          row.effective_max_outstanding || row.max_outstanding || 0,
+        ),
+        0,
+      ),
+      cbusyStall: cpuRows.reduce(
+        (sum, row) => sum + Number(row.cbusy_stall_ns || 0),
+        0,
+      ),
+      p99: Number(metrics.p99_latency_ns || 0),
+      throughput: Number(metrics.throughput_gbps || 0),
+      events,
+    };
+  });
+}
+
+function renderCausalTimeline() {
+  syncPartidSelect("#causalPartid", state.causalPartid);
+  const rows = buildCausalRows(state.causalPartid);
+  $("#causalTable").innerHTML = rows.length ? rows.map((row) => `
+    <tr>
+      <td>${formatTime(row.timeNs)}</td>
+      <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
+      <td>${(row.queuePeak * 100).toFixed(1)}%</td>
+      <td><span class="cbusy-level level-${row.cbusyLevel}">L${row.cbusyLevel}</span></td>
+      <td>${formatNumber(row.outstanding, 0)} / ${formatNumber(row.effectiveCap, 0)}</td>
+      <td>${formatNumber(row.cbusyStall, 2)} ns</td>
+      <td>${formatNumber(row.p99, 2)} ns</td>
+      <td>${formatNumber(row.throughput, 3)} Gbps</td>
+      <td class="causal-events">${row.events.length ? row.events.map((event) =>
+        `<span><b>${escapeHtml(event.target_msc)}</b> ${escapeHtml(event.field)} ${escapeHtml(event.old_value)}→${escapeHtml(event.new_value)} <small>${escapeHtml(event.reason)}</small></span>`
+      ).join("") : '<span class="muted">无更新</span>'}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="9" class="empty-cell">运行单次仿真后显示因果时间线</td></tr>';
+}
+
+function bitCountHex(value) {
+  try {
+    return [...BigInt(`0x${String(value).replace(/^0x/i, "") || "0"}`).toString(2)]
+      .filter((bit) => bit === "1").length;
+  } catch {
+    return 0;
+  }
+}
+
+function configurationDiagnostics() {
+  if (!$$("[data-partid-row]").length || !$$("[data-stimulus-row]").length) {
+    return [];
+  }
+  const parameters = collectParameters();
+  const partids = parameters.partid_configs;
+  const stimuli = parameters.stimulus_configs.filter((row) => row.enabled);
+  const messages = [];
+  const add = (severity, text) => messages.push({ severity, text });
+
+  if (!stimuli.length) add("error", "没有启用的激励，仿真不会产生请求。");
+  const activePartids = new Set(stimuli.map((row) => row.partid));
+  activePartids.forEach((partid) => {
+    const row = partids[partid];
+    if (row && !row.monitor_enable) {
+      add("warning", `PARTID ${partid} 有激励但监控开关关闭。`);
+    }
+  });
+
+  partids.forEach((row) => {
+    if (row.cmin_enable && row.cmax_enable && row.cmin > row.cmax) {
+      add("error", `PARTID ${row.partid} 的 CMIN 大于 CMAX。`);
+    }
+    if (row.cpbm_enable && bitCountHex(row.cpbm) === 0) {
+      add("error", `PARTID ${row.partid} 的 CPBM 没有允许任何 way。`);
+    }
+    if (row.bmax_enable && row.bmax_gbps <= 0) {
+      add("error", `PARTID ${row.partid} 启用 BMAX，但配置值不大于 0。`);
+    }
+    if (
+      row.bmin_enable && row.bmax_enable
+      && row.bmin_gbps > row.bmax_gbps
+    ) {
+      add("error", `PARTID ${row.partid} 的 BMIN 大于 BMAX。`);
+    }
+    if (
+      row.cbusy_l1_ostd < row.cbusy_l2_ostd
+      || row.cbusy_l2_ostd < row.cbusy_l3_ostd
+    ) {
+      add("error", `PARTID ${row.partid} 的 CBusy OSTD 应满足 L1 ≥ L2 ≥ L3。`);
+    }
+    if (
+      row.bmax_enable && row.limit_mode === "hardlimit"
+      && row.cbusy_enable && activePartids.has(row.partid)
+    ) {
+      add("warning", `PARTID ${row.partid} 同时启用 hard BMAX 和 CBusy，可能出现 MC 阻塞与源端限流叠加；建议运行四组对照。`);
+    }
+  });
+
+  const controllerBandwidth = Number(parameters.channels_per_mc)
+    * Number(parameters.channel_bandwidth_gbps);
+  const bminTotal = partids.reduce(
+    (sum, row) => sum + (row.bmin_enable ? row.bmin_gbps : 0),
+    0,
+  );
+  if (bminTotal > controllerBandwidth) {
+    add("warning", `每个 MC 的启用 BMIN 合计 ${formatNumber(bminTotal, 1)} Gbps，超过单 MC 建模带宽 ${formatNumber(controllerBandwidth, 1)} Gbps。`);
+  }
+  if (
+    Number(parameters.cbusy_sample_ns)
+      * Number(parameters.cbusy_release_hold_samples)
+    > Number(parameters.control_interval_ns)
+  ) {
+    add("warning", "CBusy 完整释放保持时间长于软件控制周期，快慢环可能在不同时间尺度上同时作用。");
+  }
+  const bandwidthThresholds = [
+    parameters.cbusy_l1_bw_ratio,
+    parameters.cbusy_l2_bw_ratio,
+    parameters.cbusy_l3_bw_ratio,
+  ].map(Number);
+  const queueThresholds = [
+    parameters.cbusy_l1_queue_ratio,
+    parameters.cbusy_l2_queue_ratio,
+    parameters.cbusy_l3_queue_ratio,
+  ].map(Number);
+  if (
+    bandwidthThresholds[0] > bandwidthThresholds[1]
+    || bandwidthThresholds[1] > bandwidthThresholds[2]
+  ) add("error", "CBusy 带宽阈值应满足 L1 ≤ L2 ≤ L3。");
+  if (
+    queueThresholds[0] > queueThresholds[1]
+    || queueThresholds[1] > queueThresholds[2]
+  ) add("error", "CBusy 队列阈值应满足 L1 ≤ L2 ≤ L3。");
+  if (!messages.length) {
+    add("ok", `配置检查通过：${stimuli.length} 个激励，${activePartids.size} 个活动 PARTID。`);
+  }
+  return messages;
+}
+
+function renderConfigDiagnostics() {
+  const diagnostics = configurationDiagnostics();
+  $("#configDiagnostics").innerHTML = diagnostics.map((row) => `
+    <div class="diagnostic ${row.severity}">
+      <b>${row.severity === "error" ? "错误" : row.severity === "warning" ? "注意" : "通过"}</b>
+      <span>${escapeHtml(row.text)}</span>
+    </div>
+  `).join("");
 }
 
 function configuredMonitorGroups() {
@@ -1609,6 +1984,7 @@ function bindEvents() {
   $$(".tab-button").forEach((button) => button.addEventListener("click", () => {
     $$(".tab-button").forEach((node) => node.classList.toggle("active", node === button));
     $$(".config-section").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
+    $("#configForm").scrollLeft = 0;
     $(".workspace").classList.toggle(
       "config-wide",
       button.dataset.tab === "mpam" || button.dataset.tab === "traffic",
@@ -1641,16 +2017,30 @@ function bindEvents() {
   });
   $$('input[name="policy"]').forEach((input) => input.addEventListener("change", renderResourceMonitor));
   $("#runButton").addEventListener("click", runSimulation);
-  $("#resetButton").addEventListener("click", () => fillForm(state.defaults));
+  $("#experimentButton").addEventListener("click", runExperiment);
+  $("#experimentPartid").addEventListener("change", (event) => {
+    state.experimentPartid = Number(event.target.value);
+    renderExperiment();
+  });
+  $("#causalPartid").addEventListener("change", (event) => {
+    state.causalPartid = Number(event.target.value);
+    renderCausalTimeline();
+  });
+  $("#resetButton").addEventListener("click", () => {
+    fillForm(state.defaults);
+    renderConfigDiagnostics();
+  });
   $("#resetPartidButton").addEventListener("click", () => {
     renderPartidConfig(state.defaults.partid_configs || []);
     normalizePartidMasks();
     normalizeCbusyCaps();
     applyContextHelp();
+    renderConfigDiagnostics();
   });
   $("#resetStimulusButton").addEventListener("click", () => {
     renderStimulusConfig(state.defaults.stimulus_configs || []);
     applyContextHelp();
+    renderConfigDiagnostics();
   });
   $("#playButton").addEventListener("click", togglePlayback);
   $("#timeSlider").addEventListener("input", (event) => {
@@ -1672,6 +2062,8 @@ function bindEvents() {
       normalizeCbusyCaps();
     }
   });
+  $("#configForm").addEventListener("input", renderConfigDiagnostics);
+  $("#configForm").addEventListener("change", renderConfigDiagnostics);
   window.addEventListener("resize", () => requestAnimationFrame(renderCharts));
 }
 
@@ -1681,6 +2073,7 @@ async function init() {
     await loadDefaults();
     applyContextHelp();
     setStatus("ready", "调整参数后运行仿真", 0);
+    renderConfigDiagnostics();
     renderAll();
   } catch (error) {
     failRun(error.message);

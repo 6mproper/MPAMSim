@@ -15,6 +15,7 @@
     <div class="app-actions">
       <span id="statusBadge" class="status-badge ready">READY</span>
       <button id="resetButton" class="icon-button" title="恢复默认配置" aria-label="恢复默认配置">↺</button>
+      <button id="experimentButton" class="experiment-button" data-help="使用相同拓扑、激励和seed顺序运行参考、BMAX-only、CBusy-only和组合控制。">运行四组对照</button>
       <button id="runButton" class="run-button"><span>▶</span>运行仿真</button>
     </div>
   </header>
@@ -154,6 +155,7 @@
             <label>L2 Queue 比<input data-param="cbusy_l2_queue_ratio" type="number" min="0" max="1" step="0.01"></label>
             <label>L3 Queue 比<input data-param="cbusy_l3_queue_ratio" type="number" min="0" max="1" step="0.01"></label>
           </div>
+          <div id="configDiagnostics" class="config-diagnostics" aria-live="polite"></div>
         </section>
       </form>
     </aside>
@@ -215,6 +217,8 @@
       <section class="data-section">
         <div class="result-tabs">
           <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
+          <button class="result-tab" data-result-tab="experiment">对照实验</button>
+          <button class="result-tab" data-result-tab="causal">因果时间线</button>
           <button class="result-tab" data-result-tab="partid">PARTID</button>
           <button class="result-tab" data-result-tab="monitor-group">监控组</button>
           <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
@@ -250,6 +254,72 @@
               <tbody id="resourceMonitorTable">
                 <tr><td class="empty-cell">尚无资源监控结果</td></tr>
               </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="result-view" data-result-view="experiment">
+          <div class="evidence-toolbar">
+            <div>
+              <strong>四组机制对照</strong>
+              <span>相同拓扑、激励、时长和seed；强制静态策略</span>
+            </div>
+            <label>PARTID
+              <select id="experimentPartid"></select>
+            </label>
+          </div>
+          <div id="experimentProgress" class="experiment-progress">尚未运行对照实验</div>
+          <div class="resource-table-wrap">
+            <table class="experiment-table">
+              <thead>
+                <tr>
+                  <th>Case</th><th>吞吐 Gbps</th><th>最大 P99 ns</th>
+                  <th>完成率</th><th>MC Queue Peak</th><th>Queue Area</th>
+                  <th>Throttle ns</th><th>CBusy Stall ns</th>
+                  <th>Hard Blocks</th><th>CBusy Transitions</th>
+                </tr>
+              </thead>
+              <tbody id="experimentTable"><tr><td colspan="10" class="empty-cell">运行四组对照后显示结果</td></tr></tbody>
+            </table>
+          </div>
+          <div class="resource-table-wrap">
+            <table class="experiment-table partid-experiment-table">
+              <thead>
+                <tr>
+                  <th>Case</th><th>PARTID吞吐</th><th>P99 ns</th>
+                  <th>Queue Peak %</th><th>Effective OSTD Min</th>
+                  <th>CBusy Stall ns</th><th>Throttle ns</th><th>Hard Blocks</th>
+                </tr>
+              </thead>
+              <tbody id="experimentPartidTable"><tr><td colspan="8" class="empty-cell">请选择PARTID</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="result-view" data-result-view="causal">
+          <div class="evidence-toolbar">
+            <div>
+              <strong>PARTID 因果时间线</strong>
+              <span>压力 → 反馈 → 源端执行 → 性能响应</span>
+            </div>
+            <label>PARTID
+              <select id="causalPartid"></select>
+            </label>
+          </div>
+          <div class="causal-chain">
+            <span>MC BW / Queue</span><b>→</b><span>CBusy</span><b>→</b>
+            <span>Effective OSTD</span><b>→</b><span>Source Stall</span><b>→</b>
+            <span>P99 / Throughput</span>
+          </div>
+          <div class="resource-table-wrap">
+            <table class="causal-table">
+              <thead>
+                <tr>
+                  <th>Time</th><th>MC BW</th><th>Queue Peak</th>
+                  <th>CBusy</th><th>OSTD / Effective Cap</th>
+                  <th>CBusy Stall</th><th>P99</th><th>Throughput</th>
+                  <th>Control Events</th>
+                </tr>
+              </thead>
+              <tbody id="causalTable"><tr><td colspan="9" class="empty-cell">运行单次仿真后显示因果时间线</td></tr></tbody>
             </table>
           </div>
         </div>

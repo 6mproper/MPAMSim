@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import mimetypes
 import tempfile
@@ -192,7 +193,266 @@ def _compact_msc_rows(rows):
     ]
 
 
+EXPERIMENT_CASES = (
+    ("reference", "参考：BMAX/CBusy关闭", False, False),
+    ("bmax_only", "仅 BMAX", True, False),
+    ("cbusy_only", "仅 CBusy", False, True),
+    ("combined", "BMAX + CBusy", True, True),
+)
+
+
+def derive_experiment_cases(
+    parameters: Dict[str, object],
+) -> Dict[str, Dict[str, object]]:
+    active_partids = {
+        int(row.get("partid", 0))
+        for row in parameters.get("stimulus_configs", [])
+        if isinstance(row, dict) and bool(row.get("enabled", True))
+    }
+    cases: Dict[str, Dict[str, object]] = {}
+    for case_id, _, bmax_enabled, cbusy_enabled in EXPERIMENT_CASES:
+        case = copy.deepcopy(parameters)
+        case["policy"] = "static_mpam"
+        for row in case.get("partid_configs", []):
+            if not isinstance(row, dict):
+                continue
+            partid = int(row.get("partid", -1))
+            row.update(
+                {
+                    "cpbm_enable": False,
+                    "cmin_enable": False,
+                    "cmax_enable": False,
+                    "bmin_enable": False,
+                    "bmax_enable": (
+                        bmax_enabled and partid in active_partids
+                    ),
+                    "priority_enable": False,
+                    "cbusy_enable": (
+                        cbusy_enabled and partid in active_partids
+                    ),
+                }
+            )
+        cases[case_id] = case
+    return cases
+
+
+def summarize_experiment_result(result) -> Dict[str, object]:
+    elapsed_ns = result.elapsed_ns
+    cumulative = result.collector.cumulative_metrics(elapsed_ns)
+    mc_rows = [
+        row
+        for row in result.collector.msc_rows
+        if row.get("msc_type") == "memory_controller"
+    ]
+    queue_by_time: Dict[float, float] = {}
+    for row in mc_rows:
+        time_ns = float(row.get("time_ns", 0))
+        queue_by_time[time_ns] = (
+            queue_by_time.get(time_ns, 0.0)
+            + float(row.get("queue_occupancy", 0))
+        )
+    queue_area = 0.0
+    previous_time = 0.0
+    for time_ns, queue in sorted(queue_by_time.items()):
+        queue_area += queue * max(0.0, time_ns - previous_time)
+        previous_time = time_ns
+
+    final_cpu: Dict[tuple, Dict[str, object]] = {}
+    for row in result.collector.requester_rows:
+        final_cpu[(row["requester_id"], int(row["partid"]))] = row
+
+    per_partid: Dict[str, Dict[str, object]] = {}
+    all_partids = set(cumulative)
+    all_partids.update(int(row["partid"]) for row in final_cpu.values())
+    for partid in sorted(all_partids):
+        metrics = cumulative.get(partid, {})
+        cpu_history = [
+            row
+            for row in result.collector.requester_rows
+            if int(row["partid"]) == partid
+        ]
+        cpu_final = [
+            row
+            for (_, row_partid), row in final_cpu.items()
+            if row_partid == partid
+        ]
+        queue_peak = 0.0
+        throttle_ns = 0.0
+        hard_blocks = 0
+        for row in mc_rows:
+            values = row.get("per_partid", {}).get(str(partid), {})
+            queue_peak = max(
+                queue_peak,
+                float(values.get("cbusy_peak_queue_ratio", 0)),
+            )
+            throttle_ns += float(values.get("throttle_delay_ns", 0))
+            hard_blocks += int(values.get("hardlimit_block_events", 0))
+        per_partid[str(partid)] = {
+            "throughput_gbps": float(metrics.get("throughput_gbps", 0)),
+            "p99_latency_ns": float(metrics.get("p99_latency_ns", 0)),
+            "requests": int(metrics.get("requests", 0)),
+            "queue_ratio_peak": queue_peak,
+            "throttle_delay_ns": throttle_ns,
+            "hard_blocks": hard_blocks,
+            "cbusy_stall_ns": sum(
+                float(row.get("cbusy_stall_ns", 0))
+                for row in cpu_final
+            ),
+            "configured_ostd_stall_ns": sum(
+                float(row.get("configured_ostd_stall_ns", 0))
+                for row in cpu_final
+            ),
+            "cbusy_transitions": sum(
+                int(row.get("cbusy_transitions", 0))
+                for row in cpu_final
+            ),
+            "effective_ostd_min": min(
+                (
+                    int(row.get("effective_max_outstanding", 0))
+                    for row in cpu_history
+                ),
+                default=0,
+            ),
+        }
+
+    total_bytes = sum(int(row.get("bytes", 0)) for row in cumulative.values())
+    return {
+        "simulation_time_ns": elapsed_ns,
+        "total_throughput_gbps": total_bytes * 8.0 / max(elapsed_ns, 1e-9),
+        "max_p99_latency_ns": max(
+            (float(row.get("p99_latency_ns", 0)) for row in cumulative.values()),
+            default=0.0,
+        ),
+        "completion_ratio": result.completed_requests
+        / max(1, result.issued_requests),
+        "mc_queue_peak": max(queue_by_time.values(), default=0.0),
+        "mc_queue_area_entry_ns": queue_area,
+        "throttle_delay_ns": sum(
+            float(values.get("throttle_delay_ns", 0))
+            for row in mc_rows
+            for values in row.get("per_partid", {}).values()
+        ),
+        "hard_blocks": sum(
+            int(values.get("hardlimit_block_events", 0))
+            for row in mc_rows
+            for values in row.get("per_partid", {}).values()
+        ),
+        "cbusy_stall_ns": sum(
+            float(row.get("cbusy_stall_ns", 0))
+            for row in final_cpu.values()
+        ),
+        "configured_ostd_stall_ns": sum(
+            float(row.get("configured_ostd_stall_ns", 0))
+            for row in final_cpu.values()
+        ),
+        "cbusy_transitions": sum(
+            int(row.get("cbusy_transitions", 0))
+            for row in final_cpu.values()
+        ),
+        "per_partid": per_partid,
+    }
+
+
+class ExperimentManager:
+    def __init__(self) -> None:
+        self._jobs: Dict[str, Job] = {}
+        self._lock = threading.Lock()
+
+    def create(self, parameters: Dict[str, object]) -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], parameters=parameters)
+        with self._lock:
+            self._jobs[job.id] = job
+        threading.Thread(
+            target=self._run,
+            args=(job,),
+            daemon=True,
+        ).start()
+        return job
+
+    def get(self, job_id: str) -> Optional[Job]:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def _run(self, job: Job) -> None:
+        experiment_dir = RUN_ROOT / f"experiment-{job.id}"
+        try:
+            cases = derive_experiment_cases(job.parameters)
+            completed = []
+            results = {}
+            for index, (case_id, label, _, _) in enumerate(EXPERIMENT_CASES):
+                with job.lock:
+                    job.status = "running"
+                    job.progress = index / len(EXPERIMENT_CASES)
+                    job.message = f"Running {label}"
+                    job.partial = {
+                        "completed_cases": list(completed),
+                        "results": dict(results),
+                    }
+                case_dir = experiment_dir / case_id
+                raw = build_config(cases[case_id], str(case_dir))
+                RUN_ROOT.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".yaml",
+                    prefix=f"soc-flow-exp-{job.id}-{case_id}-",
+                    delete=False,
+                    encoding="utf-8",
+                ) as handle:
+                    yaml.safe_dump(raw, handle, sort_keys=False)
+                    config_path = Path(handle.name)
+                try:
+                    simulation = Simulation.from_config(
+                        load_config(config_path)
+                    )
+                finally:
+                    config_path.unlink(missing_ok=True)
+                result = simulation.run()
+                result.export(str(case_dir))
+                summary = summarize_experiment_result(result)
+                summary["id"] = case_id
+                summary["label"] = label
+                summary["report_url"] = (
+                    f"/runs/experiment-{job.id}/{case_id}/report.html"
+                )
+                results[case_id] = summary
+                completed.append(case_id)
+
+            payload = {
+                "cases": [
+                    results[case_id]
+                    for case_id, _, _, _ in EXPERIMENT_CASES
+                ],
+                "seed": int(job.parameters.get("seed", 0)),
+            }
+            experiment_dir.mkdir(parents=True, exist_ok=True)
+            (experiment_dir / "experiment_summary.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            with job.lock:
+                job.status = "completed"
+                job.progress = 1.0
+                job.message = "Mechanism comparison completed"
+                job.result = payload
+                job.partial = {
+                    "completed_cases": list(completed),
+                    "results": dict(results),
+                }
+        except (ParameterError, ValueError) as exc:
+            with job.lock:
+                job.status = "failed"
+                job.error = str(exc)
+                job.message = "Experiment configuration rejected"
+        except Exception as exc:  # pragma: no cover
+            traceback.print_exc()
+            with job.lock:
+                job.status = "failed"
+                job.error = f"{type(exc).__name__}: {exc}"
+                job.message = "Experiment failed"
+
+
 JOBS = JobManager()
+EXPERIMENTS = ExperimentManager()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -212,6 +472,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(job.snapshot())
             return
+        if path.startswith("/api/experiments/"):
+            job_id = path.rsplit("/", 1)[-1]
+            job = EXPERIMENTS.get(job_id)
+            if job is None:
+                self._json(
+                    {"error": "Unknown experiment"},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._json(job.snapshot())
+            return
         if path.startswith("/runs/"):
             relative = path[len("/runs/") :]
             self._serve_file(RUN_ROOT, relative)
@@ -225,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path != "/api/jobs":
+        if self.path not in {"/api/jobs", "/api/experiments"}:
             self._json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -236,7 +507,11 @@ class Handler(BaseHTTPRequestHandler):
             parameters = payload.get("parameters", {})
             if not isinstance(parameters, dict):
                 raise ValueError("parameters must be an object")
-            job = JOBS.create(parameters)
+            job = (
+                EXPERIMENTS.create(parameters)
+                if self.path == "/api/experiments"
+                else JOBS.create(parameters)
+            )
             self._json(
                 {"job_id": job.id, "status": job.status},
                 HTTPStatus.ACCEPTED,

@@ -111,6 +111,17 @@ useful_throttle_ratio = latency_improvement / throughput_loss
 
 Track queue occupancy over time. A good controller should reduce sustained queue buildup and avoid oscillation.
 
+For deterministic case comparison, report both peak queue occupancy and queue
+area:
+
+```text
+queue_area_entry_ns = sum(queue_occupancy_i * interval_ns_i)
+```
+
+Peak captures the worst instantaneous pressure. Queue area captures how much
+pressure persists over time; lower is better when offered load and run length
+are held constant.
+
 ### Policy Stability
 
 Track:

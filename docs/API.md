@@ -196,3 +196,32 @@ Memory-controller `per_partid` snapshots also include configured/effective
 BMIN, BMAX, and priority values, their enable flags, and CBusy level,
 bandwidth ratio, queue ratio, duty, OSTD cap, assertion count, and transition
 count.
+
+## 9. Interactive Experiment API
+
+Submit a deterministic four-case mechanism experiment:
+
+```http
+POST /api/experiments
+Content-Type: application/json
+
+{"parameters": {...}}
+```
+
+The server derives and runs `reference`, `bmax_only`, `cbusy_only`, and
+`combined` sequentially. All cases preserve topology, stimulus, duration,
+configured control values, and random seed. The experiment forces
+`static_mpam` and disables controls other than the BMAX/CBusy mechanism being
+tested.
+
+Poll progress and partial case summaries:
+
+```http
+GET /api/experiments/<job_id>
+```
+
+The completed result contains overall and per-PARTID evidence. Overall fields
+include throughput, maximum P99, completion ratio, MC queue peak and
+time-integrated queue area, throttle delay, hard blocks, CBusy source stall,
+configured-OSTD stall, and CBusy transitions. Each case also links to its
+static report under `/runs/experiment-<job_id>/<case>/report.html`.

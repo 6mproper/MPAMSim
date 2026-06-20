@@ -101,6 +101,17 @@ It provides:
 - CPU and MC resource views expose the causal chain: MC CBusy inputs/level,
   requester effective OSTD, CBusy source stall, queueing, latency, and
   throughput cost.
+- A one-command four-case experiment holds topology, stimulus, duration, and
+  seed constant while comparing reference, BMAX-only, CBusy-only, and
+  combined control. It reports overall and selected-PARTID deltas and links
+  each case to its static report.
+- A selected-PARTID causal timeline aligns MC bandwidth/queue pressure, CBusy
+  level, CPU outstanding/effective OSTD, source stall, P99, throughput, and
+  delivered control events at each control interval.
+- Live configuration diagnostics identify invalid or risky combinations such
+  as BMIN/BMAX inversion, aggregate BMIN overcommit, unordered CBusy
+  thresholds/caps, disabled monitoring on active PARTIDs, and stacked hard
+  BMAX plus CBusy throttling. Diagnostics never rewrite the user's values.
 
 ## 3. Visualization Requirements
 
@@ -144,9 +155,11 @@ report.html
 
 ## 5. Live UI Boundary
 
-A live GUI is a deferred extension. If added later, it should consume the same config and output schemas rather than introducing a new internal control path.
+The implemented live GUI consumes the same validated configuration and output
+schemas as CLI/Python runs. It does not introduce an independent simulation
+or control path.
 
-Future GUI panels should map to existing concepts:
+Additional GUI panels should continue to map to existing concepts:
 
 - Topology editor.
 - Workload/stimulus editor.
