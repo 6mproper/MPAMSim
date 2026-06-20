@@ -10,19 +10,19 @@ from src.config.schema import MPAMSettingConfig
 class MPAMSetting:
     partid: int
     cache_portion_bitmap: Optional[str] = None
-    cache_min_ways: int = 0
-    cache_max_ways: Optional[int] = None
+    cache_min_percent: float = 0.0
+    cache_max_percent: Optional[float] = None
     bw_max_gbps: Optional[float] = None
     bw_min_gbps: Optional[float] = None
     bw_limit_mode: str = "hardlimit"
-    priority: int = 0
+    mc_qos: int = 0
     monitor_enable: bool = True
     cpbm_enable: bool = True
     cmin_enable: bool = True
     cmax_enable: bool = True
     bmin_enable: bool = True
     bmax_enable: bool = True
-    priority_enable: bool = True
+    mc_qos_enable: bool = True
     cbusy_enable: bool = False
     cbusy_l1_ostd: int = 24
     cbusy_l2_ostd: int = 12
@@ -33,12 +33,12 @@ class MPAMSetting:
         return self.cache_portion_bitmap
 
     @property
-    def cmin(self) -> int:
-        return self.cache_min_ways
+    def cmin(self) -> float:
+        return self.cache_min_percent
 
     @property
-    def cmax(self) -> Optional[int]:
-        return self.cache_max_ways
+    def cmax(self) -> Optional[float]:
+        return self.cache_max_percent
 
     @property
     def bmin(self) -> Optional[float]:
@@ -56,19 +56,19 @@ class SettingsTable:
             self._settings[control.partid] = MPAMSetting(
                 partid=control.partid,
                 cache_portion_bitmap=control.cache_portion_bitmap,
-                cache_min_ways=control.cache_min_ways,
-                cache_max_ways=control.cache_max_ways,
+                cache_min_percent=control.cache_min_percent,
+                cache_max_percent=control.cache_max_percent,
                 bw_max_gbps=control.bw_max_gbps,
                 bw_min_gbps=control.bw_min_gbps,
                 bw_limit_mode=control.bw_limit_mode,
-                priority=control.priority or 0,
+                mc_qos=control.mc_qos,
                 monitor_enable=control.monitor_enable,
                 cpbm_enable=control.cpbm_enable,
                 cmin_enable=control.cmin_enable,
                 cmax_enable=control.cmax_enable,
                 bmin_enable=control.bmin_enable,
                 bmax_enable=control.bmax_enable,
-                priority_enable=control.priority_enable,
+                mc_qos_enable=control.mc_qos_enable,
                 cbusy_enable=control.cbusy_enable,
                 cbusy_l1_ostd=control.cbusy_l1_ostd,
                 cbusy_l2_ostd=control.cbusy_l2_ostd,

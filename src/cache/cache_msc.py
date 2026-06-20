@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -233,10 +234,12 @@ class CacheMSC(Component):
         eligible: List[int],
     ) -> Optional[int]:
         setting = self.settings.lookup(partid)
-        current_count = sum(
-            way.owner_partid == partid for way in ways
+        owner_counts = self._sampled_owner_counts()
+        current_count = owner_counts.get(partid, 0)
+        cmax = self._quota_lines(
+            self._effective_max_percent(setting),
+            round_up=False,
         )
-        cmax = self._effective_max_ways(setting)
 
         if current_count >= cmax:
             own = [
@@ -258,24 +261,16 @@ class CacheMSC(Component):
         if empty:
             return empty[0]
 
-        owner_counts: DefaultDict[int, int] = defaultdict(int)
-        for way in ways:
-            if way.owner_partid is not None:
-                owner_counts[way.owner_partid] += 1
-
         candidates = []
         for index in eligible:
             owner = ways[index].owner_partid
             if owner is None:
                 candidates.append(index)
                 continue
-            owner_cmin = (
-                self.settings.lookup(owner).cache_min_ways
-                if (
-                    self.enforce_controls
-                    and self.settings.lookup(owner).cmin_enable
-                )
-                else 0
+            owner_setting = self.settings.lookup(owner)
+            owner_cmin = self._quota_lines(
+                self._effective_min_percent(owner_setting),
+                round_up=True,
             )
             if owner_counts[owner] > owner_cmin:
                 candidates.append(index)
@@ -301,23 +296,66 @@ class CacheMSC(Component):
             if mask & (1 << index)
         ]
 
-    def _effective_max_ways(self, setting: MPAMSetting) -> int:
+    @property
+    def sampled_capacity_lines(self) -> int:
+        sampled_sets = math.ceil(
+            self.config.sets / self.config.monitor_group_sets
+        )
+        return sampled_sets * self.config.ways
+
+    def _reachable_percent(self, partid: int) -> float:
+        return (
+            len(self._eligible_way_indexes(partid))
+            * 100.0
+            / self.config.ways
+        )
+
+    def _effective_min_percent(self, setting: MPAMSetting) -> float:
         if not self.enforce_controls:
-            return self.config.ways
-        enabled = len(self._eligible_way_indexes(setting.partid))
+            return 0.0
+        if not setting.cmin_enable:
+            return 0.0
+        return max(
+            0.0,
+            min(
+                self._reachable_percent(setting.partid),
+                setting.cache_min_percent,
+            ),
+        )
+
+    def _effective_max_percent(self, setting: MPAMSetting) -> float:
+        if not self.enforce_controls:
+            return 100.0
+        reachable = self._reachable_percent(setting.partid)
         configured = (
-            setting.cache_max_ways
+            setting.cache_max_percent
             if (
                 setting.cmax_enable
-                and setting.cache_max_ways is not None
+                and setting.cache_max_percent is not None
             )
-            else enabled
+            else 100.0
         )
-        return max(0, min(enabled, configured))
+        return max(0.0, min(reachable, configured))
+
+    def _quota_lines(
+        self,
+        percent: float,
+        round_up: bool,
+    ) -> int:
+        lines = self.sampled_capacity_lines * percent / 100.0
+        return (
+            math.ceil(lines - 1e-12)
+            if round_up
+            else math.floor(lines + 1e-12)
+        )
 
     def allowed_capacity_bytes(self, partid: int) -> int:
-        max_ways = self._effective_max_ways(self.settings.lookup(partid))
-        return self.config.sets * self.config.line_size * max_ways
+        percent = self._effective_max_percent(
+            self.settings.lookup(partid)
+        )
+        return int(
+            self.config.size_bytes * percent / 100.0
+        )
 
     def _hit_probability(
         self,
@@ -384,32 +422,48 @@ class CacheMSC(Component):
             setting = self.settings.lookup(partid)
             sampled_bytes = values["sampled_bytes"]
             estimated_bytes = sampled_bytes * sample_scale
+            sampled_count = owner_counts.get(partid, 0)
+            occupancy_share = (
+                sampled_count / max(1, self.sampled_capacity_lines)
+            )
+            cmin_percent = self._effective_min_percent(setting)
+            cmax_percent = self._effective_max_percent(setting)
             per_partid[str(partid)] = {
                 **values,
                 "estimated_access_bytes": estimated_bytes,
                 "estimated_bandwidth_gbps": (
                     estimated_bytes * 8.0 / max(interval_ns, 1e-9)
                 ),
-                "sampled_way_count": owner_counts.get(partid, 0),
+                "sampled_way_count": sampled_count,
                 "estimated_occupancy_bytes": (
-                    owner_counts.get(partid, 0)
+                    sampled_count
                     * sample_scale
                     * self.config.line_size
                 ),
                 "allowed_capacity_bytes": self.allowed_capacity_bytes(partid),
-                "cmin": (
-                    setting.cache_min_ways
-                    if self.enforce_controls and setting.cmin_enable
-                    else 0
+                "cache_capacity_bytes": self.config.size_bytes,
+                "occupancy_share": occupancy_share,
+                "cmin_percent": cmin_percent,
+                "cmax_percent": cmax_percent,
+                "cmin": cmin_percent,
+                "cmax": cmax_percent,
+                "cmin_quota_lines": self._quota_lines(
+                    cmin_percent, round_up=True
                 ),
-                "cmax": self._effective_max_ways(setting),
+                "cmax_quota_lines": self._quota_lines(
+                    cmax_percent, round_up=False
+                ),
+                "sampled_capacity_lines": self.sampled_capacity_lines,
+                "reachable_percent": self._reachable_percent(partid),
                 "cpbm": (
                     setting.cache_portion_bitmap
                     if self.enforce_controls and setting.cpbm_enable
                     else f"{(1 << self.config.ways) - 1:x}"
                 ),
-                "configured_cmin": setting.cache_min_ways,
-                "configured_cmax": setting.cache_max_ways,
+                "configured_cmin_percent": setting.cache_min_percent,
+                "configured_cmax_percent": setting.cache_max_percent,
+                "configured_cmin": setting.cache_min_percent,
+                "configured_cmax": setting.cache_max_percent,
                 "configured_cpbm": setting.cache_portion_bitmap,
                 "cmin_enable": self.enforce_controls and setting.cmin_enable,
                 "cmax_enable": self.enforce_controls and setting.cmax_enable,
@@ -450,6 +504,10 @@ class CacheMSC(Component):
                     1.0,
                     estimated_occupancy
                     / max(1.0, allowed_capacity),
+                ),
+                "occupancy_share": (
+                    sampled_ways
+                    / max(1, self.sampled_capacity_lines)
                 ),
             }
 

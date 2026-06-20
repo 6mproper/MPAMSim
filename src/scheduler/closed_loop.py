@@ -23,8 +23,8 @@ class ClosedLoopQoSPolicy(PolicyBase):
         self.protected = [int(value) for value in params.get("protected_partids", list(self.targets))]
         self.background = [int(value) for value in params.get("background_partids", [])]
         self.max_step_percent = float(params.get("max_bw_step_percent", 10.0))
-        self.priority_min = int(params.get("priority_min", 0))
-        self.priority_max = int(params.get("priority_max", 15))
+        self.qos_min = int(params.get("qos_min", 0))
+        self.qos_max = int(params.get("qos_max", 7))
         self.hysteresis = float(params.get("p99_hysteresis", 0.10))
         self.min_hold_intervals = int(params.get("min_hold_intervals", 3))
         self._last_update_interval = -self.min_hold_intervals
@@ -78,13 +78,13 @@ class ClosedLoopQoSPolicy(PolicyBase):
         for msc_id, table in self.mc_tables.items():
             for partid in self.protected:
                 setting = table.lookup(partid)
-                if not setting.priority_enable:
+                if not setting.mc_qos_enable:
                     continue
-                current = setting.priority
-                new_priority = min(self.priority_max, current + 1)
-                if new_priority != current:
+                current = setting.mc_qos
+                new_qos = min(self.qos_max, current + 1)
+                if new_qos != current:
                     updates.append(
-                        ControlUpdate(msc_id, partid, "priority", new_priority, reason, self.name)
+                        ControlUpdate(msc_id, partid, "mc_qos", new_qos, reason, self.name)
                     )
             for partid in self.background:
                 setting = table.lookup(partid)

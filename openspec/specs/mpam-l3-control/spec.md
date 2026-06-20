@@ -12,15 +12,17 @@ Each configured L3/SLC MSC SHALL expose independent settings and monitoring entr
 - **THEN** its L3 monitor row remains present with zero activity counters
 
 ### Requirement: L3 allocation controls
-The L3 model SHALL apply CPBM as the eligible-way mask, CMAX as the maximum sampled ways allocated to a PARTID, and CMIN as sampled ownership protected from replacement.
+The L3 model SHALL apply CPBM as the eligible-way mask, CMAX as the maximum
+percentage of physical L3 capacity owned by a PARTID, and CMIN as the minimum
+percentage protected from replacement after demand has populated lines.
 
-#### Scenario: Restrict cache allocation
-- **WHEN** a PARTID has fewer CPBM-enabled ways or a lower CMAX
-- **THEN** its allowed capacity and sampled allocation cannot exceed the configured limit
+#### Scenario: Restrict proportional allocation
+- **WHEN** a PARTID reaches its effective CMAX percentage
+- **THEN** its aggregate ownership across sampled sets cannot grow further
 
-#### Scenario: Protect minimum allocation
-- **WHEN** a victim PARTID owns no more sampled ways than its CMIN
-- **THEN** another PARTID cannot evict those protected sampled ways
+#### Scenario: Protect proportional minimum
+- **WHEN** a victim PARTID is at or below its effective CMIN sampled-line target
+- **THEN** another PARTID cannot evict that victim
 
 ### Requirement: One-in-eight-set approximate monitor
 The L3 model SHALL sample the first set in every group of eight sets and SHALL scale sampled access and occupancy observations by eight.
@@ -94,3 +96,16 @@ whose owner remains above CMIN.
 #### Scenario: Aggressor competes with protected owner
 - **WHEN** an aggressor is below CMAX and the victim owner is at CMIN
 - **THEN** that victim is skipped and another eligible owner above CMIN is selected
+
+### Requirement: Proportional Control Validation
+The configuration SHALL require each enabled CMIN/CMAX pair to satisfy
+`0 <= CMIN <= CMAX <= 100`, SHALL reject enabled CMIN totals above 100%, and
+SHALL reject CMIN above the effective CPBM reachable percentage.
+
+#### Scenario: Overcommit CMIN
+- **WHEN** enabled CMIN percentages on one L3 sum above 100%
+- **THEN** configuration validation fails with the configured sum
+
+#### Scenario: CMAX totals exceed 100%
+- **WHEN** multiple CMAX percentages sum above 100%
+- **THEN** configuration remains valid because CMAX is a per-PARTID ceiling

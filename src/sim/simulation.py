@@ -228,12 +228,9 @@ class Simulation:
         return generators
 
     def _default_priority(self, partid: int) -> int:
-        if not self.enforce_controls:
-            return 0
-        return max(
-            (table.lookup(partid).priority for table in self.settings_tables.values()),
-            default=0,
-        )
+        # MC QoS is local to the memory controller in this model. NoC
+        # arbitration remains neutral until a separate NoC QoS contract exists.
+        return 0
 
     def _next_request_id(self) -> int:
         self._request_id += 1

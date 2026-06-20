@@ -913,6 +913,69 @@ canvas {
   border-top: 8px solid #edf0f2;
 }
 
+.effect-chart-grid {
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  background: #f2f5f6;
+  border-bottom: 1px solid var(--line);
+}
+
+.effect-chart-grid article {
+  min-width: 0;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.effect-chart-grid h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.effect-chart-grid canvas {
+  height: 180px;
+}
+
+.effect-overview-table,
+.effect-timeline-table {
+  min-width: 1180px;
+}
+
+.effect-timeline-table {
+  border-top: 8px solid #edf0f2;
+}
+
+.effect-state {
+  min-width: 46px;
+  padding: 3px 6px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #aeb9c1;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.effect-state.pass {
+  color: #176046;
+  background: #e8f3ed;
+  border-color: #8db8a1;
+}
+
+.effect-state.fail {
+  color: #8a2525;
+  background: #fde2e2;
+  border-color: #cf7777;
+}
+
+.effect-state.observe {
+  color: #66500a;
+  background: #fff5d7;
+  border-color: #d0ad58;
+}
+
 .experiment-table td {
   height: 44px;
 }
@@ -1348,6 +1411,12 @@ canvas {
   cursor: help;
 }
 
+[data-algorithm] {
+  cursor: help;
+  text-decoration: underline dotted #83949f;
+  text-underline-offset: 3px;
+}
+
 th[data-help],
 .chart-title h3[data-help] {
   text-decoration: underline dotted #9ba8b1;
@@ -1377,6 +1446,56 @@ th[data-help],
 .help-tooltip.visible {
   visibility: visible;
   opacity: 1;
+}
+
+.algorithm-popover {
+  position: fixed;
+  z-index: 1100;
+  width: min(460px, calc(100vw - 24px));
+  max-height: 65vh;
+  padding: 14px 42px 14px 15px;
+  visibility: hidden;
+  overflow: auto;
+  opacity: 0;
+  color: #eef4f7;
+  background: #18252f;
+  border: 1px solid #59707e;
+  border-radius: 5px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+  transition: opacity 100ms ease;
+}
+
+.algorithm-popover.visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+.algorithm-popover h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.algorithm-popover div {
+  color: #cbd7de;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.algorithm-popover button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: #dce6eb;
+  background: transparent;
+  border: 1px solid #607582;
+  border-radius: 3px;
+  font-size: 18px;
+  line-height: 1;
 }
 
 table {
@@ -1530,6 +1649,10 @@ th {
   }
 
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .effect-chart-grid {
     grid-template-columns: 1fr;
   }
 

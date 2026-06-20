@@ -26,20 +26,20 @@ sources:
 | PE instruction/data tags | Separate PARTID/PMG for instruction and data accesses | Not implemented | Each workload emits one tag pair |
 | Virtual PARTID mapping | Guest-to-physical identifier mapping | Not implemented | Hypervisor and register behavior are outside V1 |
 | Transport | Preserve MPAM bundle through CHI/NoC/bridges | Behaviorally implemented | Abstract request metadata is preserved; no CHI flit encoding |
-| NoC priority | PARTID-derived arbitration preference | Implemented | Request priority affects the modeled NoC bottleneck queue |
+| NoC priority | PARTID-derived arbitration preference | Interface reserved | Current requests use neutral NoC priority; MC QoS is intentionally local |
 | NoC bandwidth MSC | Per-PARTID weighted/rate control at NoC | Interface reserved | Queue and backpressure hooks exist; no separate NoC MBW table |
 | CPBM | Cache portion/way eligibility | Implemented | Controls sampled-set eligible ways and effective capacity |
-| CMAX | Maximum cache allocation | Implemented approximately | Bounds sampled ways and capacity-based hit probability |
-| CMIN | Minimum cache allocation preference/protection | Implemented approximately | Protects sampled ownership from replacement; not an architected full-cache guarantee |
+| CMAX | Maximum cache allocation | Implemented approximately | Percentage of physical L3, enforced as a global sampled-owner upper quota |
+| CMIN | Minimum cache allocation preference/protection | Implemented approximately | Percentage of physical L3, enforced as global sampled-owner replacement protection |
 | CASSOC | Per-set associativity maximum | Not implemented | Could extend sampled victim selection later |
 | CSU | Cache storage usage monitor | Approximated | First set of each eight-set group is sampled and occupancy is scaled by eight |
 | MBWU | Memory bandwidth usage monitor | Implemented behaviorally | Reports per-PARTID traffic at L3 and MC observation points |
 | MBW_MAX hard limit | Stop service above a bandwidth maximum | Implemented | Per-MC, per-PARTID token bucket delays dispatch |
-| MBW_MAX soft limit | Work-conserving cap under contention | Implemented approximately | Over-limit traffic receives a contention-only priority penalty |
-| MBW_MIN | Prefer under-minimum traffic | Implemented approximately | Per-MC credit grants scheduler bonus; not a real-time guarantee |
+| MBW_MAX soft limit | Work-conserving cap under contention | Implemented approximately | Over-limit traffic receives a contention-only MC QoS demotion |
+| MBW_MIN | Prefer under-minimum traffic | Implemented approximately | Per-MC credit grants bounded MC QoS promotion; not a real-time guarantee |
 | BWPBM | Bandwidth portion bitmap | Not implemented | Future alternative bandwidth actuator |
 | Proportional stride | Relative bandwidth scheduling | Not implemented | Scheduler interface can host a later stride/DRR model |
-| Internal/downstream priority | Conflict-time service preference | Implemented behaviorally | One priority field drives modeled NoC and MC arbitration |
+| Internal/downstream priority | Conflict-time service preference | Implemented behaviorally at MC | Per-PARTID 3-bit MC QoS 0..7; NoC remains independent and neutral |
 | PARTID disable | Disable a partition at an MSC | Not implemented | Can be added as an admission-control state |
 | PARTID narrowing | Map global PARTID to smaller local table | Interface reserved | Per-MSC settings tables provide the replacement boundary |
 | RIS | Multiple resources behind one MSC feature page | Interface reserved | L3 and MC instances are separate model components today |
@@ -53,16 +53,16 @@ sources:
 | HW_SCALE | Scale same-PARTID PE limits by active PE count | Not implemented | The new 16-thread stimulus enables future experiments |
 | SMMU/device tagging | Assign PARTID/PMG to DMA and internal accesses | Generic requester interface reserved | Web scenario currently instantiates CPU threads only |
 | MSC domains/DCTRL | Local namespace translation and default controls | Not implemented | Future chiplet/domain extension |
-| Closed-loop policy | Monitor, decide, and update controls | Implemented as slow loop | P99-driven MC BMAX/priority policy with hysteresis and hold time |
+| Closed-loop policy | Monitor, decide, and update controls | Implemented as slow loop | P99-driven MC BMAX/QoS policy with hysteresis and hold time |
 
 ## 3. Current End-to-End Closed Loop
 
 ```text
 16 hardware-thread stimuli
   -> requester with PARTID/PMG
-  -> NoC queue and priority
+  -> NoC queue with neutral arbitration
   -> L3 CPBM/CMIN/CMAX plus sampled CSU/traffic
-  -> MC BMIN/BMAX/priority plus MBWU
+  -> MC BMIN/BMAX/3-bit QoS plus MBWU
   -> per-PARTID latency/bandwidth monitors
   -> optional closed-loop policy update
 ```

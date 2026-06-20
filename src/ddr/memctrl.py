@@ -29,6 +29,12 @@ def _mc_counters() -> Dict[str, float]:
         "softlimit_bytes": 0,
         "softlimit_penalty_events": 0,
         "hardlimit_block_events": 0,
+        "effective_qos_sum": 0,
+        "effective_qos_min": 7,
+        "effective_qos_max": 0,
+        "qos_promoted_requests": 0,
+        "qos_demoted_requests": 0,
+        "qos_aging_promotions": 0,
     }
 
 
@@ -256,11 +262,14 @@ class MemoryControllerMSC(Component):
                 self.kernel.now_ns
                 - request.mem_enqueue_time_ns,
             )
-            aging_bonus = int(
+            aging_steps = min(
+                self.config.qos_aging_max_steps,
+                int(
                 age / max(1.0, self.config.aging_ns)
+                ),
             )
-            bmin_bonus = (
-                self.config.bmin_priority_boost
+            bmin_promote = (
+                self.config.bmin_qos_promote
                 if (
                     self.enforce_controls
                     and setting.bmin_enable
@@ -279,38 +288,39 @@ class MemoryControllerMSC(Component):
                     partid, request.size_bytes
                 )
             )
-            soft_penalty = (
-                self.config.softlimit_priority_penalty
+            soft_demote = (
+                self.config.softlimit_qos_demote
                 if soft_over and contended
                 else 0
             )
-            if soft_penalty > 0:
-                self._interval_per_partid[partid][
-                    "softlimit_penalty_events"
-                ] += 1
-                self._interval_per_group[
-                    (partid, request.pmg)
-                ]["softlimit_penalty_events"] += 1
-            effective_priority = (
-                (
-                    setting.priority
-                    if (
-                        self.enforce_controls
-                        and setting.priority_enable
-                    )
-                    else 0
+            base_qos = (
+                setting.mc_qos
+                if (
+                    self.enforce_controls
+                    and setting.mc_qos_enable
                 )
-                + min(self.config.aging_priority_cap, aging_bonus)
-                + bmin_bonus
-                - soft_penalty
+                else 0
+            )
+            effective_qos = max(
+                0,
+                min(
+                    7,
+                    base_qos
+                    + aging_steps
+                    + bmin_promote
+                    - soft_demote,
+                ),
             )
             candidates.append(
                 (
-                    effective_priority,
+                    effective_qos,
                     -sequence,
                     partid,
                     request,
-                    bmin_bonus > 0,
+                    base_qos,
+                    aging_steps,
+                    bmin_promote,
+                    soft_demote,
                     soft_over,
                 )
             )
@@ -321,11 +331,24 @@ class MemoryControllerMSC(Component):
             _,
             partid,
             request,
-            under_bmin,
+            base_qos,
+            aging_steps,
+            bmin_promote,
+            soft_demote,
             soft_over,
         ) = max(candidates)
         sequence, _ = self._queues[partid].popleft()
-        request._mc_under_bmin = under_bmin
+        request._mc_base_qos = base_qos
+        request._mc_effective_qos = max(
+            0,
+            min(
+                7,
+                base_qos + aging_steps + bmin_promote - soft_demote,
+            ),
+        )
+        request._mc_aging_steps = aging_steps
+        request._mc_under_bmin = bmin_promote > 0
+        request._mc_soft_demoted = soft_demote > 0
         request._mc_soft_over = soft_over
         return sequence, request
 
@@ -448,6 +471,26 @@ class MemoryControllerMSC(Component):
             counters["softlimit_bytes"] += request.size_bytes
             group_counters["softlimit_requests"] += 1
             group_counters["softlimit_bytes"] += request.size_bytes
+        effective_qos = int(getattr(request, "_mc_effective_qos", 0))
+        aging_steps = int(getattr(request, "_mc_aging_steps", 0))
+        for target in (counters, group_counters):
+            target["effective_qos_sum"] += effective_qos
+            target["effective_qos_min"] = min(
+                target["effective_qos_min"], effective_qos
+            )
+            target["effective_qos_max"] = max(
+                target["effective_qos_max"], effective_qos
+            )
+            target["qos_promoted_requests"] += int(
+                getattr(request, "_mc_under_bmin", False)
+            )
+            target["qos_demoted_requests"] += int(
+                getattr(request, "_mc_soft_demoted", False)
+            )
+            target["qos_aging_promotions"] += aging_steps
+        if getattr(request, "_mc_soft_demoted", False):
+            counters["softlimit_penalty_events"] += 1
+            group_counters["softlimit_penalty_events"] += 1
 
         self._interval_busy_ns += serialization_ns
         self._interval_requests += 1
@@ -632,6 +675,12 @@ class MemoryControllerMSC(Component):
                 self._interval_per_partid[partid]
             )
             setting = self.settings.lookup(partid)
+            requests = int(values["requests"])
+            effective_qos_avg = (
+                values["effective_qos_sum"] / requests
+                if requests
+                else 0.0
+            )
             per_partid[str(partid)] = {
                 **values,
                 "achieved_bandwidth_gbps": (
@@ -660,21 +709,28 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls
                     else "disabled"
                 ),
-                "priority": (
-                    setting.priority
+                "base_qos": (
+                    setting.mc_qos
                     if (
                         self.enforce_controls
-                        and setting.priority_enable
+                        and setting.mc_qos_enable
                     )
                     else 0
                 ),
+                "effective_qos_avg": effective_qos_avg,
+                "effective_qos_min": (
+                    values["effective_qos_min"] if requests else 0
+                ),
+                "effective_qos_max": (
+                    values["effective_qos_max"] if requests else 0
+                ),
                 "configured_bmax_gbps": setting.bw_max_gbps,
                 "configured_bmin_gbps": setting.bw_min_gbps,
-                "configured_priority": setting.priority,
+                "configured_mc_qos": setting.mc_qos,
                 "bmax_enable": self.enforce_controls and setting.bmax_enable,
                 "bmin_enable": self.enforce_controls and setting.bmin_enable,
-                "priority_enable": (
-                    self.enforce_controls and setting.priority_enable
+                "mc_qos_enable": (
+                    self.enforce_controls and setting.mc_qos_enable
                 ),
                 "cbusy_enable": (
                     self.enforce_controls and setting.cbusy_enable
@@ -725,6 +781,7 @@ class MemoryControllerMSC(Component):
                 / max(interval_ns, 1e-9)
             )
             setting = self.settings.lookup(partid)
+            requests = int(values["requests"])
             monitor_groups[f"{partid}:{pmg}"] = {
                 "partid": partid,
                 "pmg": pmg,
@@ -756,18 +813,23 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls
                     else "disabled"
                 ),
-                "priority": (
-                    setting.priority
+                "base_qos": (
+                    setting.mc_qos
                     if (
                         self.enforce_controls
-                        and setting.priority_enable
+                        and setting.mc_qos_enable
                     )
                     else 0
                 ),
+                "effective_qos_avg": (
+                    values["effective_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
                 "bmax_enable": self.enforce_controls and setting.bmax_enable,
                 "bmin_enable": self.enforce_controls and setting.bmin_enable,
-                "priority_enable": (
-                    self.enforce_controls and setting.priority_enable
+                "mc_qos_enable": (
+                    self.enforce_controls and setting.mc_qos_enable
                 ),
                 "cbusy_enable": (
                     self.enforce_controls and setting.cbusy_enable
@@ -788,11 +850,9 @@ class MemoryControllerMSC(Component):
             "requests": self._interval_requests,
             "token_bucket_window_ns": self.config.token_bucket_window_ns,
             "aging_ns": self.config.aging_ns,
-            "aging_priority_cap": self.config.aging_priority_cap,
-            "bmin_priority_boost": self.config.bmin_priority_boost,
-            "softlimit_priority_penalty": (
-                self.config.softlimit_priority_penalty
-            ),
+            "qos_aging_max_steps": self.config.qos_aging_max_steps,
+            "bmin_qos_promote": self.config.bmin_qos_promote,
+            "softlimit_qos_demote": self.config.softlimit_qos_demote,
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
             "monitor_groups": monitor_groups,

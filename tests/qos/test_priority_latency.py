@@ -4,7 +4,7 @@ from src.config.loader import load_config
 from src.sim.simulation import Simulation
 
 
-def test_higher_priority_reduces_latency_under_contention(base_config, config_writer) -> None:
+def test_higher_mc_qos_reduces_latency_under_contention(base_config, config_writer) -> None:
     base_config["mpam"]["msc_controls"] = [
         {
             "msc_id": "slc0",
@@ -16,8 +16,8 @@ def test_higher_priority_reduces_latency_under_contention(base_config, config_wr
         {
             "msc_id": "mc0",
             "controls": [
-                {"partid": 1, "priority": 15},
-                {"partid": 2, "priority": 1},
+                {"partid": 1, "mc_qos": 7},
+                {"partid": 2, "mc_qos": 0},
             ],
         },
     ]

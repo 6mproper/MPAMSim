@@ -58,17 +58,17 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Memory controller {mc.id} aging quantum must be positive"
             )
-        if not 0 <= mc.aging_priority_cap <= 255:
+        if not 0 <= mc.qos_aging_max_steps <= 7:
             raise ConfigError(
-                f"Memory controller {mc.id} aging cap must be in [0, 255]"
+                f"Memory controller {mc.id} QoS aging steps must be in [0, 7]"
             )
-        if not 0 <= mc.bmin_priority_boost <= 255:
+        if not 0 <= mc.bmin_qos_promote <= 7:
             raise ConfigError(
-                f"Memory controller {mc.id} BMIN boost must be in [0, 255]"
+                f"Memory controller {mc.id} BMIN QoS promotion must be in [0, 7]"
             )
-        if not 0 <= mc.softlimit_priority_penalty <= 255:
+        if not 0 <= mc.softlimit_qos_demote <= 7:
             raise ConfigError(
-                f"Memory controller {mc.id} soft penalty must be in [0, 255]"
+                f"Memory controller {mc.id} softlimit QoS demotion must be in [0, 7]"
             )
         if mc.cbusy_sample_ns <= 0:
             raise ConfigError(
@@ -154,8 +154,8 @@ def validate_config(config: ProjectConfig) -> None:
                 raise ConfigError(
                     "bw_limit_mode must be softlimit or hardlimit"
                 )
-            if control.priority is not None and not 0 <= control.priority <= 255:
-                raise ConfigError("priority must be in [0, 255]")
+            if not 0 <= control.mc_qos <= 7:
+                raise ConfigError("mc_qos must be in [0, 7]")
             if not (
                 1
                 <= control.cbusy_l3_ostd
@@ -175,16 +175,27 @@ def validate_config(config: ProjectConfig) -> None:
                     if bitmap >= (1 << ways):
                         raise ConfigError(f"Cache mask for {entry.msc_id} exceeds {ways} ways")
                     enabled_ways = bin(bitmap).count("1")
+                    reachable_percent = enabled_ways * 100.0 / ways
                     cmax = (
-                        control.cache_max_ways
-                        if control.cache_max_ways is not None
-                        else enabled_ways
+                        control.cache_max_percent
+                        if control.cache_max_percent is not None
+                        else 100.0
                     )
-                    if not 0 <= control.cache_min_ways <= cmax <= ways:
+                    if not 0 <= control.cache_min_percent <= cmax <= 100:
                         raise ConfigError(
-                            f"MSC {entry.msc_id} requires 0 <= CMIN <= CMAX <= ways"
+                            f"MSC {entry.msc_id} requires 0 <= CMIN <= CMAX <= 100%"
                         )
-                    if cmax > enabled_ways:
+                    if control.cache_min_percent > reachable_percent + 1e-9:
                         raise ConfigError(
-                            f"MSC {entry.msc_id} CMAX exceeds CPBM enabled ways"
+                            f"MSC {entry.msc_id} CMIN exceeds CPBM reachable capacity"
                         )
+        if entry.msc_id in config.cache_by_id:
+            enabled_cmin_total = sum(
+                control.cache_min_percent
+                for control in entry.controls
+                if control.cmin_enable
+            )
+            if enabled_cmin_total > 100.0 + 1e-9:
+                raise ConfigError(
+                    f"MSC {entry.msc_id} enabled CMIN total exceeds 100%"
+                )

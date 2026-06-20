@@ -226,7 +226,7 @@ def derive_experiment_cases(
                     "bmax_enable": (
                         bmax_enabled and partid in active_partids
                     ),
-                    "priority_enable": False,
+                    "mc_qos_enable": False,
                     "cbusy_enable": (
                         cbusy_enabled and partid in active_partids
                     ),
@@ -355,9 +355,11 @@ def summarize_experiment_result(result) -> Dict[str, object]:
 
 CONTROL_VERIFICATION_CASES = (
     ("cmin_off", "CMIN 关闭"),
-    ("cmin_on", "CMIN = 8"),
-    ("cmax_full", "CMAX = 16"),
-    ("cmax_limited", "CMAX = 2"),
+    ("cmin_on", "CMIN = 50%"),
+    ("cmax_full", "CMAX = 100%"),
+    ("cmax_limited", "CMAX = 12.5%"),
+    ("qos_equal", "MC QoS = 3 / 3"),
+    ("qos_split", "MC QoS = 7 / 0"),
     ("bmin_off", "BMIN 关闭"),
     ("bmin_on", "BMIN = 24 Gbps"),
     ("bmax_solo_off", "BMAX 关闭 / 单流"),
@@ -397,15 +399,15 @@ def derive_control_verification_cases(
                     "cmax_enable": False,
                     "cpbm": "ffff",
                     "cmin": 0,
-                    "cmax": 16,
+                    "cmax": 100,
                     "bmin_enable": False,
                     "bmax_enable": False,
-                    "priority_enable": False,
+                    "mc_qos_enable": False,
                     "cbusy_enable": False,
                     "bmin_gbps": 0,
                     "bmax_gbps": 10,
                     "limit_mode": "softlimit",
-                    "priority": 0,
+                    "mc_qos": 0,
                 }
             )
         return case
@@ -444,8 +446,8 @@ def derive_control_verification_cases(
                 {
                     "cpbm_enable": True,
                     "cmin_enable": case_id == "cmin_on",
-                    "cmin": 8,
-                    "cmax": 16,
+                    "cmin": 50,
+                    "cmax": 100,
                 }
             )
             case["partid_configs"][1]["cpbm_enable"] = True
@@ -455,9 +457,29 @@ def derive_control_verification_cases(
                 {
                     "cpbm_enable": True,
                     "cmax_enable": True,
-                    "cmax": 2 if case_id == "cmax_limited" else 16,
+                    "cmax": 12.5 if case_id == "cmax_limited" else 100,
                 }
             )
+        elif case_id.startswith("qos"):
+            stimulus(case, 0, 0, 64)
+            stimulus(case, 1, 1, 64)
+            for partid in (0, 1):
+                case["partid_configs"][partid].update(
+                    {
+                        "cpbm_enable": True,
+                        "cmax_enable": True,
+                        "cpbm": "0000",
+                        "cmax": 0,
+                        "mc_qos_enable": True,
+                        "mc_qos": (
+                            7
+                            if case_id == "qos_split" and partid == 0
+                            else 0
+                            if case_id == "qos_split"
+                            else 3
+                        ),
+                    }
+                )
         elif case_id.startswith("bmin"):
             stimulus(case, 0, 0, 64)
             stimulus(case, 1, 1, 64)
@@ -612,6 +634,43 @@ def summarize_control_verification_case(result) -> Dict[str, object]:
                 )
                 for row in mc_rows
             ),
+            "base_qos": max(
+                (
+                    float(
+                        row.get("per_partid", {})
+                        .get(key, {})
+                        .get("base_qos", 0)
+                    )
+                    for row in mc_rows
+                ),
+                default=0.0,
+            ),
+            "effective_qos_avg": (
+                sum(
+                    float(
+                        row.get("per_partid", {})
+                        .get(key, {})
+                        .get("effective_qos_avg", 0)
+                    )
+                    * float(
+                        row.get("per_partid", {})
+                        .get(key, {})
+                        .get("requests", 0)
+                    )
+                    for row in mc_rows
+                )
+                / max(
+                    1.0,
+                    sum(
+                        float(
+                            row.get("per_partid", {})
+                            .get(key, {})
+                            .get("requests", 0)
+                        )
+                        for row in mc_rows
+                    ),
+                )
+            ),
         }
     return {
         "simulation_time_ns": result.elapsed_ns,
@@ -667,8 +726,19 @@ def evaluate_control_verification(
         "cmax",
         "CMAX 分配上界",
         cmax_limited <= 2 and cmax_full > cmax_limited,
-        "CMAX=2 时隔离 sampled set 的 ownership 不超过 2 ways",
+        "CMAX=12.5% 时全局 sampled ownership 不超过 2/16 lines",
         f"全量={cmax_full:.0f} ways，限制={cmax_limited:.0f} ways",
+    )
+
+    qos_equal = p("qos_equal", "throughput_gbps")
+    qos_split = p("qos_split", "throughput_gbps")
+    qos_effective = p("qos_split", "effective_qos_avg")
+    add(
+        "mc_qos",
+        "MC 3-bit QoS 仲裁",
+        qos_effective >= 6.0 and qos_split > qos_equal * 1.05,
+        "相同需求下，QoS 7 相比对等 QoS 获得更高仲裁份额",
+        f"对等={qos_equal:.2f} Gbps，7/0={qos_split:.2f} Gbps，effective={qos_effective:.2f}",
     )
 
     bmin_off = p("bmin_off", "throughput_gbps")
@@ -886,9 +956,9 @@ class ControlVerificationManager(ExperimentManager):
                         "l3_lookup_parallelism",
                         "mc_token_bucket_window_ns",
                         "mc_aging_ns",
-                        "mc_aging_priority_cap",
-                        "mc_bmin_priority_boost",
-                        "mc_softlimit_priority_penalty",
+                        "mc_qos_aging_max_steps",
+                        "mc_bmin_qos_promote",
+                        "mc_softlimit_qos_demote",
                     )
                 },
                 "cases": [

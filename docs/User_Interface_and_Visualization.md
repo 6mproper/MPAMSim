@@ -65,13 +65,13 @@ It provides:
 - A 16-row stimulus editor mapped to `cpu0.t0` through `cpu7.t1`, with
   independent PARTID, PMG, workload type, rate, request size, read ratio,
   working set, and P99 target.
-- A 16-row PARTID editor for monitor enable, CMIN, CMAX, CPBM, BMIN, BMAX,
-  softlimit/hardlimit, and priority.
+- A 16-row PARTID editor for monitor enable, percentage CMIN/CMAX, CPBM,
+  BMIN, BMAX, softlimit/hardlimit, and 3-bit MC QoS.
 - Explicit L3 set count, ways per set, line size, bounded request queue,
   lookup parallelism, and fixed eight-set approximate-monitor grouping.
 - Policy selection and closed-loop stability parameters.
-- Configurable MC token-bucket window, aging quantum/cap, BMIN priority boost,
-  and soft-limit priority penalty.
+- Configurable MC token-bucket window, aging quantum/step cap, BMIN QoS
+  promotion, and soft-limit QoS demotion.
 - Background simulation jobs with control-interval progress updates.
 - Dynamic charts, time-slider playback, MSC tables, control traces, and links to static reports.
 - A 16-row MPAM monitor table with sampled L3 bandwidth/occupancy and
@@ -80,6 +80,8 @@ It provides:
 - Contextual help on configuration categories, fields, abbreviated table
   columns, policies, and result views. Hover and keyboard focus use the same
   tooltip content.
+- Anchored, scrollable algorithm popovers for L3 allocation, CMIN/CMAX,
+  BMIN/BMAX, MC QoS, and control-effect interpretation.
 - A live `PARTID+PMG` monitor-group table updated at control intervals. It
   shows requester membership, estimated L3 occupancy/utilization, L3 sampled
   bandwidth, MC achieved bandwidth/utilization, requests, and throttle delay.
@@ -95,7 +97,7 @@ It provides:
   closed-loop monitoring, and runtime-adjusted control, with the latest update
   target, field, time, and reason.
 - Independent per-PARTID switches for CPBM, CMIN, CMAX, BMIN, BMAX,
-  priority, and CBusy. A disabled control keeps its configured value visible
+  MC QoS, and CBusy. A disabled control keeps its configured value visible
   while the resource monitor shows the neutral effective value.
 - CBusy fast-loop configuration for detector period, feedback latency,
   release hold, bandwidth/queue thresholds, and per-PARTID level-1/2/3 OSTD
@@ -114,8 +116,12 @@ It provides:
   as BMIN/BMAX inversion, aggregate BMIN overcommit, unordered CBusy
   thresholds/caps, disabled monitoring on active PARTIDs, and stacked hard
   BMAX plus CBusy throttling. Diagnostics never rewrite the user's values.
-- A built-in algorithm-verification view runs deterministic CMIN, CMAX, BMIN,
-  BMAX soft-limit, and BMAX hard-limit microbenchmarks and reports explicit
+- A control-effect view shows all 16 PARTIDs' targets, actual L3 share,
+  bandwidth, base/effective QoS, P99, applicability, and adherence state.
+  Selecting one PARTID shows synchronized full-run L3, bandwidth, QoS, and
+  P99 charts plus a control-event table.
+- A built-in algorithm-verification view runs deterministic CMIN, CMAX,
+  MC QoS, BMIN, BMAX soft-limit, and BMAX hard-limit microbenchmarks and reports explicit
   pass criteria, evidence, case counters, and report links.
 
 ## 3. Visualization Requirements

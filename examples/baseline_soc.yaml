@@ -45,10 +45,16 @@ soc:
         channels: 2
         bandwidth_gbps_per_channel: 128
         scheduler: priority_rr
+        qos_aging_max_steps: 3
+        bmin_qos_promote: 2
+        softlimit_qos_demote: 2
       - id: mc1
         channels: 2
         bandwidth_gbps_per_channel: 128
         scheduler: priority_rr
+        qos_aging_max_steps: 3
+        bmin_qos_promote: 2
+        softlimit_qos_demote: 2
 
 requesters:
   auto_expand_cpu_threads: true
@@ -88,30 +94,38 @@ mpam:
       controls:
         - partid: 1
           cache_portion_bitmap: "00ff"
+          cmin_percent: 25
+          cmax_percent: 50
         - partid: 2
           cache_portion_bitmap: "ff00"
+          cmin_percent: 0
+          cmax_percent: 50
     - msc_id: slc1
       controls:
         - partid: 1
           cache_portion_bitmap: "00ff"
+          cmin_percent: 25
+          cmax_percent: 50
         - partid: 2
           cache_portion_bitmap: "ff00"
+          cmin_percent: 0
+          cmax_percent: 50
     - msc_id: mc0
       controls:
         - partid: 1
           bw_max_gbps: 120
-          priority: 12
+          mc_qos: 7
         - partid: 2
           bw_max_gbps: 80
-          priority: 4
+          mc_qos: 2
     - msc_id: mc1
       controls:
         - partid: 1
           bw_max_gbps: 120
-          priority: 12
+          mc_qos: 7
         - partid: 2
           bw_max_gbps: 80
-          priority: 4
+          mc_qos: 2
 
 workloads:
   - name: latency_service
@@ -141,8 +155,8 @@ policies:
     params:
       interval_ns: 100000
       max_bw_step_percent: 10
-      priority_min: 0
-      priority_max: 15
+      qos_min: 0
+      qos_max: 7
       background_partids: [2]
       protected_partids: [1]
 

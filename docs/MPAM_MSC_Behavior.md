@@ -31,7 +31,7 @@ Required capabilities include:
 - `cache_portion`
 - `bw_max`
 - `bw_min`
-- `priority`
+- `mc_qos`
 - `monitor`
 - `admission_control`
 - `credit_backpressure`
@@ -65,8 +65,9 @@ and data pipeline timing separately.
 ### 3.2 Set/Way Model and Approximate Monitor
 
 The cache geometry is explicitly configured with `sets`, `ways`, and
-`line_size`. CPBM selects eligible ways, CMAX bounds allocation in the
-sampled set, and CMIN protects an owner's sampled ways from replacement.
+`line_size`. CPBM selects eligible ways. CMIN and CMAX are percentages of
+the whole physical L3 capacity and are enforced through global sampled-owner
+quotas.
 
 To keep system-level runs tractable, occupancy monitoring samples one set
 from every group of eight consecutive sets:
@@ -75,7 +76,11 @@ from every group of eight consecutive sets:
 sampled_set = set_index % 8 == 0
 estimated_occupancy_bytes = sampled_owned_ways * 8 * line_size
 estimated_access_bytes = sampled_access_bytes * 8
-allowed_capacity_bytes = sets * line_size * min(popcount(CPBM), CMAX)
+reachable_percent = popcount(CPBM) / ways * 100
+effective_CMIN = min(configured_CMIN_percent, reachable_percent)
+effective_CMAX = min(configured_CMAX_percent, reachable_percent)
+allowed_capacity_bytes = size_bytes * effective_CMAX / 100
+sampled_capacity_lines = ceil(sets / 8) * ways
 hit_probability = f(allowed_capacity_bytes, working_set_bytes, locality, access_type)
 ```
 
@@ -88,15 +93,20 @@ The sampled replacement algorithm is:
 
 ```text
 eligible = ways selected by effective CPBM
-if owned_ways >= effective_CMAX:
+global_owned = ownership across every sampled set
+if global_owned >= floor(sampled_capacity_lines * effective_CMAX / 100):
     replace requester's own eligible LRU way
 else:
     use an empty eligible way, if present
-    otherwise replace the global eligible LRU victim whose owner_count > owner_CMIN
+    otherwise replace the eligible LRU victim whose global owner count is
+    above ceil(sampled_capacity_lines * owner_CMIN / 100)
 ```
 
 An owner at or below effective CMIN is skipped. CMIN is therefore replacement
 protection, not immediate pre-allocation; a PARTID must first populate ways.
+Enabled CMIN values must total at most 100% per L3 and each CMIN must fit
+inside its CPBM-reachable percentage. CMAX values may overlap and total above
+100%.
 
 ### 3.3 L3/SLC Enforcement
 
@@ -136,7 +146,9 @@ PARTID.
 
 ## 4. NoC MSC Behavior
 
-NoC behavior is included because MPAM-style priority and flow-control policies often need an interconnect enforcement point.
+NoC behavior is included because MPAM-style flow-control policies often need
+an interconnect enforcement point. The current change keeps NoC request
+priority neutral; MC QoS is not implicitly copied into the NoC.
 
 Required effects:
 
@@ -163,7 +175,7 @@ On memory-controller arrival:
 1. Read `request.partid`.
 2. Lookup memory-controller setting for that PARTID.
 3. Apply token-bucket bandwidth cap or reservation approximation.
-4. Map priority into scheduler class.
+4. Compute the local 3-bit MC QoS.
 5. Schedule request onto a channel.
 
 ### 5.2 Bandwidth Cap
@@ -187,36 +199,38 @@ Bucket capacity is:
 capacity_bytes = max(64, rate_gbps / 8 * token_bucket_window_ns)
 ```
 
-`hardlimit` blocks a request until tokens are available. `softlimit` applies
-a priority penalty only under contention and remains work-conserving.
+`hardlimit` removes a request from eligible candidates until tokens are
+available. `softlimit` lowers MC QoS only under contention and remains
+work-conserving.
 
 ### 5.3 Bandwidth Minimum
 
 `bw_min_gbps` is a reservation approximation in V1. The scheduler should use it as a floor when sharing service among contending PARTIDs, but it is not a full real-time guarantee unless a later model implements stricter admission control.
 
 The current implementation uses an independent BMIN credit bucket. If the
-head request can consume BMIN credit, it receives
-`bmin_priority_boost`. Credit is consumed when that request is dispatched.
+head request can consume BMIN credit, it receives `bmin_qos_promote` QoS
+steps. Credit is consumed when that request is dispatched.
 
 Each memory controller has an independent BMIN/BMAX setting and token state.
 The interactive monitor displays the sum across memory-controller instances,
 so a per-MC BMAX of 20 Gbps appears as 40 Gbps when two MCs are configured.
 
-### 5.4 Priority
+### 5.4 MC 3-bit QoS
 
-Priority affects arbitration among ready requests:
+MC QoS affects arbitration among ready requests:
 
 ```text
-effective_priority =
-    configured_priority
-  + min(aging_priority_cap, floor(queue_age_ns / aging_ns))
-  + bmin_priority_boost when BMIN credit covers the request
-  - softlimit_priority_penalty when over BMAX and contended
+effective_qos = clamp(
+    configured_mc_qos
+  + min(qos_aging_max_steps, floor(queue_age_ns / aging_ns))
+  + bmin_qos_promote when BMIN credit covers the request
+  - softlimit_qos_demote when over BMAX and contended,
+  0, 7)
 ```
 
-The highest score wins; sequence order provides FIFO tie-breaking. Hard BMAX
-requests without tokens are not candidates. These constants are configurable
-model behavior, not architected MPAM encodings.
+The highest QoS wins; sequence order provides oldest-first tie-breaking.
+Hard-BMAX-ineligible requests are filtered first. These constants are
+configurable model behavior, not architected MPAM encodings.
 
 ### 5.5 Memory-Controller Monitors
 
@@ -226,7 +240,7 @@ Required counters:
 - bytes by PARTID/PMG.
 - achieved bandwidth by PARTID.
 - configured `bw_max_gbps` and `bw_min_gbps`.
-- priority by PARTID.
+- base and effective MC QoS by PARTID.
 - queue occupancy.
 - throttle delay.
 - queue delay.
@@ -241,12 +255,12 @@ achieved bandwidth, controller capacity, and:
 bandwidth_utilization = group_bandwidth / controller_total_bandwidth
 ```
 
-BMIN, BMAX, and priority remain PARTID controls; PMG does not create a
+BMIN, BMAX, and MC QoS remain PARTID controls; PMG does not create a
 separate token bucket.
 
 ### 5.6 Independent Control Enables
 
-CPBM, CMIN, CMAX, BMIN, BMAX, priority, and CBusy each have a per-PARTID
+CPBM, CMIN, CMAX, BMIN, BMAX, MC QoS, and CBusy each have a per-PARTID
 enable. Disabling a mechanism retains its configured value for software
 inspection but selects a neutral effective behavior. Monitoring remains active.
 

@@ -94,6 +94,17 @@ def _optional_float(value: Any) -> Optional[float]:
     return None if value is None else float(value)
 
 
+def _qos_value(
+    item: Dict[str, Any],
+    name: str,
+    legacy_name: str,
+    default: int,
+) -> int:
+    if name in item:
+        return int(item[name])
+    return max(0, min(7, int(item.get(legacy_name, default))))
+
+
 def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
     source_path = Path(path).resolve()
     raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
@@ -161,10 +172,17 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             base_latency_ns=float(item.get("base_latency_ns", 80.0)),
             token_bucket_window_ns=float(item.get("token_bucket_window_ns", 100.0)),
             aging_ns=float(item.get("aging_ns", 500.0)),
-            aging_priority_cap=int(item.get("aging_priority_cap", 15)),
-            bmin_priority_boost=int(item.get("bmin_priority_boost", 16)),
-            softlimit_priority_penalty=int(
-                item.get("softlimit_priority_penalty", 16)
+            qos_aging_max_steps=_qos_value(
+                item, "qos_aging_max_steps", "aging_priority_cap", 3
+            ),
+            bmin_qos_promote=_qos_value(
+                item, "bmin_qos_promote", "bmin_priority_boost", 2
+            ),
+            softlimit_qos_demote=_qos_value(
+                item,
+                "softlimit_qos_demote",
+                "softlimit_priority_penalty",
+                2,
             ),
             cbusy_sample_ns=float(item.get("cbusy_sample_ns", 1_000.0)),
             cbusy_feedback_latency_ns=float(
@@ -201,12 +219,23 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 cache_portion_bitmap=item.get(
                     "cpbm", item.get("cache_portion_bitmap")
                 ),
-                cache_min_ways=int(
-                    item.get("cmin", item.get("cache_min_ways", 0))
+                cache_min_percent=float(
+                    item.get(
+                        "cmin_percent",
+                        item.get("cmin", item.get("cache_min_percent", 0)),
+                    )
                 ),
-                cache_max_ways=(
-                    int(item.get("cmax", item.get("cache_max_ways")))
-                    if item.get("cmax", item.get("cache_max_ways"))
+                cache_max_percent=(
+                    float(
+                        item.get(
+                            "cmax_percent",
+                            item.get("cmax", item.get("cache_max_percent")),
+                        )
+                    )
+                    if item.get(
+                        "cmax_percent",
+                        item.get("cmax", item.get("cache_max_percent")),
+                    )
                     is not None
                     else None
                 ),
@@ -222,14 +251,16 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                         item.get("bw_limit_mode", "hardlimit"),
                     )
                 ),
-                priority=int(item["priority"]) if item.get("priority") is not None else None,
+                mc_qos=_qos_value(item, "mc_qos", "priority", 0),
                 monitor_enable=bool(item.get("monitor_enable", True)),
                 cpbm_enable=bool(item.get("cpbm_enable", True)),
                 cmin_enable=bool(item.get("cmin_enable", True)),
                 cmax_enable=bool(item.get("cmax_enable", True)),
                 bmin_enable=bool(item.get("bmin_enable", True)),
                 bmax_enable=bool(item.get("bmax_enable", True)),
-                priority_enable=bool(item.get("priority_enable", True)),
+                mc_qos_enable=bool(
+                    item.get("mc_qos_enable", item.get("priority_enable", True))
+                ),
                 cbusy_enable=bool(item.get("cbusy_enable", False)),
                 cbusy_l1_ostd=int(item.get("cbusy_l1_ostd", 24)),
                 cbusy_l2_ostd=int(item.get("cbusy_l2_ostd", 12)),

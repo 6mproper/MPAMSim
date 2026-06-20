@@ -59,8 +59,8 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
     assert config.memory_controllers[0].token_bucket_window_ns == 100
-    assert config.memory_controllers[0].bmin_priority_boost == 16
-    assert config.memory_controllers[0].softlimit_priority_penalty == 16
+    assert config.memory_controllers[0].bmin_qos_promote == 2
+    assert config.memory_controllers[0].softlimit_qos_demote == 2
 
 
 def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:
@@ -134,7 +134,7 @@ def test_experiment_cases_only_change_bmax_and_cbusy_enables() -> None:
             "cmin_enable",
             "cmax_enable",
             "bmin_enable",
-            "priority_enable",
+            "mc_qos_enable",
         )
     )
 
@@ -167,9 +167,10 @@ def test_experiment_summary_contains_system_and_partid_evidence(tmp_path) -> Non
 def test_control_verification_cases_isolate_mechanisms() -> None:
     cases = derive_control_verification_cases(default_parameters())
 
-    assert len(cases) == 11
+    assert len(cases) == 13
     assert cases["cmin_on"]["partid_configs"][0]["cmin_enable"] is True
-    assert cases["cmax_limited"]["partid_configs"][0]["cmax"] == 2
+    assert cases["cmax_limited"]["partid_configs"][0]["cmax"] == 12.5
+    assert cases["qos_split"]["partid_configs"][0]["mc_qos"] == 7
     assert cases["bmin_on"]["partid_configs"][0]["bmin_enable"] is True
     assert cases["bmax_solo_soft"]["partid_configs"][0]["limit_mode"] == "softlimit"
     assert cases["bmax_solo_hard"]["partid_configs"][0]["limit_mode"] == "hardlimit"
@@ -188,10 +189,11 @@ def test_control_verification_suite_passes_default_algorithms(
     ControlVerificationManager()._run(job)
 
     assert job.status == "completed"
-    assert job.result["passed"] == job.result["total"] == 6
+    assert job.result["passed"] == job.result["total"] == 7
     assert {row["id"] for row in job.result["checks"]} == {
         "cmin",
         "cmax",
+        "mc_qos",
         "bmin",
         "bmax_soft_uncontended",
         "bmax_hard",

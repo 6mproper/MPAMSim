@@ -57,9 +57,9 @@ soc:
         queue_depth: 256
         token_bucket_window_ns: 100
         aging_ns: 500
-        aging_priority_cap: 15
-        bmin_priority_boost: 16
-        softlimit_priority_penalty: 16
+        qos_aging_max_steps: 3
+        bmin_qos_promote: 2
+        softlimit_qos_demote: 2
       - id: mc1
         channels: 2
         bandwidth_gbps_per_channel: 128
@@ -106,8 +106,8 @@ mpam:
     - msc_id: slc0
       controls:
         - partid: 1
-          cmin: 4
-          cmax: 8
+          cmin_percent: 25
+          cmax_percent: 50
           cpbm: "00ff"
         - partid: 2
           cache_portion_bitmap: "ff00"
@@ -123,18 +123,18 @@ mpam:
           bmin: 40
           bmax: 120
           limit_mode: hardlimit
-          priority: 12
+          mc_qos: 7
         - partid: 2
           bw_max_gbps: 80
-          priority: 4
+          mc_qos: 2
     - msc_id: mc1
       controls:
         - partid: 1
           bw_max_gbps: 120
-          priority: 12
+          mc_qos: 7
         - partid: 2
           bw_max_gbps: 80
-          priority: 4
+          mc_qos: 2
 
 workloads:
   - name: latency_service
@@ -162,8 +162,8 @@ policies:
     params:
       interval_ns: 100000
       max_bw_step_percent: 10
-      priority_min: 0
-      priority_max: 15
+      qos_min: 0
+      qos_max: 7
       background_partids: [2]
       protected_partids: [1]
 
@@ -224,7 +224,7 @@ cmin_enable: true
 cmax_enable: true
 bmin_enable: true
 bmax_enable: true
-priority_enable: true
+mc_qos_enable: true
 cbusy_enable: false
 cbusy_l1_ostd: 24
 cbusy_l2_ostd: 12
@@ -245,12 +245,12 @@ cbusy_l2_queue_ratio: 0.50
 cbusy_l3_queue_ratio: 0.75
 ```
 cache portion bitmap
-cache minimum ways
-cache maximum ways
+cache minimum percentage of physical L3
+cache maximum percentage of physical L3
 bandwidth max
 bandwidth min or reservation approximation
 bandwidth limit mode: softlimit or hardlimit
-priority class
+memory-controller QoS class, 0..7
 monitor enable
 ```
 

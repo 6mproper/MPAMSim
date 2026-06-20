@@ -193,9 +193,14 @@ The CPU monitor is a requester and flow-control view. It does not model CPU
 pipeline occupancy, reorder buffers, SMT execution sharing, or coherency.
 
 Memory-controller `per_partid` snapshots also include configured/effective
-BMIN, BMAX, and priority values, their enable flags, and CBusy level,
+BMIN and BMAX, configured/base/effective 3-bit MC QoS, their enable flags, and CBusy level,
 bandwidth ratio, queue ratio, duty, OSTD cap, assertion count, and transition
 count.
+
+L3 `per_partid` snapshots include physical-cache `occupancy_share`,
+`configured_cmin_percent`, `configured_cmax_percent`, effective percentage
+targets, CPBM-reachable percentage, sampled quota lines, estimated occupancy,
+and allowed capacity.
 
 ## 9. Interactive Experiment API
 
@@ -243,10 +248,11 @@ Poll with:
 GET /api/verifications/<job_id>
 ```
 
-The suite runs 11 microbenchmark cases and emits six checks:
+The suite runs 13 microbenchmark cases and emits seven checks:
 
-- CMIN sampled replacement protection;
-- CMAX sampled ownership bound;
+- CMIN percentage-based sampled replacement protection;
+- CMAX percentage-based sampled ownership bound;
+- MC 3-bit QoS arbitration;
 - BMIN credit-based scheduler preference;
 - BMAX soft-limit work conservation without contention;
 - BMAX hard token blocking and throttle;
@@ -258,4 +264,4 @@ this simulator's implementation; it is not an Arm MPAM architectural
 compliance test. To isolate mechanisms, the suite uses a fixed one-L3,
 one-MC microbenchmark topology with one sampled eight-set group and 32 Gbps
 MC service capacity. It preserves the submitted random seed, L3 queue
-parameters, and configurable MC algorithm constants.
+parameters, and configurable MC QoS adjustment constants.

@@ -55,9 +55,9 @@ class MemoryControllerConfig:
     base_latency_ns: float = 80.0
     token_bucket_window_ns: float = 100.0
     aging_ns: float = 500.0
-    aging_priority_cap: int = 15
-    bmin_priority_boost: int = 16
-    softlimit_priority_penalty: int = 16
+    qos_aging_max_steps: int = 3
+    bmin_qos_promote: int = 2
+    softlimit_qos_demote: int = 2
     cbusy_sample_ns: float = 1_000.0
     cbusy_feedback_latency_ns: float = 50.0
     cbusy_release_hold_samples: int = 3
@@ -84,19 +84,19 @@ class RequesterConfig:
 class MPAMSettingConfig:
     partid: int
     cache_portion_bitmap: Optional[str] = None
-    cache_min_ways: int = 0
-    cache_max_ways: Optional[int] = None
+    cache_min_percent: float = 0.0
+    cache_max_percent: Optional[float] = None
     bw_max_gbps: Optional[float] = None
     bw_min_gbps: Optional[float] = None
     bw_limit_mode: str = "hardlimit"
-    priority: Optional[int] = None
+    mc_qos: int = 0
     monitor_enable: bool = True
     cpbm_enable: bool = True
     cmin_enable: bool = True
     cmax_enable: bool = True
     bmin_enable: bool = True
     bmax_enable: bool = True
-    priority_enable: bool = True
+    mc_qos_enable: bool = True
     cbusy_enable: bool = False
     cbusy_l1_ostd: int = 24
     cbusy_l2_ostd: int = 12

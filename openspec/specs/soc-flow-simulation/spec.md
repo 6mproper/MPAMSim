@@ -105,3 +105,12 @@ cache minimum/maximum allocation and memory bandwidth minimum/maximum behavior.
 #### Scenario: Repeat a verification suite
 - **WHEN** the same parameters and seed are submitted twice
 - **THEN** every verification check and measured evidence is identical
+
+### Requirement: Target And Effect Evidence
+The simulator SHALL emit interval evidence sufficient to compare configured
+cache, bandwidth, QoS, and latency targets with achieved values and control
+cost per PARTID.
+
+#### Scenario: Evaluate a complete run
+- **WHEN** a simulation completes
+- **THEN** target adherence can be calculated from interval snapshots without inferring missing internal state from final averages

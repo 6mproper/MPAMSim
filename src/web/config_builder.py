@@ -93,45 +93,45 @@ def _default_partid_configs(
             "cpbm_enable": True,
             "cmin_enable": True,
             "cmax_enable": True,
-            "cmin": 0,
-            "cmax": ways,
+            "cmin": 0.0,
+            "cmax": 100.0,
             "cpbm": f"{full_mask:0{width}x}",
             "bmin_enable": True,
             "bmax_enable": True,
             "bmin_gbps": 0.0,
             "bmax_gbps": total_mc_bandwidth,
             "limit_mode": "softlimit",
-            "priority_enable": True,
-            "priority": 4,
+            "mc_qos_enable": True,
+            "mc_qos": 3,
             "cbusy_enable": False,
             "cbusy_l1_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.75))),
             "cbusy_l2_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.50))),
             "cbusy_l3_ostd": max(1, min(max_outstanding, math.ceil(max_outstanding * 0.125))),
         }
         rows.append(row)
-    rows[0].update({"name": "default", "priority": 4})
+    rows[0].update({"name": "default", "mc_qos": 3})
     rows[1].update(
         {
             "name": "latency_sensitive",
-            "cmin": max(1, lower_ways // 2),
-            "cmax": lower_ways,
+            "cmin": 25.0,
+            "cmax": 50.0,
             "cpbm": f"{lower_mask:0{width}x}",
             "bmin_gbps": min(40.0, total_mc_bandwidth),
             "bmax_gbps": min(120.0, total_mc_bandwidth),
             "limit_mode": "hardlimit",
-            "priority": 12,
+            "mc_qos": 7,
         }
     )
     rows[2].update(
         {
             "name": "background_bandwidth",
             "cmin": 0,
-            "cmax": ways - lower_ways,
+            "cmax": 50.0,
             "cpbm": f"{upper_mask:0{width}x}",
             "bmin_gbps": 0.0,
             "bmax_gbps": min(80.0, total_mc_bandwidth),
             "limit_mode": "hardlimit",
-            "priority": 4,
+            "mc_qos": 2,
         }
     )
     return rows
@@ -216,9 +216,9 @@ def default_parameters() -> Dict[str, object]:
         "mc_queue_depth": 512,
         "mc_token_bucket_window_ns": 100,
         "mc_aging_ns": 500,
-        "mc_aging_priority_cap": 15,
-        "mc_bmin_priority_boost": 16,
-        "mc_softlimit_priority_penalty": 16,
+        "mc_qos_aging_max_steps": 3,
+        "mc_bmin_qos_promote": 2,
+        "mc_softlimit_qos_demote": 2,
         "max_outstanding": 32,
         "cbusy_sample_ns": 1_000,
         "cbusy_feedback_latency_ns": 50,
@@ -269,11 +269,16 @@ def _parse_partid_configs(
             full_mask,
         )
         enabled_ways = bin(int(cpbm, 16)).count("1")
-        cmin = int(raw.get("cmin", 0))
-        cmax = int(raw.get("cmax", enabled_ways))
-        if not 0 <= cmin <= cmax <= enabled_ways:
+        reachable_percent = enabled_ways * 100.0 / ways
+        cmin = float(raw.get("cmin", 0))
+        cmax = float(raw.get("cmax", 100))
+        if not 0 <= cmin <= cmax <= 100:
             raise ParameterError(
-                f"PARTID {partid}: require 0 <= CMIN <= CMAX <= CPBM ways"
+                f"PARTID {partid}: require 0 <= CMIN <= CMAX <= 100%"
+            )
+        if bool(raw.get("cmin_enable", True)) and cmin > reachable_percent + 1e-9:
+            raise ParameterError(
+                f"PARTID {partid}: enabled CMIN exceeds CPBM reachable capacity"
             )
         try:
             bmin = float(raw.get("bmin_gbps", 0.0))
@@ -301,10 +306,10 @@ def _parse_partid_configs(
             raise ParameterError(
                 f"PARTID {partid}: invalid limit mode"
             )
-        priority = int(raw.get("priority", 4))
-        if not 0 <= priority <= 15:
+        mc_qos = int(raw.get("mc_qos", raw.get("priority", 3)))
+        if not 0 <= mc_qos <= 7:
             raise ParameterError(
-                f"PARTID {partid}: priority must be 0..15"
+                f"PARTID {partid}: MC QoS must be 0..7"
             )
         cbusy_l1_ostd = min(
             max_outstanding,
@@ -363,8 +368,13 @@ def _parse_partid_configs(
                 "bmin_gbps": bmin,
                 "bmax_gbps": bmax,
                 "limit_mode": limit_mode,
-                "priority_enable": bool(raw.get("priority_enable", True)),
-                "priority": priority,
+                "mc_qos_enable": bool(
+                    raw.get(
+                        "mc_qos_enable",
+                        raw.get("priority_enable", True),
+                    )
+                ),
+                "mc_qos": mc_qos,
                 "cbusy_enable": bool(raw.get("cbusy_enable", False)),
                 "cbusy_l1_ostd": cbusy_l1_ostd,
                 "cbusy_l2_ostd": cbusy_l2_ostd,
@@ -374,6 +384,13 @@ def _parse_partid_configs(
     if seen != set(range(16)):
         raise ParameterError(
             "PARTID entries must cover every value 0..15"
+        )
+    enabled_cmin_total = sum(
+        row["cmin"] for row in parsed if row["cmin_enable"]
+    )
+    if enabled_cmin_total > 100.0 + 1e-9:
+        raise ParameterError(
+            "Enabled L3 CMIN total must not exceed 100% per L3 instance"
         )
     return sorted(parsed, key=lambda row: row["partid"])
 
@@ -622,14 +639,14 @@ def build_config(
     mc_aging_ns = _number(
         values, "mc_aging_ns", 500, 0.1, 1_000_000
     )
-    mc_aging_priority_cap = _integer(
-        values, "mc_aging_priority_cap", 15, 0, 255
+    mc_qos_aging_max_steps = _integer(
+        values, "mc_qos_aging_max_steps", 3, 0, 7
     )
-    mc_bmin_priority_boost = _integer(
-        values, "mc_bmin_priority_boost", 16, 0, 255
+    mc_bmin_qos_promote = _integer(
+        values, "mc_bmin_qos_promote", 2, 0, 7
     )
-    mc_softlimit_priority_penalty = _integer(
-        values, "mc_softlimit_priority_penalty", 16, 0, 255
+    mc_softlimit_qos_demote = _integer(
+        values, "mc_softlimit_qos_demote", 2, 0, 7
     )
     max_outstanding = _integer(
         values, "max_outstanding", 32, 1, 1024
@@ -774,9 +791,9 @@ def build_config(
             "base_latency_ns": mc_base_latency_ns,
             "token_bucket_window_ns": mc_token_bucket_window_ns,
             "aging_ns": mc_aging_ns,
-            "aging_priority_cap": mc_aging_priority_cap,
-            "bmin_priority_boost": mc_bmin_priority_boost,
-            "softlimit_priority_penalty": mc_softlimit_priority_penalty,
+            "qos_aging_max_steps": mc_qos_aging_max_steps,
+            "bmin_qos_promote": mc_bmin_qos_promote,
+            "softlimit_qos_demote": mc_softlimit_qos_demote,
             "cbusy_sample_ns": cbusy_sample_ns,
             "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,
             "cbusy_release_hold_samples": cbusy_release_hold_samples,
@@ -823,8 +840,8 @@ def build_config(
                     "bmin_enable": row["bmin_enable"],
                     "bmax_enable": row["bmax_enable"],
                     "limit_mode": row["limit_mode"],
-                    "priority": row["priority"],
-                    "priority_enable": row["priority_enable"],
+                    "mc_qos": row["mc_qos"],
+                    "mc_qos_enable": row["mc_qos_enable"],
                     "cbusy_enable": row["cbusy_enable"],
                     "cbusy_l1_ostd": row["cbusy_l1_ostd"],
                     "cbusy_l2_ostd": row["cbusy_l2_ostd"],

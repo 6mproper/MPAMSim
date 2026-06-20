@@ -74,14 +74,35 @@ actual_resource_share / configured_resource_share
 For cache:
 
 ```text
-actual_cache_occupancy_partid / allowed_cache_capacity_partid
+actual_cache_share_percent = estimated_occupancy / physical_cache_capacity
+cmin_gap = max(0, configured_cmin_percent - actual_cache_share_percent)
+cmax_overshoot = max(0, actual_cache_share_percent - effective_cmax_percent)
 ```
+
+Evaluate `cmin_gap` only when the PARTID has demand and the L3 is contended.
+Always interpret effective CMIN/CMAX after intersecting with CPBM reachability.
 
 For bandwidth:
 
 ```text
 actual_bandwidth_partid / bw_max_partid
 ```
+
+Evaluate BMIN shortfall only when the PARTID has demand and the MC is
+contended. Treat soft-BMAX borrowing without contention as work-conserving,
+not as a cap failure. For hard BMAX, track both steady-state error and
+short-window overshoot.
+
+### MC QoS Effect
+
+Track:
+
+- configured/base QoS in `[0, 7]`;
+- request-weighted effective QoS;
+- BMIN-promoted requests;
+- softlimit-demoted requests;
+- aging promotion steps;
+- same-demand throughput and queue-delay delta versus equal-QoS control.
 
 ### Monitor Accuracy
 
@@ -141,7 +162,7 @@ Track:
 
 - Number of control updates per interval.
 - Direction changes of bandwidth caps.
-- Priority flapping.
+- MC QoS flapping.
 - Over-correction events.
 
 ## 4. Power-Cap KPIs
@@ -171,7 +192,7 @@ Suggested default thresholds:
 | KPI | Target |
 |---|---|
 | Bandwidth cap error | <= 10% in steady state |
-| Priority latency improvement | measurable reduction under contention |
-| Cache partition conformance | no PARTID exceeds allowed way/portion mask in exact mode |
+| MC QoS latency improvement | measurable reduction under contention |
+| Cache partition conformance | sampled ownership respects effective CMAX percentage within one-line tolerance |
 | Monitor report interval jitter | deterministic under fixed seed |
 | No-control vs controlled delta | visible in at least noisy-neighbor scenario |

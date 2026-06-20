@@ -20,6 +20,7 @@ const state = {
   resourceView: "cpu",
   causalPartid: 0,
   experimentPartid: 0,
+  effectPartid: 0,
   visiblePartids: new Set(Array.from({ length: 16 }, (_, partid) => partid)),
 };
 
@@ -55,7 +56,7 @@ const parameterHelp = {
   max_outstanding: "每个 requester 最多允许同时未完成的请求数，达到上限时产生源端背压。",
   l3_instances: "共享 L3/SLC 实例数量；核按 cluster 映射到实例。",
   l3_sets: "每个 L3 的 set 数，和 ways、line bytes 共同决定容量。",
-  l3_ways: "每个 set 的 way 数，也是 CPBM、CMIN、CMAX 的控制范围。",
+  l3_ways: "每个 set 的 way 数，决定 CPBM 位宽；CMIN/CMAX 使用整个 L3 容量百分比。",
   l3_line_size: "缓存行字节数；影响地址映射、占用估算和请求成本。",
   l3_monitor_group_sets: "近似监控固定每 8 个 set 抽样第一个 set，并将观察值按 8 倍估算。",
   l3_hit_latency_ns: "L3 查询固定延迟；命中和未命中都先支付该延迟。",
@@ -73,9 +74,9 @@ const parameterHelp = {
   mc_queue_depth: "每个内存控制器可接收的请求队列深度。",
   mc_token_bucket_window_ns: "BMIN/BMAX token bucket 的突发窗口；容量=max(64B, 配置带宽×窗口)。窗口越大，允许的短时突发越大。",
   mc_aging_ns: "请求每等待该时间获得一级 aging 加分，防止长期饥饿。",
-  mc_aging_priority_cap: "Aging 对 effective priority 的最大加分。",
-  mc_bmin_priority_boost: "请求有足够 BMIN credit 时增加的调度优先级；0 表示 BMIN 不产生调度偏好。",
-  mc_softlimit_priority_penalty: "Soft BMAX 超限且存在竞争时扣减的调度优先级；无竞争时不扣减。",
+  mc_qos_aging_max_steps: "请求等待每满一个 aging 周期升一个 QoS 档，最多升到该步数，最终钳位 0..7。",
+  mc_bmin_qos_promote: "请求具备 BMIN credit 时增加的 QoS 档数，最终钳位 0..7。",
+  mc_softlimit_qos_demote: "Soft BMAX 超限且存在竞争时降低的 QoS 档数；无竞争时不降档。",
   max_bw_step_percent: "闭环每次调整背景 PARTID BMAX 的最大百分比。",
   p99_hysteresis: "P99 超过或低于目标的滞回区间，避免控制值频繁抖动。",
   min_hold_intervals: "两次闭环调整之间至少保持的采样周期数。",
@@ -105,18 +106,18 @@ const partidFieldHelp = {
   name: "软件侧分区名称，仅用于识别和导出。",
   monitor_enable: "标记该 PARTID 的监控能力为启用；当前界面仍保留所有 16 行。",
   cpbm_enable: "独立启用 CPBM；关闭时所有物理 way 都可参与分配。",
-  cmin_enable: "独立启用 CMIN 替换保护；关闭后最低 way 保护为 0。",
-  cmax_enable: "独立启用 CMAX；关闭后有效上限由 CPBM 可用 way 数决定。",
-  cmin: "Cache minimum：抽样替换时保护该 PARTID 的最低 way 占有目标。",
-  cmax: "Cache maximum：该 PARTID 在每个抽样 set 内最多可分配的 way 数。",
+  cmin_enable: "独立启用 CMIN 全局替换保护；关闭后最低占用目标为 0%。",
+  cmax_enable: "独立启用 CMAX；关闭后有效上限仅由 CPBM 可达容量决定。",
+  cmin: "Cache minimum：该 PARTID 对整个物理 L3 的最低占用比例。仅在有需求和竞争时具有保护意义。",
+  cmax: "Cache maximum：该 PARTID 对整个物理 L3 的最高占用比例，多个 PARTID 的 CMAX 可以重叠。",
   cpbm: "Cache Portion Bitmap：十六进制 way 允许位图，bit N 对应 way N。",
   bmin_gbps: "每个 MC 上该 PARTID 的最小带宽目标；低于目标时获得调度加权。",
   bmax_gbps: "每个 MC 上该 PARTID 的最大带宽目标。",
   bmin_enable: "独立启用 BMIN 调度加权。",
   bmax_enable: "独立启用 BMAX hard token 或 soft contention penalty。",
   limit_mode: "soft：无竞争时可借用带宽，竞争且超限时降优先级；hard：token 不足时停止调度。",
-  priority: "PARTID 的基础调度优先级，影响 NoC 和 MC 发生竞争时的选择顺序。",
-  priority_enable: "独立启用 priority；关闭后保留配置值但有效贡献为 0。",
+  mc_qos: "MC 本地 3-bit QoS，范围 0..7，7 最高；不影响 NoC 仲裁。",
+  mc_qos_enable: "独立启用 MC QoS；关闭后保留配置值但基础 QoS 为 0。",
   cbusy_enable: "启用该 PARTID 的 MC 四档 CBusy 源端反馈。",
   cbusy_ostd: "CBusy Level 1/2/3 对应的 requester effective OSTD 上限。",
 };
@@ -134,13 +135,13 @@ const headerHelp = {
   "Read": stimulusFieldHelp.read_ratio,
   "WSS MB": stimulusFieldHelp.working_set_mb,
   "P99 ns": stimulusFieldHelp.target_p99_ns,
-  "CMIN": partidFieldHelp.cmin,
-  "CMAX": partidFieldHelp.cmax,
+  "CMIN %": partidFieldHelp.cmin,
+  "CMAX %": partidFieldHelp.cmax,
   "CPBM": partidFieldHelp.cpbm,
   "BMIN": partidFieldHelp.bmin_gbps,
   "BMAX": partidFieldHelp.bmax_gbps,
   "Mode": partidFieldHelp.limit_mode,
-  "Pri": partidFieldHelp.priority,
+  "MC QoS": partidFieldHelp.mc_qos,
   "CBusy / OSTD": `${partidFieldHelp.cbusy_enable}\n${partidFieldHelp.cbusy_ostd}`,
   "PARTID / PMG": "软件可见监控 key。PARTID 选择控制策略，PMG 细分同一控制分区内的监控归因。",
   "L3 Sample BW": "该监控组在 L3 抽样 set 上观察到并按 8 倍估算的访问带宽。",
@@ -189,11 +190,13 @@ const headerHelp = {
   "MC BW Σ": "所有内存控制器中该 PARTID 的实测带宽之和。",
   "BMIN Σ": "各 MC 独立 BMIN 配置的显示求和，不表示一个全局 token bucket。",
   "BMAX Σ": "各 MC 独立 BMAX 配置的显示求和，不表示一个全局 token bucket。",
+  "QoS Base / Eff": "MC 配置的基础 3-bit QoS，以及本周期叠加 aging、BMIN 升档和 softlimit 降档后的请求加权平均值。",
   "Soft Req": "超出 soft BMAX 且发生竞争时被标记为低偏好的请求数。",
   "Hard Blocks": "因 hard BMAX token 不足而无法调度的检查事件数。",
 };
 const resultTabHelp = {
   "资源监控": "在 CPU、L3、MC 之间切换，并用同一组 PARTID 开关查看资源状态和控制反馈。",
+  "控制效果": "同时显示配置目标、实际结果、适用条件与完整时间变化，用于判断控制是否真正生效。",
   "对照实验": "使用相同输入自动比较参考、BMAX-only、CBusy-only和组合控制的收益与代价。",
   "算法验证": "运行内置确定性微基准，分别验证 CMIN、CMAX、BMIN、BMAX softlimit 和 hardlimit 的模型算法。",
   "因果时间线": "按控制周期对齐MC压力、CBusy、effective OSTD、源端stall和业务性能。",
@@ -209,11 +212,38 @@ const sectionHeadingHelp = {
   "NoC": "定义抽象互连的 router、链路、队列和虚通道容量。",
   "Memory Controller": "定义内存控制器数量、通道带宽、服务延迟和队列深度。",
   "16 线程独立激励": workloadTypeComparison,
-  "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 分配、MC 带宽、优先级和监控开关。",
+  "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 百分比、MC 带宽、3-bit QoS 和监控开关。",
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
-  "MC 调度算法参数": "配置当前模型的 token burst、aging、BMIN credit 加分和 soft-BMAX 竞争降权；这些不是架构固定编码。",
+  "MC 调度算法参数": "配置当前模型的 token burst、3-bit QoS aging、BMIN 升档和 soft-BMAX 降档；这些是可替换模型参数。",
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
+};
+
+const algorithmHelp = {
+  "l3-allocation": {
+    title: "L3 sampled-owner 分配算法",
+    body: "每 8 个 set 只观察第一个 set 的各 way owner。替换时先检查请求者的全局 sampled ownership 是否达到 CMAX；未达到时优先空 way，再选择全局占用高于其 CMIN 配额的 owner 中最老的 way。该方法验证控制趋势，不等同于逐 tag 精确硬件实现。",
+  },
+  "l3-cmin": {
+    title: "CMIN 百分比",
+    body: "CMIN 是整个物理 L3 容量的比例。模型把比例换算为 sampled capacity lines 并向上取整。它是竞争时的替换保护，不保证无需求时预留，也不会突破 CPBM 可达比例。每个 L3 上启用的 CMIN 合计必须不超过 100%。",
+  },
+  "l3-cmax": {
+    title: "CMAX 百分比",
+    body: "CMAX 是整个物理 L3 容量的比例。模型把比例换算为 sampled capacity lines 并向下取整；达到上限后只能替换自己的 sampled line。不同 PARTID 的 CMAX 可以合计超过 100%，因为它们是独立上界。",
+  },
+  "mc-bandwidth": {
+    title: "MC BMIN / BMAX",
+    body: "每个 MC 独立维护 token/credit。BMIN 在有 credit 时提升 QoS；soft BMAX 无竞争可借用，竞争且超限时降低 QoS；hard BMAX token 不足时从可调度候选中移除。带宽结果应与队列竞争和实际需求一起解释。",
+  },
+  "mc-qos": {
+    title: "MC 3-bit QoS 仲裁",
+    body: "effective_qos = clamp(base_qos + aging_steps + BMIN升档 - softlimit降档, 0, 7)。先过滤 hard BMAX 不合格请求，再选 effective QoS 最高者；同档按最老入队序号。该 QoS 只作用于 MC，当前 NoC 保持中性。",
+  },
+  "effect-view": {
+    title: "如何识别控制效果",
+    body: "CMIN 只在该 PARTID 有需求且 L3 存在竞争时判定；BMIN 只在有需求且 MC 竞争时判定。CMAX 与 hard BMAX 是上界检查，soft BMAX 超限借用不是违规。曲线同时给出目标、实际和控制事件，避免只看最终平均值。",
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -290,8 +320,8 @@ function renderPartidConfig(rows) {
       <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
       <td><input data-field="name" data-help="${escapeHtml(partidFieldHelp.name)}" type="text" value="${escapeHtml(row.name)}" spellcheck="false"></td>
       <td><input data-field="monitor_enable" data-help="${escapeHtml(partidFieldHelp.monitor_enable)}" type="checkbox" ${row.monitor_enable ? "checked" : ""}></td>
-      <td>${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, partidFieldHelp.cmin_enable, partidFieldHelp.cmin, 'type="number" min="0" max="32" step="1"')}</td>
-      <td>${controlField("cmax_enable", row.cmax_enable, "cmax", row.cmax, partidFieldHelp.cmax_enable, partidFieldHelp.cmax, 'type="number" min="0" max="32" step="1"')}</td>
+      <td data-algorithm="l3-cmin">${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, partidFieldHelp.cmin_enable, partidFieldHelp.cmin, 'type="number" min="0" max="100" step="0.1"')}</td>
+      <td data-algorithm="l3-cmax">${controlField("cmax_enable", row.cmax_enable, "cmax", row.cmax, partidFieldHelp.cmax_enable, partidFieldHelp.cmax, 'type="number" min="0" max="100" step="0.1"')}</td>
       <td>${controlField("cpbm_enable", row.cpbm_enable, "cpbm", row.cpbm, partidFieldHelp.cpbm_enable, partidFieldHelp.cpbm, 'type="text" spellcheck="false"')}</td>
       <td>${controlField("bmin_enable", row.bmin_enable, "bmin_gbps", row.bmin_gbps, partidFieldHelp.bmin_enable, partidFieldHelp.bmin_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
       <td>${controlField("bmax_enable", row.bmax_enable, "bmax_gbps", row.bmax_gbps, partidFieldHelp.bmax_enable, partidFieldHelp.bmax_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
@@ -299,7 +329,7 @@ function renderPartidConfig(rows) {
         <option value="softlimit" title="无竞争时可借用空闲带宽，竞争且超限时降低调度优先级。" ${row.limit_mode === "softlimit" ? "selected" : ""}>soft</option>
         <option value="hardlimit" title="超过 BMAX 且 token 不足时阻塞请求，直到预算恢复。" ${row.limit_mode === "hardlimit" ? "selected" : ""}>hard</option>
       </select></td>
-      <td>${controlField("priority_enable", row.priority_enable, "priority", row.priority, partidFieldHelp.priority_enable, partidFieldHelp.priority, 'type="number" min="0" max="15" step="1"')}</td>
+      <td data-algorithm="mc-qos">${controlField("mc_qos_enable", row.mc_qos_enable, "mc_qos", row.mc_qos, partidFieldHelp.mc_qos_enable, partidFieldHelp.mc_qos, 'type="number" min="0" max="7" step="1"')}</td>
       <td>
         <div class="cbusy-control">
           <input data-field="cbusy_enable" data-help="${escapeHtml(partidFieldHelp.cbusy_enable)}" type="checkbox" ${row.cbusy_enable ? "checked" : ""}>
@@ -340,8 +370,8 @@ function collectPartidConfigs() {
       bmin_gbps: Number(value("bmin_gbps").value),
       bmax_gbps: Number(value("bmax_gbps").value),
       limit_mode: value("limit_mode").value,
-      priority_enable: value("priority_enable").checked,
-      priority: Number(value("priority").value),
+      mc_qos_enable: value("mc_qos_enable").checked,
+      mc_qos: Number(value("mc_qos").value),
       cbusy_enable: value("cbusy_enable").checked,
       cbusy_l1_ostd: Number(value("cbusy_l1_ostd").value),
       cbusy_l2_ostd: Number(value("cbusy_l2_ostd").value),
@@ -421,12 +451,11 @@ function normalizePartidMasks() {
     }
     parsed &= maximum;
     cpbm.value = parsed.toString(16).padStart(width, "0");
-    const enabled = parsed.toString(2).split("1").length - 1;
     const cmax = row.querySelector('[data-field="cmax"]');
     const cmin = row.querySelector('[data-field="cmin"]');
-    cmax.max = enabled;
-    cmin.max = enabled;
-    cmax.value = Math.min(Number(cmax.value), enabled);
+    cmax.max = 100;
+    cmin.max = 100;
+    cmax.value = Math.min(Number(cmax.value), 100);
     cmin.value = Math.min(Number(cmin.value), Number(cmax.value));
   });
 }
@@ -827,6 +856,7 @@ function aggregateL3Resources() {
     bandwidth: 0,
     occupancy: 0,
     capacity: 0,
+    allowedCapacity: 0,
     requests: 0,
     hits: 0,
     misses: 0,
@@ -863,7 +893,8 @@ function aggregateL3Resources() {
         const target = result[partid];
         target.bandwidth += Number(values.estimated_bandwidth_gbps || 0);
         target.occupancy += Number(values.estimated_occupancy_bytes || 0);
-        target.capacity += Number(values.allowed_capacity_bytes || 0);
+        target.capacity += Number(values.cache_capacity_bytes || 0);
+        target.allowedCapacity += Number(values.allowed_capacity_bytes || 0);
         target.requests += Number(values.requests || 0);
         target.hits += Number(values.hits || 0);
         target.misses += Number(values.misses || 0);
@@ -873,16 +904,16 @@ function aggregateL3Resources() {
           values.admission_backpressure_ns || 0,
         );
         target.queueFullEvents += Number(values.queue_full_events || 0);
-        target.cminByMsc.set(String(row.msc_id), values.cmin);
-        target.cmaxByMsc.set(String(row.msc_id), values.cmax);
+        target.cminByMsc.set(String(row.msc_id), values.cmin_percent);
+        target.cmaxByMsc.set(String(row.msc_id), values.cmax_percent);
         target.cpbmByMsc.set(String(row.msc_id), values.cpbm);
         target.configuredCminByMsc.set(
           String(row.msc_id),
-          values.configured_cmin,
+          values.configured_cmin_percent,
         );
         target.configuredCmaxByMsc.set(
           String(row.msc_id),
-          values.configured_cmax,
+          values.configured_cmax_percent,
         );
         target.configuredCpbmByMsc.set(
           String(row.msc_id),
@@ -898,9 +929,9 @@ function aggregateL3Resources() {
     if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
     const target = result[partid];
     const mscId = String(update.target_msc);
-    if (update.field === "cache_min_ways") {
+    if (update.field === "cache_min_percent") {
       target.cminByMsc.set(mscId, update.new_value);
-    } else if (update.field === "cache_max_ways") {
+    } else if (update.field === "cache_max_percent") {
       target.cmaxByMsc.set(mscId, update.new_value);
     } else if (update.field === "cache_portion_bitmap") {
       target.cpbmByMsc.set(mscId, update.new_value);
@@ -919,10 +950,8 @@ function aggregateL3Resources() {
     if (!cminValues.size) cminValues.add(configured.cmin);
     if (!cmaxValues.size) cmaxValues.add(configured.cmax);
     if (!cpbmValues.size) cpbmValues.add(configured.cpbm);
-    row.occupancyUtilization = Math.min(
-      1,
-      row.occupancy / Math.max(1, row.capacity),
-    );
+    row.occupancyShare = row.occupancy / Math.max(1, row.capacity);
+    row.occupancyUtilization = Math.min(1, row.occupancyShare);
     row.hitRate = row.hits / Math.max(1, row.hits + row.misses);
     row.cmin = singleValue(cminValues);
     row.cmax = singleValue(cmaxValues);
@@ -954,13 +983,15 @@ function aggregateMcResources() {
     bminByMsc: new Map(),
     bmaxByMsc: new Map(),
     modeByMsc: new Map(),
-    priorityByMsc: new Map(),
+    qosByMsc: new Map(),
+    effectiveQosWeighted: 0,
+    effectiveQosRequests: 0,
     configuredBminByMsc: new Map(),
     configuredBmaxByMsc: new Map(),
-    configuredPriorityByMsc: new Map(),
+    configuredQosByMsc: new Map(),
     bminEnabled: false,
     bmaxEnabled: false,
-    priorityEnabled: false,
+    qosEnabled: false,
     softRequests: 0,
     softPenaltyEvents: 0,
     hardBlocks: 0,
@@ -989,7 +1020,10 @@ function aggregateMcResources() {
         target.bminByMsc.set(String(row.msc_id), values.bmin_gbps);
         target.bmaxByMsc.set(String(row.msc_id), values.bmax_gbps);
         target.modeByMsc.set(String(row.msc_id), values.limit_mode);
-        target.priorityByMsc.set(String(row.msc_id), values.priority);
+        target.qosByMsc.set(String(row.msc_id), values.base_qos);
+        target.effectiveQosWeighted += Number(values.effective_qos_avg || 0)
+          * Number(values.requests || 0);
+        target.effectiveQosRequests += Number(values.requests || 0);
         target.configuredBminByMsc.set(
           String(row.msc_id),
           values.configured_bmin_gbps,
@@ -998,13 +1032,13 @@ function aggregateMcResources() {
           String(row.msc_id),
           values.configured_bmax_gbps,
         );
-        target.configuredPriorityByMsc.set(
+        target.configuredQosByMsc.set(
           String(row.msc_id),
-          values.configured_priority,
+          values.configured_mc_qos,
         );
         target.bminEnabled ||= Boolean(values.bmin_enable);
         target.bmaxEnabled ||= Boolean(values.bmax_enable);
-        target.priorityEnabled ||= Boolean(values.priority_enable);
+        target.qosEnabled ||= Boolean(values.mc_qos_enable);
         target.softRequests += Number(values.softlimit_requests || 0);
         target.softPenaltyEvents += Number(
           values.softlimit_penalty_events || 0,
@@ -1054,8 +1088,8 @@ function aggregateMcResources() {
       target.bmaxByMsc.set(mscId, update.new_value);
     } else if (update.field === "bw_limit_mode") {
       target.modeByMsc.set(mscId, update.new_value);
-    } else if (update.field === "priority") {
-      target.priorityByMsc.set(mscId, update.new_value);
+    } else if (update.field === "mc_qos") {
+      target.qosByMsc.set(mscId, update.new_value);
     }
   });
   result.forEach((row) => {
@@ -1063,13 +1097,13 @@ function aggregateMcResources() {
     if (!row.configuredBminByMsc.size) {
       row.bminEnabled = Boolean(configured.bmin_enable);
       row.bmaxEnabled = Boolean(configured.bmax_enable);
-      row.priorityEnabled = Boolean(configured.priority_enable);
+      row.qosEnabled = Boolean(configured.mc_qos_enable);
     }
     if (!row.modeByMsc.size) {
       row.modeByMsc.set("configured", configured.limit_mode);
     }
-    if (!row.priorityByMsc.size) {
-      row.priorityByMsc.set("configured", configured.priority);
+    if (!row.qosByMsc.size) {
+      row.qosByMsc.set("configured", configured.mc_qos);
     }
     if (!row.bminByMsc.size && configured.bmin_gbps != null) {
       row.bminByMsc.set("configured", configured.bmin_gbps);
@@ -1091,16 +1125,19 @@ function aggregateMcResources() {
     );
     row.avgQueueDelayNs = row.queueDelayNs / Math.max(1, row.requests);
     row.mode = singleValue(new Set(row.modeByMsc.values()));
-    row.priority = singleValue(new Set(row.priorityByMsc.values()));
+    row.qos = singleValue(new Set(row.qosByMsc.values()));
+    row.effectiveQos = (
+      row.effectiveQosWeighted / Math.max(1, row.effectiveQosRequests)
+    );
     row.configuredBmin = [...row.configuredBminByMsc.values()]
       .filter((value) => value != null)
       .reduce((sum, value) => sum + Number(value), 0);
     row.configuredBmax = [...row.configuredBmaxByMsc.values()]
       .filter((value) => value != null)
       .reduce((sum, value) => sum + Number(value), 0);
-    row.configuredPriority = singleValue(
-      new Set(row.configuredPriorityByMsc.values()),
-      configured.priority,
+    row.configuredQos = singleValue(
+      new Set(row.configuredQosByMsc.values()),
+      configured.mc_qos,
     );
   });
   return result;
@@ -1202,28 +1239,28 @@ function renderResourceMonitor() {
     headers = [
       "PARTID", "Control State", "L3 Occupancy", "L3 Util %",
       "L3 Sample BW", "Hit Rate", "L3 Queue", "Queue Delay / Full",
-      "Alloc Denials", "CMIN", "CMAX", "CPBM",
+      "Alloc Denials", "CMIN %", "CMAX %", "CPBM",
     ];
     rows = visible(aggregateL3Resources()).map((row) => `
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
         <td>${controlStateCell(row.partid)}</td>
-        <td>${formatNumber(row.occupancy, 0)} B <small>of ${formatNumber(row.capacity, 0)} B</small></td>
+        <td>${formatNumber(row.occupancy, 0)} B <small>physical ${formatNumber(row.capacity, 0)} B · allowed ${formatNumber(row.allowedCapacity, 0)} B</small></td>
         <td>${utilizationCell(row.occupancyUtilization, "#2d7a4c")}</td>
         <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
         <td>${(row.hitRate * 100).toFixed(2)}%</td>
         <td>${formatNumber(row.queueOccupancy, 2)} / ${formatNumber(row.queueDepth, 0)} <small>peak ${formatNumber(row.queuePeak, 0)} · slots ${formatNumber(row.lookupParallelism, 0)}</small></td>
         <td>${formatNumber(row.queueDelayNs, 2)} ns <small>${formatNumber(row.queueFullEvents, 0)} full · ${formatNumber(row.admissionBackpressureNs, 2)} ns retry</small></td>
         <td>${formatNumber(row.allocationDenials, 0)}</td>
-        <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => escapeHtml(value))}</td>
-        <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => escapeHtml(value))}</td>
+        <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => `${formatNumber(value, 1)}%`)}</td>
+        <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => `${formatNumber(value, 1)}%`)}</td>
         <td>${controlValue(row.cpbmEnabled, row.cpbm, row.configuredCpbm, (value) => `<code>${escapeHtml(value)}</code>`)}</td>
       </tr>`);
   } else {
     headers = [
       "PARTID", "Control State", "MC BW", "MC Util %", "MC Requests",
       "Avg Queue ns", "Throttle ns", "CBusy Evidence", "BMIN Σ",
-      "BMAX Σ", "Mode", "Pri", "Limit Events",
+      "BMAX Σ", "Mode", "QoS Base / Eff", "Limit Events",
     ];
     rows = visible(aggregateMcResources()).map((row) => `
       <tr>
@@ -1241,7 +1278,7 @@ function renderResourceMonitor() {
         <td>${controlValue(row.bminEnabled, row.hasBmin ? row.bmin : 0, row.configuredBmin, (value) => formatNumber(value, 1))}</td>
         <td>${controlValue(row.bmaxEnabled, row.hasBmax ? row.bmax : 0, row.configuredBmax, (value) => formatNumber(value, 1))}</td>
         <td>${row.bmaxEnabled ? escapeHtml(row.mode) : '<span class="control-value disabled">off</span>'}</td>
-        <td>${controlValue(row.priorityEnabled, row.priority, row.configuredPriority, (value) => escapeHtml(value))}</td>
+        <td>${controlValue(row.qosEnabled, `${row.qos} / ${formatNumber(row.effectiveQos, 2)}`, `${row.configuredQos} / -`, (value) => escapeHtml(value))}</td>
         <td>${formatNumber(row.softPenaltyEvents, 0)} soft penalty / ${formatNumber(row.hardBlocks, 0)} hard <small>${formatNumber(row.softRequests, 0)} selected over</small></td>
       </tr>`);
   }
@@ -1251,7 +1288,11 @@ function renderResourceMonitor() {
     ? rows.join("")
     : `<tr><td colspan="${headers.length}" class="empty-cell">未选择 PARTID；使用上方开关选择要显示的分区</td></tr>`;
   $$("#resourceMonitorHead th").forEach((header) => {
-    setHelp(header, headerHelp[header.textContent.trim()]);
+    const label = header.textContent.trim();
+    if (label === "CMIN %") header.dataset.algorithm = "l3-cmin";
+    if (label === "CMAX %") header.dataset.algorithm = "l3-cmax";
+    if (label === "QoS Base / Eff") header.dataset.algorithm = "mc-qos";
+    if (!header.dataset.algorithm) setHelp(header, headerHelp[label]);
   });
 }
 
@@ -1259,6 +1300,7 @@ function renderAll() {
   renderKpis();
   renderCharts();
   renderResourceMonitor();
+  renderControlEffect();
   renderExperiment();
   renderControlVerification();
   renderCausalTimeline();
@@ -1364,6 +1406,7 @@ function verificationCases() {
   const results = state.verificationPartial?.results || {};
   return [
     "cmin_off", "cmin_on", "cmax_full", "cmax_limited",
+    "qos_equal", "qos_split",
     "bmin_off", "bmin_on", "bmax_solo_off", "bmax_solo_soft",
     "bmax_solo_hard", "bmax_contended_off", "bmax_contended_soft",
   ].map((caseId) => results[caseId]).filter(Boolean);
@@ -1376,11 +1419,11 @@ function renderControlVerification() {
     || ($$("[data-partid-row]").length
       ? collectParameters()
       : state.defaults);
-  const algorithmText = `token ${formatNumber(algorithm.mc_token_bucket_window_ns, 1)} ns · aging ${formatNumber(algorithm.mc_aging_ns, 1)} ns/+${formatNumber(algorithm.mc_aging_priority_cap, 0)} · BMIN +${formatNumber(algorithm.mc_bmin_priority_boost, 0)} · soft -${formatNumber(algorithm.mc_softlimit_priority_penalty, 0)}`;
+  const algorithmText = `token ${formatNumber(algorithm.mc_token_bucket_window_ns, 1)} ns · aging ${formatNumber(algorithm.mc_aging_ns, 1)} ns/+${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
-      ? `已完成 ${completed.length}/11：${cases.map((row) => row.label).join("、")}`
+      ? `已完成 ${completed.length}/13：${cases.map((row) => row.label).join("、")}`
       : `尚未运行算法验证 · ${algorithmText}`;
   const checks = state.verification?.checks || [];
   $("#verificationCheckTable").innerHTML = checks.length ? checks.map((row) => `
@@ -1539,9 +1582,9 @@ function configurationDiagnostics() {
   }
   if (
     partids.some((row) => row.bmin_enable && activePartids.has(row.partid))
-    && Number(parameters.mc_bmin_priority_boost) === 0
+    && Number(parameters.mc_bmin_qos_promote) === 0
   ) {
-    add("warning", "存在活动 BMIN，但 BMIN 优先级加分为 0；当前算法不会产生调度偏好。");
+    add("warning", "存在活动 BMIN，但 BMIN QoS 升档为 0；当前算法不会产生调度偏好。");
   }
   if (
     partids.some(
@@ -1549,9 +1592,9 @@ function configurationDiagnostics() {
         && row.limit_mode === "softlimit"
         && activePartids.has(row.partid),
     )
-    && Number(parameters.mc_softlimit_priority_penalty) === 0
+    && Number(parameters.mc_softlimit_qos_demote) === 0
   ) {
-    add("warning", "存在活动 softlimit BMAX，但降权为 0；超限流量仍保持原调度优先级。");
+    add("warning", "存在活动 softlimit BMAX，但 QoS 降档为 0；超限流量仍保持原 QoS。");
   }
 
   partids.forEach((row) => {
@@ -1560,6 +1603,11 @@ function configurationDiagnostics() {
     }
     if (row.cpbm_enable && bitCountHex(row.cpbm) === 0) {
       add("error", `PARTID ${row.partid} 的 CPBM 没有允许任何 way。`);
+    }
+    const reachable = bitCountHex(row.cpbm)
+      * 100 / Math.max(1, Number(parameters.l3_ways));
+    if (row.cmin_enable && row.cpbm_enable && row.cmin > reachable + 1e-9) {
+      add("error", `PARTID ${row.partid} 的 CMIN ${row.cmin}% 超过 CPBM 可达比例 ${formatNumber(reachable, 1)}%。`);
     }
     if (row.bmax_enable && row.bmax_gbps <= 0) {
       add("error", `PARTID ${row.partid} 启用 BMAX，但配置值不大于 0。`);
@@ -1592,6 +1640,13 @@ function configurationDiagnostics() {
   );
   if (bminTotal > controllerBandwidth) {
     add("warning", `每个 MC 的启用 BMIN 合计 ${formatNumber(bminTotal, 1)} Gbps，超过单 MC 建模带宽 ${formatNumber(controllerBandwidth, 1)} Gbps。`);
+  }
+  const cminTotal = partids.reduce(
+    (sum, row) => sum + (row.cmin_enable ? Number(row.cmin) : 0),
+    0,
+  );
+  if (cminTotal > 100 + 1e-9) {
+    add("error", `每个 L3 的启用 CMIN 合计 ${formatNumber(cminTotal, 1)}%，超过 100%。`);
   }
   if (
     Number(parameters.cbusy_sample_ns)
@@ -1775,7 +1830,8 @@ function drawLineChart(canvas, series, options = {}) {
     return;
   }
   const maxX = Math.max(1, ...points.map((point) => point.x));
-  const maxY = Math.max(1, ...points.map((point) => point.y)) * 1.08;
+  const maxY = Number(options.yMax)
+    || Math.max(1, ...points.map((point) => point.y)) * 1.08;
   const x = (value) => pad.left + (value / maxX) * (width - pad.left - pad.right);
   const y = (value) => height - pad.bottom - (value / maxY) * (height - pad.top - pad.bottom);
 
@@ -1904,6 +1960,235 @@ function renderCharts() {
     { label: "Throttle", value: Number(protectedRow.avg_throttle_delay_ns || 0), color: "#ad4e4e" },
   ] : [];
   drawBarChart($("#delayChart"), bars);
+}
+
+function effectTarget(partid) {
+  const config = state.partidConfigs[Number(partid)] || {};
+  const stimuli = state.stimulusConfigs.filter(
+    (row) => row.enabled && Number(row.partid) === Number(partid),
+  );
+  const p99Targets = stimuli
+    .map((row) => Number(row.target_p99_ns || 0))
+    .filter((value) => value > 0);
+  const mcCount = Number(
+    $('[data-param="memory_controllers"]')?.value || 1,
+  );
+  return {
+    cmin: config.cmin_enable ? Number(config.cmin || 0) : null,
+    cmax: config.cmax_enable ? Number(config.cmax || 100) : null,
+    bmin: config.bmin_enable
+      ? Number(config.bmin_gbps || 0) * mcCount
+      : null,
+    bmax: config.bmax_enable
+      ? Number(config.bmax_gbps || 0) * mcCount
+      : null,
+    mode: config.limit_mode || "disabled",
+    qos: config.mc_qos_enable ? Number(config.mc_qos || 0) : 0,
+    p99: p99Targets.length ? Math.min(...p99Targets) : null,
+  };
+}
+
+function buildEffectRows(partid) {
+  const pid = Number(partid);
+  const times = new Set();
+  (state.partial.metrics || []).forEach((row) => {
+    if (Number(row.partid) === pid) times.add(Number(row.time_ns));
+  });
+  (state.partial.msc || []).forEach((row) => times.add(Number(row.time_ns)));
+  const controls = state.partial.controls || [];
+  let previousTime = -1;
+  return [...times]
+    .filter((timeNs) => timeNs <= state.selectedTime + 1e-9)
+    .sort((a, b) => a - b)
+    .map((timeNs) => {
+      const cacheRows = (state.partial.msc || []).filter(
+        (row) => Number(row.time_ns) === timeNs && row.msc_type === "cache",
+      );
+      const mcRows = (state.partial.msc || []).filter(
+        (row) => Number(row.time_ns) === timeNs
+          && row.msc_type === "memory_controller",
+      );
+      const cpuRows = (state.partial.cpu || []).filter(
+        (row) => Number(row.time_ns) === timeNs && Number(row.partid) === pid,
+      );
+      const metric = (state.partial.metrics || []).find(
+        (row) => Number(row.time_ns) === timeNs && Number(row.partid) === pid,
+      ) || {};
+      const cacheValues = cacheRows.map(
+        (row) => row.per_partid?.[String(pid)] || {},
+      );
+      const mcValues = mcRows.map(
+        (row) => row.per_partid?.[String(pid)] || {},
+      );
+      const occupancy = cacheValues.reduce(
+        (sum, row) => sum + Number(row.estimated_occupancy_bytes || 0),
+        0,
+      );
+      const cacheCapacity = cacheValues.reduce(
+        (sum, row) => sum + Number(row.cache_capacity_bytes || 0),
+        0,
+      );
+      const mcRequests = mcValues.reduce(
+        (sum, row) => sum + Number(row.requests || 0),
+        0,
+      );
+      const events = controls.filter(
+        (row) => Number(row.partid) === pid
+          && Number(row.time_ns) > previousTime
+          && Number(row.time_ns) <= timeNs,
+      );
+      previousTime = timeNs;
+      return {
+        timeNs,
+        l3Share: occupancy * 100 / Math.max(1, cacheCapacity),
+        l3Contended: cacheValues.some(
+          (row) => Number(row.allocation_denials || 0) > 0
+            || Number(row.cmin_protected_evictions || 0) > 0,
+        ),
+        mcBandwidth: mcValues.reduce(
+          (sum, row) => sum + Number(row.achieved_bandwidth_gbps || 0),
+          0,
+        ),
+        mcContended: mcRows.some(
+          (row) => Number(row.queue_occupancy || 0) > 1
+            || Number(row.utilization || 0) > 0.8,
+        ),
+        baseQos: Math.max(
+          0,
+          ...mcValues.map((row) => Number(row.base_qos || 0)),
+        ),
+        effectiveQos: mcValues.reduce(
+          (sum, row) => sum
+            + Number(row.effective_qos_avg || 0)
+            * Number(row.requests || 0),
+          0,
+        ) / Math.max(1, mcRequests),
+        cbusy: Math.max(
+          0,
+          ...mcValues.map((row) => Number(row.cbusy_level || 0)),
+        ),
+        outstanding: cpuRows.reduce(
+          (sum, row) => sum + Number(row.outstanding || 0),
+          0,
+        ),
+        ostdCap: cpuRows.reduce(
+          (sum, row) => sum + Number(
+            row.effective_max_outstanding || row.max_outstanding || 0,
+          ),
+          0,
+        ),
+        p99: Number(metric.p99_latency_ns || 0),
+        throughput: Number(metric.throughput_gbps || 0),
+        requests: Number(metric.requests || 0),
+        events,
+      };
+    });
+}
+
+function effectState(row, target) {
+  if (!row || row.requests <= 0) {
+    return { l3: "N/A", bw: "N/A", overall: "无需求" };
+  }
+  const l3MaxFail = target.cmax != null
+    && row.l3Share > target.cmax + 1.0;
+  const l3MinFail = target.cmin != null
+    && row.l3Contended
+    && row.l3Share + 1.0 < target.cmin;
+  const bwMaxFail = target.bmax != null
+    && target.mode === "hardlimit"
+    && row.mcBandwidth > target.bmax * 1.08;
+  const bwMinFail = target.bmin != null
+    && row.mcContended
+    && row.mcBandwidth + 0.5 < target.bmin;
+  const l3 = l3MaxFail || l3MinFail
+    ? "未达标"
+    : row.l3Contended ? "达标" : "观察";
+  const bw = bwMaxFail || bwMinFail
+    ? "未达标"
+    : row.mcContended || target.mode === "hardlimit" ? "达标" : "借用";
+  return {
+    l3,
+    bw,
+    overall: l3 === "未达标" || bw === "未达标" ? "需检查" : "符合模型",
+  };
+}
+
+function stateBadge(value) {
+  const kind = value === "未达标" || value === "需检查"
+    ? "fail"
+    : value === "达标" || value === "符合模型"
+      ? "pass"
+      : "observe";
+  return `<span class="effect-state ${kind}">${escapeHtml(value)}</span>`;
+}
+
+function renderControlEffect() {
+  syncPartidSelect("#effectPartid", state.effectPartid);
+  const selectedRows = buildEffectRows(state.effectPartid);
+  const target = effectTarget(state.effectPartid);
+  const points = (key) => selectedRows.map(
+    (row) => ({ x: row.timeNs, y: Number(row[key] || 0) }),
+  );
+  const targetSeries = (value) => value == null ? [] : selectedRows.map(
+    (row) => ({ x: row.timeNs, y: Number(value) }),
+  );
+  drawLineChart($("#effectL3Chart"), [
+    { color: partidColor(state.effectPartid), points: points("l3Share") },
+    { color: "#2d7a4c", points: targetSeries(target.cmin) },
+    { color: "#b43a3a", points: targetSeries(target.cmax) },
+  ], { yMax: 100 });
+  drawLineChart($("#effectBwChart"), [
+    { color: partidColor(state.effectPartid), points: points("mcBandwidth") },
+    { color: "#2d7a4c", points: targetSeries(target.bmin) },
+    { color: "#b43a3a", points: targetSeries(target.bmax) },
+  ]);
+  drawLineChart($("#effectQosChart"), [
+    { color: "#697680", points: points("baseQos") },
+    { color: partidColor(state.effectPartid), points: points("effectiveQos") },
+  ], { yMax: 8 });
+  drawLineChart($("#effectP99Chart"), [
+    { color: partidColor(state.effectPartid), points: points("p99") },
+    { color: "#b43a3a", points: targetSeries(target.p99) },
+  ]);
+
+  const overview = Array.from({ length: 16 }, (_, partid) => {
+    const rows = buildEffectRows(partid);
+    const latest = rows[rows.length - 1];
+    const partidTarget = effectTarget(partid);
+    return { partid, latest, target: partidTarget, state: effectState(latest, partidTarget) };
+  });
+  $("#effectOverviewTable").innerHTML = overview.some((row) => row.latest)
+    ? overview.map(({ partid, latest, target: rowTarget, state: rowState }) => `
+      <tr>
+        <td><span class="partid-chip" style="background:${partidColor(partid)}">${partid}</span></td>
+        <td>${rowTarget.cmin == null ? "-" : `${formatNumber(rowTarget.cmin, 1)}%`} / ${rowTarget.cmax == null ? "-" : `${formatNumber(rowTarget.cmax, 1)}%`}</td>
+        <td>${latest ? `${formatNumber(latest.l3Share, 2)}%` : "-"}</td>
+        <td>${stateBadge(rowState.l3)}</td>
+        <td>${rowTarget.bmin == null ? "-" : formatNumber(rowTarget.bmin, 1)} / ${rowTarget.bmax == null ? "-" : formatNumber(rowTarget.bmax, 1)} <small>${escapeHtml(rowTarget.mode)}</small></td>
+        <td>${latest ? `${formatNumber(latest.mcBandwidth, 3)} Gbps` : "-"}</td>
+        <td>${stateBadge(rowState.bw)}</td>
+        <td>${rowTarget.qos} / ${latest ? formatNumber(latest.effectiveQos, 2) : "-"}</td>
+        <td>${rowTarget.p99 == null ? "-" : formatNumber(rowTarget.p99, 1)} / ${latest ? formatNumber(latest.p99, 1) : "-"}</td>
+        <td>${stateBadge(rowState.overall)}</td>
+      </tr>`).join("")
+    : '<tr><td colspan="10" class="empty-cell">运行仿真后显示控制效果</td></tr>';
+
+  $("#effectTimelineTable").innerHTML = selectedRows.length
+    ? selectedRows.map((row) => `
+      <tr>
+        <td>${formatTime(row.timeNs)}</td>
+        <td>${formatNumber(row.l3Share, 2)}%</td>
+        <td>${target.cmin == null ? "-" : `${formatNumber(target.cmin, 1)}%`} / ${target.cmax == null ? "-" : `${formatNumber(target.cmax, 1)}%`} <small>${row.l3Contended ? "replacement pressure" : "no replacement pressure"}</small></td>
+        <td>${formatNumber(row.mcBandwidth, 3)} Gbps</td>
+        <td>${target.bmin == null ? "-" : formatNumber(target.bmin, 1)} / ${target.bmax == null ? "-" : formatNumber(target.bmax, 1)} <small>${row.mcContended ? "contended" : target.mode}</small></td>
+        <td>${formatNumber(row.baseQos, 0)} / ${formatNumber(row.effectiveQos, 2)}</td>
+        <td>L${row.cbusy} / ${formatNumber(row.outstanding, 0)} of ${formatNumber(row.ostdCap, 0)}</td>
+        <td>${formatNumber(row.p99, 2)} ns / ${formatNumber(row.throughput, 3)} Gbps</td>
+        <td class="causal-events">${row.events.length ? row.events.map((event) =>
+          `<span><b>${escapeHtml(event.target_msc)}</b> ${escapeHtml(event.field)} ${escapeHtml(event.old_value)}→${escapeHtml(event.new_value)}</span>`
+        ).join("") : '<span class="muted">无更新</span>'}</td>
+      </tr>`).join("")
+    : '<tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr>';
 }
 
 function renderPartidTable() {
@@ -2041,7 +2326,9 @@ function applyContextHelp() {
     });
   });
   $$("th").forEach((header) => {
-    setHelp(header, headerHelp[header.textContent.trim()]);
+    if (!header.dataset.algorithm) {
+      setHelp(header, headerHelp[header.textContent.trim()]);
+    }
   });
   $$(".result-tab").forEach((button) => {
     setHelp(button, resultTabHelp[button.textContent.trim()]);
@@ -2075,9 +2362,97 @@ function applyContextHelp() {
     Monitor: "按控制周期采集 PARTID 与 PARTID+PMG 指标供软件查看和闭环决策。",
   };
   $$(".flow-stage").forEach((stage) => {
-    setHelp(stage, flowHelp[stage.querySelector("b")?.textContent.trim()]);
+    if (!stage.dataset.algorithm) {
+      setHelp(stage, flowHelp[stage.querySelector("b")?.textContent.trim()]);
+    }
   });
   $$("[data-help]").forEach(bindHelpTarget);
+}
+
+let algorithmTimer = null;
+let algorithmTarget = null;
+let algorithmPinned = false;
+
+function positionAlgorithmPopover(target) {
+  const popover = $("#algorithmPopover");
+  const anchor = target.getBoundingClientRect();
+  const box = popover.getBoundingClientRect();
+  let left = anchor.right + 10;
+  if (left + box.width > window.innerWidth - 12) {
+    left = Math.max(12, anchor.left - box.width - 10);
+  }
+  let top = Math.max(12, anchor.top);
+  if (top + box.height > window.innerHeight - 12) {
+    top = Math.max(12, window.innerHeight - box.height - 12);
+  }
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function showAlgorithmPopover(target, pin = false) {
+  const entry = algorithmHelp[target?.dataset.algorithm];
+  if (!entry) return;
+  clearTimeout(algorithmTimer);
+  hideHelp();
+  algorithmTarget = target;
+  algorithmPinned = pin;
+  $("#algorithmPopoverTitle").textContent = entry.title;
+  $("#algorithmPopoverBody").textContent = entry.body;
+  const popover = $("#algorithmPopover");
+  popover.classList.add("visible");
+  popover.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => positionAlgorithmPopover(target));
+}
+
+function scheduleAlgorithmPopover(target) {
+  clearTimeout(algorithmTimer);
+  algorithmTimer = setTimeout(
+    () => showAlgorithmPopover(target, false),
+    250,
+  );
+}
+
+function hideAlgorithmPopover(force = false) {
+  clearTimeout(algorithmTimer);
+  if (algorithmPinned && !force) return;
+  algorithmPinned = false;
+  algorithmTarget = null;
+  $("#algorithmPopover").classList.remove("visible");
+  $("#algorithmPopover").setAttribute("aria-hidden", "true");
+}
+
+function bindAlgorithmEvents() {
+  document.addEventListener("mouseover", (event) => {
+    const target = event.target.closest?.("[data-algorithm]");
+    if (target && target !== algorithmTarget && !algorithmPinned) {
+      scheduleAlgorithmPopover(target);
+    }
+  });
+  document.addEventListener("mouseout", (event) => {
+    const target = event.target.closest?.("[data-algorithm]");
+    if (
+      target
+      && !target.contains(event.relatedTarget)
+      && !$("#algorithmPopover").contains(event.relatedTarget)
+      && !algorithmPinned
+    ) {
+      hideAlgorithmPopover();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest?.("[data-algorithm]");
+    if (target) showAlgorithmPopover(target, true);
+  });
+  $("#algorithmPopover").addEventListener("mouseleave", () => {
+    if (!algorithmPinned) hideAlgorithmPopover();
+  });
+  $("#algorithmPopoverClose").addEventListener(
+    "click",
+    (event) => {
+      event.stopPropagation();
+      hideAlgorithmPopover(true);
+    },
+  );
 }
 
 function positionHelp(target) {
@@ -2098,6 +2473,7 @@ function positionHelp(target) {
 
 function showHelp(target) {
   if (!target?.dataset.help) return;
+  if (target.closest?.("[data-algorithm]")) return;
   activeHelpTarget = target;
   const tooltip = $("#helpTooltip");
   tooltip.textContent = target.dataset.help;
@@ -2172,6 +2548,7 @@ function stopPlayback() {
 
 function bindEvents() {
   bindHelpEvents();
+  bindAlgorithmEvents();
   $$(".tab-button").forEach((button) => button.addEventListener("click", () => {
     $$(".tab-button").forEach((node) => node.classList.toggle("active", node === button));
     $$(".config-section").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
@@ -2184,6 +2561,10 @@ function bindEvents() {
   $$(".result-tab").forEach((button) => button.addEventListener("click", () => {
     $$(".result-tab").forEach((node) => node.classList.toggle("active", node === button));
     $$(".result-view").forEach((view) => view.classList.toggle("active", view.dataset.resultView === button.dataset.resultTab));
+    if (button.dataset.resultTab === "control-effect") {
+      renderControlEffect();
+      requestAnimationFrame(renderControlEffect);
+    }
   }));
   $$(".resource-tab").forEach((button) => button.addEventListener("click", () => {
     state.resourceView = button.dataset.resourceView;
@@ -2220,6 +2601,10 @@ function bindEvents() {
   $("#causalPartid").addEventListener("change", (event) => {
     state.causalPartid = Number(event.target.value);
     renderCausalTimeline();
+  });
+  $("#effectPartid").addEventListener("change", (event) => {
+    state.effectPartid = Number(event.target.value);
+    renderControlEffect();
   });
   $("#resetButton").addEventListener("click", () => {
     fillForm(state.defaults);
@@ -2259,7 +2644,15 @@ function bindEvents() {
   });
   $("#configForm").addEventListener("input", renderConfigDiagnostics);
   $("#configForm").addEventListener("change", renderConfigDiagnostics);
-  window.addEventListener("resize", () => requestAnimationFrame(renderCharts));
+  window.addEventListener("resize", () => requestAnimationFrame(() => {
+    renderCharts();
+    if (
+      document.querySelector('.result-view.active')?.dataset.resultView
+      === "control-effect"
+    ) {
+      renderControlEffect();
+    }
+  }));
 }
 
 async function init() {

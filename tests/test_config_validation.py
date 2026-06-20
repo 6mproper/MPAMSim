@@ -29,3 +29,52 @@ def test_unknown_requester_fails(base_config, config_writer) -> None:
     ]
     with pytest.raises(ConfigError, match="unknown requesters"):
         load_config(config_writer(base_config))
+
+
+def test_l3_cmin_total_cannot_exceed_physical_capacity(
+    base_config,
+    config_writer,
+) -> None:
+    base_config["mpam"]["msc_controls"] = [
+        {
+            "msc_id": "slc0",
+            "controls": [
+                {"partid": 1, "cmin_percent": 60, "cmax_percent": 100},
+                {"partid": 2, "cmin_percent": 50, "cmax_percent": 100},
+            ],
+        }
+    ]
+    with pytest.raises(ConfigError, match="CMIN total exceeds 100"):
+        load_config(config_writer(base_config))
+
+
+def test_l3_cmin_must_fit_cpbm_reachable_capacity(
+    base_config,
+    config_writer,
+) -> None:
+    base_config["mpam"]["msc_controls"] = [
+        {
+            "msc_id": "slc0",
+            "controls": [
+                {
+                    "partid": 1,
+                    "cpbm": "1",
+                    "cmin_percent": 50,
+                    "cmax_percent": 100,
+                },
+            ],
+        }
+    ]
+    with pytest.raises(ConfigError, match="CPBM reachable"):
+        load_config(config_writer(base_config))
+
+
+def test_mc_qos_is_three_bit(base_config, config_writer) -> None:
+    base_config["mpam"]["msc_controls"] = [
+        {
+            "msc_id": "mc0",
+            "controls": [{"partid": 1, "mc_qos": 8}],
+        }
+    ]
+    with pytest.raises(ConfigError, match="mc_qos"):
+        load_config(config_writer(base_config))

@@ -126,7 +126,7 @@ def test_no_control_keeps_16_monitors_without_enforcement(tmp_path) -> None:
     )
     assert len(cache_row["per_partid"]) == 16
     assert len(mc_row["per_partid"]) == 16
-    assert cache_row["per_partid"]["2"]["cmax"] == 16
+    assert cache_row["per_partid"]["2"]["cmax_percent"] == 100
     assert cache_row["per_partid"]["2"]["enforcement_enabled"] is False
     assert mc_row["per_partid"]["2"]["limit_mode"] == "disabled"
     assert mc_row["per_partid"]["2"]["hardlimit_block_events"] == 0
@@ -239,8 +239,8 @@ def test_independent_control_switches_report_neutral_effective_values(
             "cmax_enable": False,
             "bmax_gbps": 1,
             "bmax_enable": False,
-            "priority": 12,
-            "priority_enable": False,
+            "mc_qos": 7,
+            "mc_qos_enable": False,
         }
     )
 
@@ -261,13 +261,13 @@ def test_independent_control_switches_report_neutral_effective_values(
     )["per_partid"]["2"]
     assert cache_row["configured_cmax"] == 1
     assert cache_row["cmax_enable"] is False
-    assert cache_row["cmax"] == 8
+    assert cache_row["cmax_percent"] == 50
     assert mc_row["configured_bmax_gbps"] == 1
     assert mc_row["bmax_enable"] is False
     assert mc_row["bmax_gbps"] is None
-    assert mc_row["configured_priority"] == 12
-    assert mc_row["priority_enable"] is False
-    assert mc_row["priority"] == 0
+    assert mc_row["configured_mc_qos"] == 7
+    assert mc_row["mc_qos_enable"] is False
+    assert mc_row["base_qos"] == 0
 
 
 def test_cbusy_and_bmax_can_be_isolated_and_combined(tmp_path) -> None:
@@ -308,7 +308,7 @@ def test_cbusy_and_bmax_can_be_isolated_and_combined(tmp_path) -> None:
                 "bmax_gbps": 8,
                 "limit_mode": "hardlimit",
                 "bmin_enable": False,
-                "priority_enable": False,
+                "mc_qos_enable": False,
                 "cbusy_enable": mode in {"cbusy", "combined"},
                 "cbusy_l1_ostd": 8,
                 "cbusy_l2_ostd": 4,

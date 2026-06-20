@@ -106,7 +106,7 @@
           <div class="mpam-editor-heading">
             <div>
               <h2>16 PARTID Cache / Memory 控制</h2>
-              <p>CMIN/CMAX 单位为 way/set；每 8 sets 抽样首 set 的 way owner。</p>
+              <p>CMIN/CMAX 是整个 L3 容量百分比；每 8 sets 抽样首 set 的 way owner。</p>
             </div>
             <button id="resetPartidButton" type="button" class="small-command">重置 16 组</button>
           </div>
@@ -117,13 +117,13 @@
                   <th>PID</th>
                   <th>Name</th>
                   <th>Mon</th>
-                  <th>CMIN</th>
-                  <th>CMAX</th>
+                  <th data-algorithm="l3-cmin">CMIN %</th>
+                  <th data-algorithm="l3-cmax">CMAX %</th>
                   <th>CPBM</th>
                   <th>BMIN</th>
                   <th>BMAX</th>
                   <th>Mode</th>
-                  <th>Pri</th>
+                  <th data-algorithm="mc-qos">MC QoS</th>
                   <th>CBusy / OSTD</th>
                 </tr>
               </thead>
@@ -149,9 +149,9 @@
           <div class="field-grid">
             <label>Token 窗口 ns<input data-param="mc_token_bucket_window_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
             <label>Aging 周期 ns<input data-param="mc_aging_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
-            <label>Aging 加分上限<input data-param="mc_aging_priority_cap" type="number" min="0" max="255" step="1"></label>
-            <label>BMIN 优先级加分<input data-param="mc_bmin_priority_boost" type="number" min="0" max="255" step="1"></label>
-            <label>Softlimit 降权<input data-param="mc_softlimit_priority_penalty" type="number" min="0" max="255" step="1"></label>
+            <label data-algorithm="mc-qos">Aging 最大升档<input data-param="mc_qos_aging_max_steps" type="number" min="0" max="7" step="1"></label>
+            <label data-algorithm="mc-qos">BMIN QoS 升档<input data-param="mc_bmin_qos_promote" type="number" min="0" max="7" step="1"></label>
+            <label data-algorithm="mc-qos">Softlimit QoS 降档<input data-param="mc_softlimit_qos_demote" type="number" min="0" max="7" step="1"></label>
           </div>
           <h2>CBusy 快反馈</h2>
           <div class="field-grid">
@@ -181,11 +181,11 @@
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="1"><b>NoC</b><span>Queue / VC</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="2"><b>L3</b><span>Portion MSC</span></div>
+          <div class="flow-stage" data-stage="2" data-algorithm="l3-allocation"><b>L3</b><span>Portion MSC</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="3"><b>MC</b><span>Token bucket</span></div>
+          <div class="flow-stage" data-stage="3" data-algorithm="mc-bandwidth"><b>MC</b><span>Token bucket</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="4"><b>Scheduler</b><span>Priority / aging</span></div>
+          <div class="flow-stage" data-stage="4" data-algorithm="mc-qos"><b>Scheduler</b><span>QoS / aging</span></div>
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="5"><b>Monitor</b><span>Feedback</span></div>
         </div>
@@ -227,6 +227,7 @@
       <section class="data-section">
         <div class="result-tabs">
           <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
+          <button class="result-tab" data-result-tab="control-effect">控制效果</button>
           <button class="result-tab" data-result-tab="experiment">对照实验</button>
           <button class="result-tab" data-result-tab="verification">算法验证</button>
           <button class="result-tab" data-result-tab="causal">因果时间线</button>
@@ -235,6 +236,43 @@
           <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
           <button class="result-tab" data-result-tab="msc">MSC</button>
           <button class="result-tab" data-result-tab="controls">控制记录</button>
+        </div>
+        <div class="result-view" data-result-view="control-effect">
+          <div class="evidence-toolbar">
+            <div>
+              <strong data-algorithm="effect-view">目标与实际控制效果</strong>
+              <span>16 PARTID 总览；选中一个 PARTID 查看完整仿真时间变化</span>
+            </div>
+            <label>PARTID
+              <select id="effectPartid"></select>
+            </label>
+          </div>
+          <div class="effect-chart-grid">
+            <article><h3 data-algorithm="l3-cmin">L3 占用比例 / CMIN / CMAX</h3><canvas id="effectL3Chart"></canvas></article>
+            <article><h3 data-algorithm="mc-bandwidth">MC 带宽 / BMIN / BMAX</h3><canvas id="effectBwChart"></canvas></article>
+            <article><h3 data-algorithm="mc-qos">MC Base / Effective QoS</h3><canvas id="effectQosChart"></canvas></article>
+            <article><h3>P99 实际 / 目标</h3><canvas id="effectP99Chart"></canvas></article>
+          </div>
+          <div class="resource-table-wrap">
+            <table class="effect-overview-table">
+              <thead><tr>
+                <th>PARTID</th><th>L3 Target</th><th>L3 Actual</th><th>L3 State</th>
+                <th>BW Target</th><th>BW Actual</th><th>BW State</th>
+                <th>QoS Base / Eff</th><th>P99 Target / Actual</th><th>Overall</th>
+              </tr></thead>
+              <tbody id="effectOverviewTable"><tr><td colspan="10" class="empty-cell">运行仿真后显示控制效果</td></tr></tbody>
+            </table>
+          </div>
+          <div class="resource-table-wrap">
+            <table class="effect-timeline-table">
+              <thead><tr>
+                <th>Time</th><th>L3 %</th><th>CMIN / CMAX</th><th>MC BW</th>
+                <th>BMIN / BMAX</th><th>QoS Base / Eff</th><th>CBusy / OSTD</th>
+                <th>P99 / Throughput</th><th>Control Events</th>
+              </tr></thead>
+              <tbody id="effectTimelineTable"><tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr></tbody>
+            </table>
+          </div>
         </div>
         <div class="result-view active" data-result-view="resource-monitor">
           <div class="resource-monitor-toolbar">
@@ -424,6 +462,11 @@
 
   <div id="toast" class="toast" role="alert"></div>
   <div id="helpTooltip" class="help-tooltip" role="tooltip"></div>
+  <aside id="algorithmPopover" class="algorithm-popover" aria-hidden="true">
+    <button id="algorithmPopoverClose" type="button" aria-label="关闭算法说明">×</button>
+    <h3 id="algorithmPopoverTitle"></h3>
+    <div id="algorithmPopoverBody"></div>
+  </aside>
   <script src="/static/app.js"></script>
 </body>
 </html>

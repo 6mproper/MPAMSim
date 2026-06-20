@@ -61,10 +61,10 @@ examples/
 3. Implement a deterministic discrete-event simulation kernel.
 4. Implement traffic generators and request metadata.
 5. Implement MPAM PARTID/PMG tagging, per-MSC settings tables, and monitors using `docs/MPAM_MSC_Behavior.md` as the behavior contract.
-6. Implement memory-controller token bucket and priority scheduler.
-7. Implement NoC latency, queueing, priority arbitration, and credit/backpressure hooks.
+6. Implement memory-controller token bucket and independent 3-bit QoS scheduler.
+7. Implement NoC latency, queueing, neutral arbitration, and credit/backpressure hooks.
 8. Implement cache/SLC capacity approximation; defer exact way-mask replacement.
-9. Implement baseline policies: no control, static MPAM, bandwidth cap, priority control, closed-loop QoS.
+9. Implement baseline policies: no control, static MPAM, bandwidth cap, MC QoS control, closed-loop QoS.
 10. Add CSV/JSON output, report generation, and regression tests for mechanism behavior.
 
 ## Non-goals
