@@ -3536,6 +3536,155 @@ Soft BMAX active
 
 The state describes both control activation and target outcome.
 
+### REV-UI-006: Configuration-driven monitoring workspace
+
+The monitoring UI SHALL not expose every counter as an equal-weight tab or
+table. It SHALL derive the primary result view from:
+
+- enabled workloads and active PARTIDs;
+- enabled L3 and MC controls;
+- selected resource instances;
+- configured targets;
+- controls that triggered;
+- targets that were unmet, saturated, or infeasible.
+
+Controls that are disabled SHALL not occupy primary chart space. Their data
+remains available in the diagnostic drill-down.
+
+The monitor SHALL use one workspace with three information levels:
+
+```text
+Level 1: Result overview
+Level 2: Control-effect timeline
+Level 3: Hardware diagnostic drill-down
+```
+
+These are view levels, not a collection of many independent top-level tabs.
+
+### REV-UI-007: Level 1 result overview
+
+The first monitor screen SHALL answer:
+
+```text
+What was configured?
+Which controls activated?
+What result was obtained?
+Why was a target not reached?
+```
+
+For every selected or relevant PARTID, show one compact result row:
+
+| Area | Primary result |
+| --- | --- |
+| CPU | Effective OSTD, actual OSTD, source stall |
+| L3 | CMIN/CMAX target, filtered occupancy, actual occupancy |
+| MC | BMIN/BMAX target, filtered bandwidth, actual bandwidth |
+| Control | Active actions, saturation, achieved/unmet state |
+
+The overview SHALL prioritize:
+
+1. target-unmet or infeasible controls;
+2. saturated controls;
+3. active controls;
+4. controls currently within target;
+5. untriggered controls.
+
+The page SHALL show a short evidence reason, for example:
+
+```text
+BMAX target unmet:
+soft demotion active, effective QoS reached 0,
+remaining bandwidth was otherwise idle.
+```
+
+It SHALL not require the user to infer the reason from several unrelated
+tables.
+
+### REV-UI-008: Level 2 control-effect timeline
+
+The timeline is the main analysis view. It SHALL use a shared time cursor and
+show only signals relevant to enabled controls.
+
+Examples:
+
+```text
+CMIN/CMAX enabled:
+    target, raw sample, filtered occupancy, actual occupancy,
+    protection/block events
+
+BMIN/BMAX enabled:
+    target, raw bandwidth, filtered bandwidth, actual bandwidth,
+    QoS adjustment or Hard-BMAX state
+
+CBusy enabled:
+    MC PARTID buffer count, MC CBusy level,
+    RN received level, effective OSTD, source stall
+```
+
+The user SHALL be able to select one or multiple PARTIDs. The default
+selection SHOULD include PARTIDs with active controls or unmet targets rather
+than all 16.
+
+Hovering or clicking a control event SHALL reveal:
+
+- triggering monitor sample;
+- threshold and comparison result;
+- old/new state;
+- hardware action;
+- effective time;
+- observed downstream response.
+
+### REV-UI-009: Level 3 hardware diagnostic drill-down
+
+Detailed hardware state SHALL be available on demand through resource and
+event drill-down rather than permanent top-level tabs.
+
+Examples include:
+
+- CPU thread/core OSTD counters and stall reasons;
+- REQ/RSP/DAT ring slots, recirculation, and per-link traffic;
+- L3 set/way ownership, MSHRs, fills, and victim decisions;
+- MC buffer entries, candidate masks, effective QoS, and grants;
+- monitor filter arithmetic and history/current contribution;
+- CBusy threshold comparisons and feedback transport.
+
+Drill-down SHALL open in a side panel or dedicated analysis view without
+removing the shared time context.
+
+### REV-UI-010: Adaptive default charts
+
+The UI SHALL construct default charts from the configuration:
+
+| Enabled function | Default chart |
+| --- | --- |
+| CPBM | Eligible-way mask and actual allocation violations |
+| CMIN/CMAX | Target versus raw/filtered/actual occupancy |
+| BMIN/BMAX | Target versus raw/filtered/actual bandwidth |
+| MC QoS | Base/effective QoS and grant share |
+| CBusy | MC buffer, CBusy, RN level, effective OSTD |
+| No MPAM control | Workload, throughput, latency, and bottleneck overview |
+
+Unrelated series SHALL remain hidden until explicitly requested.
+
+Users MAY save a custom view preset, but a saved preset SHALL not remove
+underlying monitor collection or alter the simulation.
+
+### REV-UI-011: Complexity budget
+
+The primary monitoring workspace SHOULD contain no more than:
+
+- one PARTID/resource selector band;
+- one compact result summary;
+- three to five default charts;
+- one shared event timeline;
+- one diagnostic entry point.
+
+Large raw counter tables, all-PARTID matrices, and per-MSC implementation
+fields SHALL not appear by default. They belong in drill-down or export.
+
+Every visible chart and control state SHALL retain pointer-triggered help that
+explains its source, update period, units, and interpretation.
+
 ### REV-CHI-001: CHI-shaped logical channels
 
 The interconnect model SHALL be organized around the four AMBA CHI channel
