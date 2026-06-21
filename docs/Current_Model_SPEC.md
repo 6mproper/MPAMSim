@@ -3418,6 +3418,124 @@ Automated verification SHALL prove:
 - existing requests and all responses continue to make progress;
 - control activation is visible even when the bandwidth target is not met.
 
+### REV-MON-DATA-001: Full-history collection
+
+The simulator SHALL collect history for all 16 PARTIDs regardless of the
+current UI selection. Selecting PARTIDs affects rendering only.
+
+Every periodic sample SHALL include:
+
+```text
+time_ns
+resource_type
+resource_id
+local_cycle
+partid
+pmg
+metric
+value
+unit
+semantic
+sample_id
+```
+
+`semantic` SHALL identify:
+
+```text
+actual
+raw_monitor
+filtered_monitor
+configured_target
+effective_target
+control_state
+```
+
+L3 and MC sample on their independent 256-local-cycle boundaries. CPU and NoC
+diagnostic sampling periods SHALL be separately configurable while all values
+remain displayable on one nanosecond time axis.
+
+### REV-MON-DATA-002: Periodic samples and control events
+
+Periodic state and discrete control events SHALL use separate records.
+
+An event SHALL include:
+
+```text
+event_time_ns
+resource_type
+resource_id
+partid
+pmg
+event_type
+old_state
+new_state
+monitor_sample_id
+decision_id
+action_effective_time_ns
+details
+```
+
+The IDs SHALL connect:
+
+```text
+monitor observation
+-> control decision
+-> effective hardware action
+-> later resource result
+```
+
+Examples include CMIN victim protection, CMAX growth blocking, L3 bypass,
+BMIN promotion, soft-BMAX demotion, Hard-BMAX transitions, CBusy transitions,
+RN feedback receipt, and effective OSTD changes.
+
+### REV-UI-004: Unified plot encoding
+
+PARTID selection SHALL support one or multiple PARTIDs. Color SHALL identify
+PARTID, while line or marker style SHALL identify semantic:
+
+| Semantic | Default visual encoding |
+| --- | --- |
+| Configured target | Dotted line |
+| Effective target | Stepped dashed line |
+| Actual data-plane value | Thin solid line |
+| Raw MPAM monitor | Marker line |
+| Filtered MPAM monitor | Thick solid line |
+| Control event | Vertical event marker |
+
+Every graph SHALL have a complete legend for visible series. Disabled or
+unavailable values SHALL be labeled rather than plotted as zero.
+
+Single-PARTID mode SHALL expose all available semantics. Multi-PARTID mode MAY
+let users hide raw or actual series to reduce clutter, without deleting the
+underlying data.
+
+### REV-UI-005: Control-result state vocabulary
+
+Control state SHALL not be reduced to success/failure. The UI SHALL support:
+
+```text
+Disabled
+Not triggered
+Active
+Within target
+Target unmet
+Saturated
+Infeasible
+No demand
+No contention
+```
+
+States MAY be combined. For example:
+
+```text
+Soft BMAX active
++ effective QoS saturated at zero
++ filtered bandwidth above BMAX
+= Active + Saturated + Target unmet
+```
+
+The state describes both control activation and target outcome.
+
 ### REV-CHI-001: CHI-shaped logical channels
 
 The interconnect model SHALL be organized around the four AMBA CHI channel
