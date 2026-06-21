@@ -2169,6 +2169,253 @@ The allocation policy for multiple PARTIDs competing for one core OSTD pool
 remains a separate decision. The implementation SHALL NOT treat the core pool
 capacity as an independent full-capacity allowance for every PARTID.
 
+### REV-CPU-002: CPU traffic-model boundary
+
+The CPU model SHALL be complete enough to represent memory-level parallelism,
+shared core OSTD contention, dependency-limited traffic, downstream
+backpressure, and terminal completion. It SHALL NOT attempt to model a full
+instruction pipeline, reorder buffer, branch predictor, or instruction
+retirement.
+
+The default traffic entry point SHALL be:
+
+```yaml
+traffic_entry_point: l3_facing
+```
+
+In this mode, a generated request represents a transaction that has already
+passed any private L1/L2 filtering and is ready to access the shared L3.
+
+An optional future mode MAY use:
+
+```yaml
+traffic_entry_point: cpu_memory_access
+```
+
+That mode requires an explicitly labeled approximation for private-cache and
+TLB filtering. It SHALL NOT silently reuse L3-facing request rates as raw CPU
+load/store rates.
+
+### REV-CPU-003: Shared OSTD policy options
+
+Public information does not establish one universal physical-core OSTD
+allocation algorithm for commercial SMT cores. The simulator SHALL therefore
+provide explicit selectable policies:
+
+```yaml
+core_ostd_entries: <positive integer>
+core_ostd_policy: shared | static_partition | reserve_borrow
+```
+
+Policy meanings:
+
+| Policy | Behavior |
+| --- | --- |
+| `shared` | Both threads compete for the full core pool under the configured thread scheduler |
+| `static_partition` | Each thread has a fixed non-borrowable allocation |
+| `reserve_borrow` | Each active thread has a configured reserve and may borrow otherwise unused entries up to its maximum |
+
+The default SHALL be:
+
+```yaml
+core_ostd_policy: shared
+thread_scheduler: round_robin
+```
+
+This default is a neutral system-level modeling choice, not a claim about a
+specific Arm CPU implementation.
+
+For every new request, admission SHALL require:
+
+```text
+core OSTD has capacity
+AND thread OSTD is below its maximum
+AND core/PARTID OSTD is below its effective limit
+AND destination-MC CBusy permits admission
+AND the selected REQ path has credit
+```
+
+CBusy SHALL restrict only new request admission. It SHALL NOT cancel or recall
+requests already in flight.
+
+### REV-CPU-004: Destination-specific PARTID/CBusy limit
+
+When the destination MC can be determined from the request address before
+issue:
+
+```text
+effective_ostd[core, partid, destination_mc] =
+    min(
+        configured_partid_ostd,
+        software_partid_ostd,
+        cbusy_ostd_cap[destination_mc, partid]
+    )
+```
+
+Congestion at one MC SHALL NOT automatically clamp traffic of the same PARTID
+to another MC. A global maximum-CBusy aggregation MAY remain available as an
+explicit simplified mode, but SHALL not be the default revised behavior.
+
+### REV-CPU-005: CPU issue rate and source queue
+
+The CPU model SHALL expose:
+
+```yaml
+cpu_clock_mhz: <positive number>
+core_issue_width: <positive integer>
+thread_source_queue_depth: <positive integer>
+thread_ostd_max: <positive integer>
+thread_scheduler: round_robin | weighted_round_robin | oldest_first
+issue_selection: fifo | eligible_scan
+eligible_scan_depth: <positive integer>
+```
+
+These limits have distinct meanings:
+
+| Limit | Meaning |
+| --- | --- |
+| Core issue width | Maximum new requests submitted by one core per CPU cycle |
+| Core OSTD | Total core transactions awaiting terminal completion |
+| Thread source queue | Generated but not yet admitted requests |
+| REQ credit | Interconnect receive capacity |
+| L3 MSHR | L3 miss-tracking capacity |
+
+The default scheduler SHALL be round-robin and work-conserving. Other
+schedulers are research options.
+
+### REV-TRAFFIC-001: Orthogonal stimulus dimensions
+
+Stimulus configuration SHALL separate address behavior, operation type,
+dependency, arrival timing, and issue selection:
+
+```yaml
+address_pattern: sequential | random | pointer_chase
+operation_pattern: read | write | mixed
+read_ratio: <0.0 through 1.0>
+dependency_mode: independent | chained
+independent_chains: <positive integer>
+arrival_mode: fixed | poisson | burst
+burst_length: <positive integer>
+issue_selection: fifo | eligible_scan
+eligible_scan_depth: <positive integer>
+working_set_bytes: <positive integer>
+```
+
+Legacy names SHALL map to these independent fields:
+
+| Legacy label | Revised meaning |
+| --- | --- |
+| `stream` | Sequential address pattern with independent requests |
+| `random_read` | Random address pattern with read operation |
+| `mixed` | An operation mix; it does not define address behavior |
+| `pointer_chase` | Pointer-derived addresses with chained dependency |
+| `bursty_dma` | Burst arrival with explicitly configured burst length and concurrency |
+
+### REV-TRAFFIC-002: Pointer-chase dependency
+
+For one pointer chain:
+
+```text
+issue address A
+-> receive DAT containing next address B
+-> generate and issue B
+```
+
+The next request in a chain SHALL not exist in the source queue before the
+preceding request returns its modeled data. Therefore one chain has at most
+one outstanding dependent request.
+
+`independent_chains` creates multiple independent pointer chains. The maximum
+dependency-derived concurrency is the number of chains, further bounded by
+CPU OSTD and downstream flow control.
+
+### REV-TRAFFIC-003: Eligible-scan issue selection
+
+`eligible_scan` is an issue-queue policy, not a workload type. It MAY inspect
+the first `eligible_scan_depth` already-generated independent requests and
+issue the oldest request that passes all admission conditions.
+
+Example:
+
+```text
+A -> MC0, blocked by MC0 CBusy
+B -> MC1, eligible
+C -> L3, eligible
+```
+
+FIFO waits behind A. Eligible scan may issue B while retaining A.
+
+Eligible scan SHALL NOT violate dependency:
+
+- a not-yet-generated pointer-chase successor cannot be selected;
+- ordering-constrained operations cannot be bypassed;
+- different independent pointer chains may be selected independently.
+
+### REV-CPU-006: CPU observability
+
+For every core, thread, PARTID, and destination MC, monitoring SHALL expose:
+
+- source-queue depth;
+- generated, admitted, and completed requests;
+- actual and peak OSTD;
+- core capacity and thread maximum;
+- configured, software, CBusy, and final effective PARTID limits;
+- requests issued per CPU cycle or monitor period;
+- OSTD lifetime;
+- terminal completion count;
+- borrowed or reserved entries when the selected policy uses them.
+
+Stall time and events SHALL be separated into:
+
+```text
+core_ostd_full
+thread_ostd_max
+static_partition_limit
+reserve_protection
+partid_ostd_limit
+cbusy_limit
+req_credit
+source_queue_full
+scheduler_wait
+dependency_wait
+```
+
+Verification SHALL prove capacity, admission, arbitration, dependency, and
+release rules. It SHALL NOT require a configured throughput or latency target
+to be reached.
+
+### REV-UI-003: Configuration help and complexity levels
+
+Every user-configurable field, option, workload dimension, scheduler, and
+control mode SHALL have a pointer-triggered explanation. The explanation
+SHALL state:
+
+- what the field represents;
+- its unit and valid range;
+- where it acts in the request path;
+- whether it is a model assumption or an architected/public behavior;
+- its expected effect;
+- interactions with related limits;
+- one short configuration example where useful.
+
+For stimulus types, the help popover SHALL include the request-generation and
+dependency sequence, including pointer-chase and eligible-scan examples.
+
+The CPU configuration UI SHALL separate:
+
+```text
+Basic:
+  clock, issue width, core OSTD, thread OSTD,
+  address pattern, operation mix, dependency, rate
+
+Advanced:
+  OSTD allocation policy, scheduler, issue scan depth,
+  source-queue depth, pointer-chain count, burst timing
+```
+
+Advanced fields SHALL remain user configurable but SHALL not obscure the
+common configuration path.
+
 ### REV-L3-PIPE-001: Configurable hit, miss, and fill latency
 
 The revised L3 SHALL expose separate local-clock latency parameters:
