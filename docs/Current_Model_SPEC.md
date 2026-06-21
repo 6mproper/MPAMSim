@@ -2645,7 +2645,7 @@ Each MC SHALL have one shared physical request buffer:
 mc_request_buffer_depth: <positive integer>
 ```
 
-Every valid entry SHALL retain at least:
+Every simulator buffer entry SHALL retain at least:
 
 ```text
 valid
@@ -2679,19 +2679,23 @@ REQ-ring transport and recirculation before successful ejection are NoC
 latency, not MC queue latency.
 
 `enqueue_sequence` is a monotonically increasing MC-local value used for
-deterministic oldest-entry tie-breaking. The simulator MAY also report the
-equivalent nanosecond timestamp, but cycle count is the normative MC age.
+deterministic trace reconstruction. The simulator MAY also report the
+equivalent nanosecond timestamp, but cycle count is the normative observed MC
+residence time.
 
-The simulator may store an unbounded integer timestamp for correctness.
-Hardware-PPA studies SHOULD expose a quantized/saturating age representation:
+Exact `enqueue_mc_cycle` and `enqueue_sequence` are simulator-observation
+state. They SHALL NOT be assumed to exist in the default hardware scheduler
+or affect default QoS selection.
+
+Hardware-PPA studies MAY expose a quantized/saturating age representation:
 
 ```yaml
 aging_quantum_cycles: <positive integer>
 aging_counter_bits: <positive integer>
 ```
 
-This allows the model to show the accuracy and area cost of per-entry age
-tracking without claiming that hardware stores a full software timestamp.
+This allows the model to study optional per-entry age tracking without
+claiming that hardware stores a full software timestamp.
 
 ### REV-MC-QUEUE-002: Admission and ring interaction
 
@@ -2732,7 +2736,7 @@ report SHALL identify:
 - buffer depth;
 - number of candidates examined per decision;
 - QoS comparator width;
-- aging metadata width.
+- configured aging implementation and metadata width.
 
 These are implementation-cost indicators, not an area/power number unless
 calibrated against RTL or synthesis evidence.
@@ -2902,7 +2906,7 @@ effective_qos = clamp(
     base_mc_qos[partid]
   + bmin_qos_promote_if_active
   - soft_bmax_qos_demote_if_active
-  + aging_qos_promote[entry],
+  + aging_qos_promote[partid],
     0,
     7
 )
@@ -2914,25 +2918,79 @@ The scheduler SHALL:
 2. remove hard-BMAX-blocked entries;
 3. calculate effective QoS for every remaining entry;
 4. select the highest effective QoS;
-5. break equal-QoS ties by the oldest `enqueue_sequence`.
+5. break equal-QoS ties using the configured hardware-feasible tie policy.
 
-Because base and monitor-driven adjustments are per PARTID, entries of the
-same PARTID normally preserve oldest-first service. A future detailed DRAM
-readiness mask may permit a younger ready entry to bypass an older not-ready
-entry; that behavior SHALL be explicitly reported.
+The default tie policy SHALL be:
 
-Aging SHALL have an independent enable. When enabled:
-
-```text
-age_steps =
-    min(
-        aging_max_steps,
-        floor(queue_age_cycles / aging_quantum_cycles)
-    )
+```yaml
+equal_qos_tie_policy: rotating_buffer_scan
 ```
 
-When disabled, strict QoS starvation is a possible observable result rather
-than something silently prevented by the model.
+The MC stores one rotating buffer-slot pointer. Among entries with the highest
+effective QoS, it scans valid slots from the slot after the previous grant,
+wraps once, and selects the first matching candidate. After grant, the pointer
+moves to the selected slot.
+
+This requires a rotating pointer and selection logic, but no enqueue timestamp
+or all-entry age comparison. It provides neutral service opportunities among
+equal-QoS buffer entries but is not strict oldest-first.
+
+### REV-MC-SCHED-003: Hardware-feasible optional aging
+
+The default revised scheduler SHALL use:
+
+```yaml
+aging_mode: none
+```
+
+This exposes possible starvation under strict 3-bit QoS and avoids hiding the
+cost of starvation prevention.
+
+The preferred low-PPA optional mode SHALL be:
+
+```yaml
+aging_mode: per_partid_counter
+aging_quantum_cycles: <positive integer>
+aging_counter_bits: <positive integer>
+aging_max_qos_steps: <0 through 7>
+```
+
+The MC stores one small saturating wait counter per supported PARTID, not one
+timestamp per request:
+
+```text
+if PARTID has at least one service-ready candidate
+and no request of that PARTID was served during the aging quantum:
+    counter[partid] saturating-increments
+
+if a request of that PARTID is served:
+    counter[partid] resets to zero
+
+if the PARTID has no service-ready candidate:
+    counter[partid] resets to zero
+```
+
+QoS promotion is:
+
+```text
+aging_qos_promote[partid] =
+    min(aging_max_qos_steps, counter[partid])
+```
+
+This provides coarse inter-PARTID starvation relief with approximately:
+
+```text
+number_of_partids * aging_counter_bits
+```
+
+bits of counter state, plus increment/reset logic. It does not preserve
+oldest-first order among entries of the same PARTID.
+
+A `per_entry_epoch` research mode MAY be added later. It SHALL be labeled as
+a higher-PPA option and SHALL not be the default.
+
+When aging is disabled, strict QoS starvation is a possible observable result
+rather than something silently prevented by the model.
 
 ### REV-MC-MON-002: MC control evidence
 
@@ -2956,6 +3014,102 @@ For every PARTID and monitor interval, the UI and trace SHALL expose:
 Automated verification SHALL prove state transitions, candidate eligibility,
 QoS calculation, tie-breaking, and hard gating. It SHALL NOT require BMIN or
 BMAX targets to be achieved under every workload.
+
+### REV-L3-SAME-001: Same-line MSHR merge
+
+Requests address the same cache line when:
+
+```text
+floor(address_a / line_size_bytes)
+==
+floor(address_b / line_size_bytes)
+```
+
+With `merge_same_line_misses: true`, the first read miss allocates one MSHR
+identified by the line address and issues one downstream memory read.
+Subsequent read misses to the same line join the MSHR waiter list and do not
+issue duplicate memory reads.
+
+Every waiter SHALL retain:
+
+- source core/thread;
+- request PARTID/PMG;
+- CPU OSTD allocation;
+- transaction ID;
+- arrival order.
+
+All waiters complete after the fill returns, and each releases its own CPU
+OSTD independently.
+
+### REV-L3-SAME-002: Allocation owner and access attribution
+
+The PARTID/PMG of the first request that allocated the MSHR SHALL be the fill
+allocation identity:
+
+```text
+allocation_partid = first_miss.partid
+allocation_pmg = first_miss.pmg
+```
+
+If the fill is admitted to L3, the cache line stores that allocation identity.
+Later hits or merged waiters from another PARTID SHALL NOT relabel the line.
+
+Therefore:
+
+- access counters are attributed to the accessing request's PARTID/PMG;
+- occupancy is attributed to the stored allocation owner;
+- CMIN/CMAX/CPBM allocation decisions use the allocation PARTID;
+- a different PARTID may hit a line allocated by another PARTID;
+- CPBM is an allocation constraint, not an access-permission check.
+
+If the allocation identity is blocked by CMAX, CPBM, or no-legal-victim
+conditions, the fill bypasses L3 for all waiters. The implementation SHALL not
+silently choose a different merged waiter as the owner.
+
+### REV-L3-SAME-003: Duplicate fill without merging
+
+With `merge_same_line_misses: false`, multiple misses to the same line may
+issue multiple memory reads.
+
+When a returned fill finds that the line is already valid in L3:
+
+```text
+do not allocate a duplicate tag
+do not change the existing line owner
+record redundant_memory_fetch
+complete the waiting requester
+```
+
+This mode exists to study bandwidth and MSHR inefficiency. The default SHALL
+enable same-line read-miss merging.
+
+### REV-MC-SAME-001: Minimum same-line ordering
+
+The MC SHALL not merge same-address requests. Every admitted request remains
+a distinct buffer entry and participates in QoS scheduling when ready.
+
+Before QoS comparison, apply a minimum line-order readiness rule:
+
+| Older request | Younger same-line request | Younger readiness |
+| --- | --- | --- |
+| Read | Read | May be ready and reordered |
+| Read | Write | Block until older read is issued |
+| Write | Read | Block until older write is issued |
+| Write | Write | Block until older write is issued |
+
+Thus any same-line pair containing a write preserves arrival order. Different
+lines remain reorderable.
+
+This rule prevents contradictory read/write results but is not a complete
+coherence, memory-ordering, atomic, or barrier model.
+
+The UI SHALL report:
+
+- MSHR merge count and waiter count;
+- cross-PARTID same-line merges;
+- redundant memory reads when merging is disabled;
+- same-line ordering blocks in MC;
+- allocation owner versus accessing PARTID.
 
 ### REV-CHI-001: CHI-shaped logical channels
 
