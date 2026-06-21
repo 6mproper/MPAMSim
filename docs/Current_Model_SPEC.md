@@ -2060,6 +2060,163 @@ AND hardlimit enabled
 
 通过条件是状态、动作和记录符合规格；不要求控制目标一定达到。
 
+### REV-CFG-001：统一配置源
+
+Web界面、YAML文件和Python API必须使用同一份类型化配置schema：
+
+```text
+用户输入
+-> 统一配置对象
+-> 校验与派生计算
+-> resolved config
+-> 仿真
+```
+
+界面不得维护一套与CLI或Python API不同的隐藏默认值。所有默认值必须写入
+`resolved config`并随运行结果保存。
+
+### REV-CFG-002：基础与高级配置分层
+
+基础配置至少包括：
+
+- 仿真时间、seed和验证等级；
+- CPU、L3、MC和NoC时钟；
+- 16线程激励和PARTID/PMG映射；
+- CPBM、CMIN、CMAX；
+- BMIN、BMAX、MC QoS和CBusy；
+- 监控周期及`history_weight`、`current_weight`。
+
+高级配置至少包括：
+
+- CPU OSTD分配策略、发射窗口和依赖链；
+- L3 MSHR、fill buffer、LRU/PLRU；
+- 地址交织；
+- REQ/RSP/DAT Ring槽位、flit宽度和hop延迟；
+- 滞回、service-deficit、watchdog；
+- `full`验证和硬件诊断记录。
+
+高级配置必须保持可用，但不得遮挡常用配置路径。
+
+### REV-CFG-003：三级诊断
+
+配置诊断分为：
+
+| 等级 | 处理 |
+| --- | --- |
+| `ERROR` | 拒绝启动 |
+| `WARNING` | 允许启动，突出风险 |
+| `INFO` | 解释行为，不阻止运行 |
+
+`ERROR`至少包括：
+
+- 滤波权重不满足规范化要求；
+- CMIN大于CMAX；
+- CMIN超过CPBM可达比例；
+- CPBM启用但bitmap为空；
+- buffer、MSHR、fill buffer或Ring容量非正；
+- CBusy、滞回或OSTD阈值次序非法；
+- PARTID/PMG超过配置宽度；
+- Ring节点缺失、重复或不可达；
+- 资源、请求器、线程或场景ID重复；
+- 单位或枚举值无法解释。
+
+`WARNING`至少包括：
+
+- BMIN总和超过MC物理带宽；
+- Hard BMAX与CBusy叠加可能过度限流；
+- 监控窗口或`history_weight`导致响应过慢；
+- CMIN可能因需求不足无法达到；
+- OSTD不足以形成目标带宽；
+- aging关闭时存在饥饿风险；
+- 目标在当前物理能力下可能不可实现。
+
+`INFO`至少包括：
+
+- Soft BMAX在无竞争时允许借用空闲带宽；
+- BMIN在无竞争时不会产生调度提升；
+- SNP和一致性当前关闭；
+- 实际值与MPAM采样值预期可能不同。
+
+### REV-CFG-004：不得自动修改用户参数
+
+配置工具可以：
+
+- 计算派生值；
+- 解释风险；
+- 给出修改建议；
+- 提供用户主动选择的预设。
+
+配置工具不得：
+
+- 自动降低BMIN或提高BMAX；
+- 自动修改CPBM、CMIN或CMAX；
+- 自动打开aging、CBusy或其他控制；
+- 为了让验证通过而修改激励；
+- 在`resolved config`中隐藏改写。
+
+用户接受预设或建议后，修改必须作为显式配置变化记录。
+
+### REV-CFG-005：派生参数
+
+界面必须实时显示与当前配置有关的派生值，包括：
+
+- L3总line数和每set的way数；
+- CPBM可达比例；
+- 256个本地周期对应的时间；
+- 滤波响应速度或近似时间常数；
+- MC理论总带宽；
+- BMIN总配置量及其相对MC能力的比例；
+- CBusy预计算整数阈值；
+- 一次line fill需要的DAT flit数；
+- 基于OSTD、line size和往返延迟的带宽上界估计；
+- 各硬件表、计数器和buffer的规模。
+
+派生值必须标明是精确计算、上界估计还是近似提示。
+
+### REV-CFG-006：场景和结果可复现
+
+每次运行必须保存：
+
+```text
+用户原始配置
+resolved config
+全部默认值
+seed
+代码commit
+SPEC版本
+OpenSpec change标识
+验证等级
+仿真开始时间和结束时间
+模型能力开关
+```
+
+场景管理必须支持：
+
+- 命名保存；
+- 复制后修改；
+- YAML导入和导出；
+- 从历史结果重新运行；
+- 比较两个场景的配置差异；
+- 标识结果是否来自同一代码和SPEC版本。
+
+工具不强制用户运行固定对照场景。用户可以自行复制场景、切换控制开关并
+比较结果。
+
+### REV-CFG-007：PPA结构提示
+
+配置界面必须显示由参数直接决定的硬件结构规模，例如：
+
+- L3 tag、owner和替换状态数量；
+- MSHR和fill buffer项数；
+- MC buffer深度和全buffer QoS候选数；
+- 每PARTID监控、BMIN/BMAX、service-deficit和CBusy状态bit；
+- RN中PARTID乘MC的OSTD计数器数量；
+- 三条Ring的槽位数量；
+- 关键比较器、扫描宽度和表项数量。
+
+没有RTL综合、工艺库或实测证据时，不得把这些结构规模换算成虚构的面积、
+功耗或时序数值。
+
 ### REV-ARCH-001: Data, monitor, and control planes
 
 The revised model SHALL separate:
