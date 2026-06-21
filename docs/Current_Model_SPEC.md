@@ -2217,6 +2217,195 @@ OpenSpec change标识
 没有RTL综合、工艺库或实测证据时，不得把这些结构规模换算成虚构的面积、
 功耗或时序数值。
 
+### REV-IMPL-001：原位替换，不维护双模型
+
+新架构必须直接替换现有模块中的旧实现，不引入长期并存的：
+
+```text
+legacy
+mpam_v2
+```
+
+两套完整数据通路。
+
+迁移期间允许使用短期feature branch、测试桩或适配器，但主分支合入后的每个
+阶段必须只有一个权威实现。旧行为被替换后应删除或归档，不保留运行时双模型
+开关。
+
+### REV-IMPL-002：稳定的积木化分层
+
+实现必须保持以下稳定分层：
+
+```text
+Configuration
+    -> Component Factory
+    -> Transaction Model
+    -> Resource Components
+    -> Monitor Sources
+    -> Control Policies
+    -> Trace / UI
+```
+
+主仿真路径只依赖稳定接口，不直接依赖具体算法类。
+
+至少定义以下接口族：
+
+| 接口 | 职责 |
+| --- | --- |
+| `Transaction` | 请求、flit、父子事务和完成条件 |
+| `EndpointPort` | 节点注入、接收、反压和完成回调 |
+| `RingTransport` | REQ/RSP/DAT槽位移动、绕行和下环 |
+| `CacheLookupPipeline` | L3 ingress、lookup和hit/miss结果 |
+| `ReplacementPolicy` | LRU、PLRU及后续替换策略 |
+| `MshrTable` | 同line合并、waiter和fill完成 |
+| `McReadinessPolicy` | 生成MC service-ready candidate mask |
+| `McScheduler` | 对candidate计算QoS并授权 |
+| `MonitorSource` | 原始计数、采样和滤波值发布 |
+| `ControlPolicy` | 读取规定监控值并产生控制动作 |
+| `ValidationHook` | 不变量、动作检查和诊断证据 |
+
+### REV-IMPL-003：机制与策略解耦
+
+资源组件负责机制，策略对象负责可替换算法。
+
+示例：
+
+```text
+L3组件：
+    负责set/tag/way、lookup、MSHR、fill和事件时序
+
+ReplacementPolicy：
+    负责LRU或PLRU victim顺序
+
+CacheAllocationControl：
+    负责CPBM、CMIN、CMAX合法性判断
+```
+
+```text
+MC组件：
+    负责buffer、服务时序和DAT返回
+
+McReadinessPolicy：
+    负责Hard BMAX和同地址顺序mask
+
+McScheduler：
+    负责3-bit QoS、轮询和service-deficit
+```
+
+新增策略不得要求复制整个L3、MC或仿真主循环。
+
+### REV-IMPL-004：显式状态和事件契约
+
+模块间不得通过临时字段、动态属性或隐式全局变量交换控制状态。
+
+所有跨模块信息必须通过类型化对象：
+
+```text
+Transaction
+Flit
+MonitorSample
+ControlDecision
+ControlAction
+Completion
+ValidationEvent
+```
+
+每个对象必须具有稳定ID和时间字段。PARTID、PMG、source、destination、
+request class、line address和父子事务关系必须显式保存。
+
+### REV-IMPL-005：组件注册和能力声明
+
+可替换算法通过工厂或注册表选择：
+
+```yaml
+l3:
+  replacement_policy: lru
+
+mc:
+  scheduler: mpam_qos
+  readiness_policy: basic_ordering
+
+monitor:
+  filter: weighted_history
+```
+
+每个组件必须声明：
+
+- 配置schema；
+- 输入和输出接口；
+- 支持的能力；
+- 需要的监控源；
+- 产生的控制动作；
+- 验证钩子；
+- 不支持的组合。
+
+配置加载时先完成能力匹配，禁止运行中发现接口不兼容。
+
+### REV-IMPL-006：监控与UI不反向耦合数据面
+
+资源组件只能发布类型化监控样本和事件，不能直接构造UI表格或图表。
+
+UI通过统一的查询和投影视图读取：
+
+```text
+raw samples
+filtered samples
+control events
+resource state summaries
+```
+
+后续新增监控指标时，应通过注册metric schema和视图映射完成，不修改资源调度
+主流程。
+
+### REV-IMPL-007：原位迁移顺序
+
+现有模块按以下顺序原位替换：
+
+1. 建立新的类型化`Transaction`、事件和监控契约；
+2. 扩展统一配置schema和组件工厂；
+3. 替换CPU requester和激励；
+4. 替换NoC为三条双向bufferless ring；
+5. 替换L3为真实set/tag/way、MSHR和fill；
+6. 替换MC共享buffer、readiness和QoS scheduler；
+7. 接入BMIN/BMAX、CBusy和RN OSTD闭环；
+8. 替换监控collector和Web工作区；
+9. 删除被取代的概率命中、priority heap、token bucket和旧视图逻辑。
+
+每一步合入后必须：
+
+- 主分支可运行；
+- 已迁移功能使用新接口；
+- 未迁移模块通过临时适配器接入同一契约；
+- 不引入第二套完整模型；
+- OpenSpec严格校验和自动化测试通过。
+
+### REV-IMPL-008：扩展约束
+
+后续新增功能应满足：
+
+- 新请求属性通过扩展`Transaction` schema；
+- 新替换算法实现`ReplacementPolicy`；
+- 新MC调度算法实现`McScheduler`；
+- 新控制逻辑实现`ControlPolicy`并声明硬件状态；
+- 新监控实现`MonitorSource`或注册metric；
+- 新资源节点通过`EndpointPort`接入Ring；
+- 新验证通过`ValidationHook`接入。
+
+如果新增特性必须修改多个无关模块的内部实现，说明现有接口不足，必须先提出
+OpenSpec接口变更，不能直接在主流程中添加特例。
+
+### REV-IMPL-009：禁止的框架退化
+
+禁止以下实现方式：
+
+- 在仿真主循环中按功能名写大型`if/elif`；
+- 为每种控制组合复制一套L3或MC类；
+- UI直接读取组件私有字段；
+- 控制器读取未声明的真实状态；
+- 使用动态属性给请求临时挂载QoS或控制信息；
+- 将配置解析、硬件状态更新和图表生成写在同一模块；
+- 为通过测试保留不可达的旧算法分支。
+
 ### REV-ARCH-001: Data, monitor, and control planes
 
 The revised model SHALL separate:
