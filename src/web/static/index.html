@@ -78,7 +78,7 @@
               <h2>16 线程独立激励</h2>
               <p>8 核 × 2 线程；每行固定绑定一个 requester，P99=0 表示不设目标。</p>
             </div>
-            <button id="resetStimulusButton" type="button" class="small-command">重置 16 路</button>
+            <button id="resetStimulusButton" type="button" class="small-command" data-help="把16个硬件线程激励恢复为服务端默认配置；不会自动启动仿真。">重置 16 路</button>
           </div>
           <div class="stimulus-config-wrap">
             <table class="stimulus-config-table">
@@ -108,7 +108,7 @@
               <h2>16 PARTID Cache / Memory 控制</h2>
               <p>CMIN/CMAX 是整个 L3 容量百分比；每 8 sets 抽样首 set 的 way owner。</p>
             </div>
-            <button id="resetPartidButton" type="button" class="small-command">重置 16 组</button>
+            <button id="resetPartidButton" type="button" class="small-command" data-help="把16组PARTID控制和监控字段恢复为服务端默认配置；不会自动启动仿真。">重置 16 组</button>
           </div>
           <div class="mpam-config-wrap">
             <table class="mpam-config-table">
@@ -119,12 +119,12 @@
                   <th>Mon</th>
                   <th data-algorithm="l3-cmin">CMIN %</th>
                   <th data-algorithm="l3-cmax">CMAX %</th>
-                  <th>CPBM</th>
-                  <th>BMIN</th>
-                  <th>BMAX</th>
-                  <th>Mode</th>
+                  <th data-algorithm="l3-cpbm">CPBM</th>
+                  <th data-algorithm="mc-bmin">BMIN</th>
+                  <th data-algorithm="mc-bmax">BMAX</th>
+                  <th data-algorithm="mc-bmax">Mode</th>
                   <th data-algorithm="mc-qos">MC QoS</th>
-                  <th>CBusy / OSTD</th>
+                  <th data-algorithm="mc-cbusy">CBusy / OSTD</th>
                 </tr>
               </thead>
               <tbody id="partidConfigTable"></tbody>
@@ -183,7 +183,7 @@
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="2" data-algorithm="l3-allocation"><b>L3</b><span>Portion MSC</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="3" data-algorithm="mc-bandwidth"><b>MC</b><span>Token bucket</span></div>
+          <div class="flow-stage" data-stage="3" data-algorithm="mc-bmax"><b>MC</b><span>Token bucket</span></div>
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="4" data-algorithm="mc-qos"><b>Scheduler</b><span>QoS / aging</span></div>
           <div class="flow-arrow">→</div>
@@ -249,7 +249,7 @@
           </div>
           <div class="effect-chart-grid">
             <article><h3 data-algorithm="l3-cmin">L3 占用比例 / CMIN / CMAX</h3><canvas id="effectL3Chart"></canvas></article>
-            <article><h3 data-algorithm="mc-bandwidth">MC 带宽 / BMIN / BMAX</h3><canvas id="effectBwChart"></canvas></article>
+            <article><h3 data-algorithm="mc-bmax">MC 带宽 / BMIN / BMAX</h3><canvas id="effectBwChart"></canvas></article>
             <article><h3 data-algorithm="mc-qos">MC Base / Effective QoS</h3><canvas id="effectQosChart"></canvas></article>
             <article><h3>P99 实际 / 目标</h3><canvas id="effectP99Chart"></canvas></article>
           </div>

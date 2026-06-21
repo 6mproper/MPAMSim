@@ -1427,7 +1427,7 @@ th[data-help],
   position: fixed;
   z-index: 1000;
   width: max-content;
-  max-width: min(380px, calc(100vw - 24px));
+  max-width: min(460px, calc(100vw - 24px));
   padding: 9px 11px;
   visibility: hidden;
   opacity: 0;
@@ -1481,6 +1481,36 @@ th[data-help],
   font-size: 11px;
   line-height: 1.65;
   white-space: pre-line;
+}
+
+.algorithm-popover .algorithm-detail {
+  margin: 0;
+  padding: 8px 0;
+  border-top: 1px solid rgba(164, 185, 197, 0.2);
+}
+
+.algorithm-popover .algorithm-detail:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.algorithm-popover .algorithm-detail h4 {
+  margin: 0 0 3px;
+  color: #ffffff;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.algorithm-popover .algorithm-detail p,
+.algorithm-popover > div > p {
+  margin: 0;
+  color: #cbd7de;
+  white-space: normal;
+}
+
+[data-help-missing] {
+  outline: 2px solid #b33a3a;
+  outline-offset: 1px;
 }
 
 .algorithm-popover button {

@@ -11,6 +11,7 @@ const state = {
   experimentPartial: null,
   verification: null,
   verificationPartial: null,
+  uiMetadata: {},
   partial: { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 },
   selectedTime: 0,
   playing: false,
@@ -39,110 +40,35 @@ const partidPalette = [
   "#397367", "#7851a9", "#b05f36", "#4f6d7a",
 ];
 
-const workloadTypeHelp = {
-  stream: "stream：连续递增地址，空间局部性低，容易形成高带宽并污染共享缓存。",
-  pointer_chase: "pointer：依赖式随机访问，后一个地址依赖前一个结果，并行度低，主要观察时延。",
-  random_read: "random：独立随机读地址，可并发发出，缓存命中率取决于工作集与容量。",
-  mixed_rw: "mixed：随机读写混合，Read 决定读比例，用于模拟通用业务和写流量竞争。",
-  bursty_dma: "burst：成组突发访问，短时间快速注入后停顿，用于观察队列峰值和背压。",
-};
-const workloadTypeComparison = Object.values(workloadTypeHelp).join("\n");
-const parameterHelp = {
-  duration_ns: "仿真结束时间。增大可观察稳态，但会线性增加事件数量。",
-  control_interval_ns: "监控采样与闭环控制周期；实时表和图表按此周期刷新。",
-  seed: "随机访问、泊松抖动和概率命中的确定性随机种子。",
-  active_cores: "交互场景固定 8 核；通用 YAML/Python 接口仍支持其他拓扑。",
-  threads_per_core: "交互场景固定每核 2 线程，共 16 个独立 requester。",
-  max_outstanding: "每个 requester 最多允许同时未完成的请求数，达到上限时产生源端背压。",
-  l3_instances: "共享 L3/SLC 实例数量；核按 cluster 映射到实例。",
-  l3_sets: "每个 L3 的 set 数，和 ways、line bytes 共同决定容量。",
-  l3_ways: "每个 set 的 way 数，决定 CPBM 位宽；CMIN/CMAX 使用整个 L3 容量百分比。",
-  l3_line_size: "缓存行字节数；影响地址映射、占用估算和请求成本。",
-  l3_monitor_group_sets: "近似监控固定每 8 个 set 抽样第一个 set，并将观察值按 8 倍估算。",
-  l3_hit_latency_ns: "L3 查询固定延迟；命中和未命中都先支付该延迟。",
-  l3_queue_depth: "每个 L3 实例的 FIFO 等待队列 entries；队列满时请求在 L3 入口重试并累计 cache admission backpressure。",
-  l3_lookup_parallelism: "每个 L3 同时执行的抽象 tag/data lookup 槽位数；与命中延迟共同决定 lookup 吞吐。",
-  noc_routers: "抽象 NoC router 数，影响 requester 附着和平均跳数。",
-  noc_link_gbps: "NoC 瓶颈链路的建模带宽。",
-  noc_router_latency_ns: "每跳固定 router 延迟。",
-  noc_queue_depth: "NoC 瓶颈队列最大 entries，满时 requester 重试并累计背压。",
-  noc_virtual_channels: "保留的虚通道数量参数；当前模型主要用于拓扑与容量接口。",
-  memory_controllers: "独立内存控制器数量；每个控制器维护自己的 BMIN/BMAX 状态。",
-  channels_per_mc: "每个内存控制器的通道数量。",
-  channel_bandwidth_gbps: "单通道理论带宽；控制器总带宽为通道数乘以该值。",
-  mc_base_latency_ns: "内存控制器服务的固定基础延迟，不含排队和序列化。",
-  mc_queue_depth: "每个内存控制器可接收的请求队列深度。",
-  mc_token_bucket_window_ns: "BMIN/BMAX token bucket 的突发窗口；容量=max(64B, 配置带宽×窗口)。窗口越大，允许的短时突发越大。",
-  mc_aging_ns: "请求每等待该时间获得一级 aging 加分，防止长期饥饿。",
-  mc_qos_aging_max_steps: "请求等待每满一个 aging 周期升一个 QoS 档，最多升到该步数，最终钳位 0..7。",
-  mc_bmin_qos_promote: "请求具备 BMIN credit 时增加的 QoS 档数，最终钳位 0..7。",
-  mc_softlimit_qos_demote: "Soft BMAX 超限且存在竞争时降低的 QoS 档数；无竞争时不降档。",
-  max_bw_step_percent: "闭环每次调整背景 PARTID BMAX 的最大百分比。",
-  p99_hysteresis: "P99 超过或低于目标的滞回区间，避免控制值频繁抖动。",
-  min_hold_intervals: "两次闭环调整之间至少保持的采样周期数。",
-  cbusy_sample_ns: "MC 对每个 PARTID 评估 CBusy 的快速采样周期，独立于慢速软件控制周期。",
-  cbusy_feedback_latency_ns: "MC CBusy 档位变化传播到 CPU requester 的模型延迟。",
-  cbusy_release_hold_samples: "压力下降后连续满足该采样数才允许 CBusy 逐级释放。",
-  cbusy_l1_bw_ratio: "Level 1 带宽阈值：采样带宽除以启用的 BMAX。",
-  cbusy_l2_bw_ratio: "Level 2 带宽阈值，必须不小于 Level 1。",
-  cbusy_l3_bw_ratio: "Level 3 带宽阈值，必须不小于 Level 2。",
-  cbusy_l1_queue_ratio: "Level 1 队列阈值：该 PARTID 队列深度除以 MC 总队列容量。",
-  cbusy_l2_queue_ratio: "Level 2 队列阈值，必须不小于 Level 1。",
-  cbusy_l3_queue_ratio: "Level 3 队列阈值，必须不小于 Level 2。",
-};
-const stimulusFieldHelp = {
-  enabled: "是否为该硬件线程生成 workload。关闭后该 requester 保留但不注入流量。",
-  partid: "资源控制标识。L3 和 MC 按 PARTID 查控制表；多个线程可以共享同一 PARTID。",
-  pmg: "Performance Monitoring Group，仅用于监控过滤和归因，不作为当前资源控制索引。",
-  workload_type: workloadTypeComparison,
-  rate_value: "该线程的注入强度；单位由右侧 Unit 选择。",
-  rate_unit: "Gbps 按数据位率换算请求间隔；MRPS 表示每秒百万请求数。",
-  request_size_bytes: "单个抽象 memory request 的字节数。",
-  read_ratio: "读请求比例，0 表示全写，1 表示全读。",
-  working_set_mb: "该线程访问的地址工作集大小；相对允许缓存容量越大，命中率通常越低。",
-  target_p99_ns: "正值表示该 PARTID 是闭环保护对象；0 表示只监控、不设 P99 目标。",
-};
-const partidFieldHelp = {
-  name: "软件侧分区名称，仅用于识别和导出。",
-  monitor_enable: "标记该 PARTID 的监控能力为启用；当前界面仍保留所有 16 行。",
-  cpbm_enable: "独立启用 CPBM；关闭时所有物理 way 都可参与分配。",
-  cmin_enable: "独立启用 CMIN 全局替换保护；关闭后最低占用目标为 0%。",
-  cmax_enable: "独立启用 CMAX；关闭后有效上限仅由 CPBM 可达容量决定。",
-  cmin: "Cache minimum：该 PARTID 对整个物理 L3 的最低占用比例。仅在有需求和竞争时具有保护意义。",
-  cmax: "Cache maximum：该 PARTID 对整个物理 L3 的最高占用比例，多个 PARTID 的 CMAX 可以重叠。",
-  cpbm: "Cache Portion Bitmap：十六进制 way 允许位图，bit N 对应 way N。",
-  bmin_gbps: "每个 MC 上该 PARTID 的最小带宽目标；低于目标时获得调度加权。",
-  bmax_gbps: "每个 MC 上该 PARTID 的最大带宽目标。",
-  bmin_enable: "独立启用 BMIN 调度加权。",
-  bmax_enable: "独立启用 BMAX hard token 或 soft contention penalty。",
-  limit_mode: "soft：无竞争时可借用带宽，竞争且超限时降优先级；hard：token 不足时停止调度。",
-  mc_qos: "MC 本地 3-bit QoS，范围 0..7，7 最高；不影响 NoC 仲裁。",
-  mc_qos_enable: "独立启用 MC QoS；关闭后保留配置值但基础 QoS 为 0。",
-  cbusy_enable: "启用该 PARTID 的 MC 四档 CBusy 源端反馈。",
-  cbusy_ostd: "CBusy Level 1/2/3 对应的 requester effective OSTD 上限。",
+const configHeaderFields = {
+  stimulus: {
+    Requester: "requester",
+    En: "enabled",
+    PID: "partid",
+    PMG: "pmg",
+    Type: "workload_type",
+    Rate: "rate_value",
+    Unit: "rate_unit",
+    Bytes: "request_size_bytes",
+    Read: "read_ratio",
+    "WSS MB": "working_set_mb",
+    "P99 ns": "target_p99_ns",
+  },
+  partid: {
+    PID: "partid",
+    Name: "name",
+    Mon: "monitor_enable",
+    "CMIN %": "cmin",
+    "CMAX %": "cmax",
+    CPBM: "cpbm",
+    BMIN: "bmin_gbps",
+    BMAX: "bmax_gbps",
+    Mode: "limit_mode",
+    "MC QoS": "mc_qos",
+    "CBusy / OSTD": "cbusy_enable",
+  },
 };
 const headerHelp = {
-  "Requester": "固定硬件线程标识，格式为 cpu<核>.t<线程>。",
-  "En": stimulusFieldHelp.enabled,
-  "PID": stimulusFieldHelp.partid,
-  "Name": partidFieldHelp.name,
-  "Mon": partidFieldHelp.monitor_enable,
-  "PMG": stimulusFieldHelp.pmg,
-  "Type": workloadTypeComparison,
-  "Rate": stimulusFieldHelp.rate_value,
-  "Unit": stimulusFieldHelp.rate_unit,
-  "Bytes": stimulusFieldHelp.request_size_bytes,
-  "Read": stimulusFieldHelp.read_ratio,
-  "WSS MB": stimulusFieldHelp.working_set_mb,
-  "P99 ns": stimulusFieldHelp.target_p99_ns,
-  "CMIN %": partidFieldHelp.cmin,
-  "CMAX %": partidFieldHelp.cmax,
-  "CPBM": partidFieldHelp.cpbm,
-  "BMIN": partidFieldHelp.bmin_gbps,
-  "BMAX": partidFieldHelp.bmax_gbps,
-  "Mode": partidFieldHelp.limit_mode,
-  "MC QoS": partidFieldHelp.mc_qos,
-  "CBusy / OSTD": `${partidFieldHelp.cbusy_enable}\n${partidFieldHelp.cbusy_ostd}`,
   "PARTID / PMG": "软件可见监控 key。PARTID 选择控制策略，PMG 细分同一控制分区内的监控归因。",
   "L3 Sample BW": "该监控组在 L3 抽样 set 上观察到并按 8 倍估算的访问带宽。",
   "L3 Est. Occupancy": "该监控组在抽样 way 中的所有权按 8-set 分组放大的估算字节数。",
@@ -211,7 +137,7 @@ const sectionHeadingHelp = {
   "L3 / SLC": "定义共享缓存实例、几何、抽样监控粒度和固定查询延迟。",
   "NoC": "定义抽象互连的 router、链路、队列和虚通道容量。",
   "Memory Controller": "定义内存控制器数量、通道带宽、服务延迟和队列深度。",
-  "16 线程独立激励": workloadTypeComparison,
+  "16 线程独立激励": "为8核16线程分别配置标签、地址行为、速率、请求大小、读写比例、工作集和P99目标。",
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 百分比、MC 带宽、3-bit QoS 和监控开关。",
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
@@ -219,35 +145,76 @@ const sectionHeadingHelp = {
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
 };
 
-const algorithmHelp = {
+const supplementalAlgorithmHelp = {
   "l3-allocation": {
     title: "L3 sampled-owner 分配算法",
     body: "每 8 个 set 只观察第一个 set 的各 way owner。替换时先检查请求者的全局 sampled ownership 是否达到 CMAX；未达到时优先空 way，再选择全局占用高于其 CMIN 配额的 owner 中最老的 way。该方法验证控制趋势，不等同于逐 tag 精确硬件实现。",
-  },
-  "l3-cmin": {
-    title: "CMIN 百分比",
-    body: "CMIN 是整个物理 L3 容量的比例。模型把比例换算为 sampled capacity lines 并向上取整。它是竞争时的替换保护，不保证无需求时预留，也不会突破 CPBM 可达比例。每个 L3 上启用的 CMIN 合计必须不超过 100%。",
-  },
-  "l3-cmax": {
-    title: "CMAX 百分比",
-    body: "CMAX 是整个物理 L3 容量的比例。模型把比例换算为 sampled capacity lines 并向下取整；达到上限后只能替换自己的 sampled line。不同 PARTID 的 CMAX 可以合计超过 100%，因为它们是独立上界。",
-  },
-  "mc-bandwidth": {
-    title: "MC BMIN / BMAX",
-    body: "每个 MC 独立维护 token/credit。BMIN 在有 credit 时提升 QoS；soft BMAX 无竞争可借用，竞争且超限时降低 QoS；hard BMAX token 不足时从可调度候选中移除。带宽结果应与队列竞争和实际需求一起解释。",
-  },
-  "mc-qos": {
-    title: "MC 3-bit QoS 仲裁",
-    body: "effective_qos = clamp(base_qos + aging_steps + BMIN升档 - softlimit降档, 0, 7)。先过滤 hard BMAX 不合格请求，再选 effective QoS 最高者；同档按最老入队序号。该 QoS 只作用于 MC，当前 NoC 保持中性。",
   },
   "effect-view": {
     title: "如何识别控制效果",
     body: "CMIN 只在该 PARTID 有需求且 L3 存在竞争时判定；BMIN 只在有需求且 MC 竞争时判定。CMAX 与 hard BMAX 是上界检查，soft BMAX 超限借用不是违规。曲线同时给出目标、实际和控制事件，避免只看最终平均值。",
   },
 };
+let algorithmHelp = { ...supplementalAlgorithmHelp };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+function fieldMetadata(group, key) {
+  return state.uiMetadata?.fields?.[group]?.[key] || null;
+}
+
+function fieldAlgorithm(group, key) {
+  return state.uiMetadata?.control_field_algorithms?.[group]?.[key] || "";
+}
+
+function formatFieldHelp(group, key, selectedOption = null) {
+  const metadata = fieldMetadata(group, key);
+  if (!metadata) return "";
+  const lines = [
+    metadata.title,
+    `含义：${metadata.summary}`,
+    `单位：${metadata.unit}`,
+    `作用位置：${metadata.location}`,
+    `模型影响：${metadata.effect}`,
+    `约束/边界：${metadata.constraints}`,
+    `示例：${metadata.example}`,
+    `模型状态：${metadata.model_status}`,
+  ];
+  const options = state.uiMetadata?.options?.[key];
+  if (options) {
+    lines.push(
+      "可选值：",
+      ...Object.entries(options).map(
+        ([value, description]) =>
+          `${String(value) === String(selectedOption) ? "→" : "•"} ${value}：${description}`,
+      ),
+    );
+  }
+  return lines.join("\n");
+}
+
+function configHelpAttributes(group, key, selectedOption = null) {
+  const help = formatFieldHelp(group, key, selectedOption);
+  const algorithm = fieldAlgorithm(group, key);
+  return [
+    `data-config-group="${escapeHtml(group)}"`,
+    `data-config-key="${escapeHtml(key)}"`,
+    help ? `data-help="${escapeHtml(help)}"` : "",
+    algorithm ? `data-algorithm="${escapeHtml(algorithm)}"` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function setConfigHelp(target, group, key, selectedOption = null) {
+  if (!target) return;
+  const help = formatFieldHelp(group, key, selectedOption);
+  setHelp(target, help);
+  target.dataset.configGroup = group;
+  target.dataset.configKey = key;
+  const algorithm = fieldAlgorithm(group, key);
+  if (algorithm) target.dataset.algorithm = algorithm;
+  else delete target.dataset.algorithm;
+}
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
@@ -303,9 +270,9 @@ function collectParameters() {
   return parameters;
 }
 
-function selectOptions(values, selected, help = {}) {
+function selectOptions(values, selected) {
   return values.map(([value, label]) =>
-    `<option value="${escapeHtml(value)}" title="${escapeHtml(help[value] || "")}" ${String(value) === String(selected) ? "selected" : ""}>${escapeHtml(label)}</option>`
+    `<option value="${escapeHtml(value)}" ${String(value) === String(selected) ? "selected" : ""}>${escapeHtml(label)}</option>`
   ).join("");
 }
 
@@ -318,25 +285,25 @@ function renderPartidConfig(rows) {
   $("#partidConfigTable").innerHTML = state.partidConfigs.map((row) => `
     <tr data-partid-row="${row.partid}">
       <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
-      <td><input data-field="name" data-help="${escapeHtml(partidFieldHelp.name)}" type="text" value="${escapeHtml(row.name)}" spellcheck="false"></td>
-      <td><input data-field="monitor_enable" data-help="${escapeHtml(partidFieldHelp.monitor_enable)}" type="checkbox" ${row.monitor_enable ? "checked" : ""}></td>
-      <td data-algorithm="l3-cmin">${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, partidFieldHelp.cmin_enable, partidFieldHelp.cmin, 'type="number" min="0" max="100" step="0.1"')}</td>
-      <td data-algorithm="l3-cmax">${controlField("cmax_enable", row.cmax_enable, "cmax", row.cmax, partidFieldHelp.cmax_enable, partidFieldHelp.cmax, 'type="number" min="0" max="100" step="0.1"')}</td>
-      <td>${controlField("cpbm_enable", row.cpbm_enable, "cpbm", row.cpbm, partidFieldHelp.cpbm_enable, partidFieldHelp.cpbm, 'type="text" spellcheck="false"')}</td>
-      <td>${controlField("bmin_enable", row.bmin_enable, "bmin_gbps", row.bmin_gbps, partidFieldHelp.bmin_enable, partidFieldHelp.bmin_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
-      <td>${controlField("bmax_enable", row.bmax_enable, "bmax_gbps", row.bmax_gbps, partidFieldHelp.bmax_enable, partidFieldHelp.bmax_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
-      <td><select data-field="limit_mode" data-help="${escapeHtml(partidFieldHelp.limit_mode)}">
-        <option value="softlimit" title="无竞争时可借用空闲带宽，竞争且超限时降低调度优先级。" ${row.limit_mode === "softlimit" ? "selected" : ""}>soft</option>
-        <option value="hardlimit" title="超过 BMAX 且 token 不足时阻塞请求，直到预算恢复。" ${row.limit_mode === "hardlimit" ? "selected" : ""}>hard</option>
+      <td><input data-field="name" ${configHelpAttributes("partid", "name")} type="text" value="${escapeHtml(row.name)}" spellcheck="false"></td>
+      <td><input data-field="monitor_enable" ${configHelpAttributes("partid", "monitor_enable")} type="checkbox" ${row.monitor_enable ? "checked" : ""}></td>
+      <td>${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, 'type="number" min="0" max="100" step="0.1"')}</td>
+      <td>${controlField("cmax_enable", row.cmax_enable, "cmax", row.cmax, 'type="number" min="0" max="100" step="0.1"')}</td>
+      <td>${controlField("cpbm_enable", row.cpbm_enable, "cpbm", row.cpbm, 'type="text" spellcheck="false"')}</td>
+      <td>${controlField("bmin_enable", row.bmin_enable, "bmin_gbps", row.bmin_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
+      <td>${controlField("bmax_enable", row.bmax_enable, "bmax_gbps", row.bmax_gbps, 'type="number" min="0" max="4096" step="1"')}</td>
+      <td><select data-field="limit_mode" ${configHelpAttributes("partid", "limit_mode", row.limit_mode)}>
+        <option value="softlimit" ${row.limit_mode === "softlimit" ? "selected" : ""}>soft</option>
+        <option value="hardlimit" ${row.limit_mode === "hardlimit" ? "selected" : ""}>hard</option>
       </select></td>
-      <td data-algorithm="mc-qos">${controlField("mc_qos_enable", row.mc_qos_enable, "mc_qos", row.mc_qos, partidFieldHelp.mc_qos_enable, partidFieldHelp.mc_qos, 'type="number" min="0" max="7" step="1"')}</td>
+      <td>${controlField("mc_qos_enable", row.mc_qos_enable, "mc_qos", row.mc_qos, 'type="number" min="0" max="7" step="1"')}</td>
       <td>
         <div class="cbusy-control">
-          <input data-field="cbusy_enable" data-help="${escapeHtml(partidFieldHelp.cbusy_enable)}" type="checkbox" ${row.cbusy_enable ? "checked" : ""}>
-          <div data-help="${escapeHtml(partidFieldHelp.cbusy_ostd)}">
-            <input data-field="cbusy_l1_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l1_ostd}">
-            <input data-field="cbusy_l2_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l2_ostd}">
-            <input data-field="cbusy_l3_ostd" type="number" min="1" max="1024" step="1" value="${row.cbusy_l3_ostd}">
+          <input data-field="cbusy_enable" ${configHelpAttributes("partid", "cbusy_enable")} type="checkbox" ${row.cbusy_enable ? "checked" : ""}>
+          <div>
+            <input data-field="cbusy_l1_ostd" ${configHelpAttributes("partid", "cbusy_l1_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l1_ostd}">
+            <input data-field="cbusy_l2_ostd" ${configHelpAttributes("partid", "cbusy_l2_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l2_ostd}">
+            <input data-field="cbusy_l3_ostd" ${configHelpAttributes("partid", "cbusy_l3_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l3_ostd}">
           </div>
         </div>
       </td>
@@ -344,11 +311,11 @@ function renderPartidConfig(rows) {
   `).join("");
 }
 
-function controlField(enableField, enabled, valueField, value, enableHelp, valueHelp, attributes) {
+function controlField(enableField, enabled, valueField, value, attributes) {
   return `
     <div class="control-field">
-      <input data-field="${enableField}" data-help="${escapeHtml(enableHelp)}" type="checkbox" ${enabled ? "checked" : ""}>
-      <input data-field="${valueField}" data-help="${escapeHtml(valueHelp)}" ${attributes} value="${escapeHtml(value)}">
+      <input data-field="${enableField}" ${configHelpAttributes("partid", enableField)} type="checkbox" ${enabled ? "checked" : ""}>
+      <input data-field="${valueField}" ${configHelpAttributes("partid", valueField)} ${attributes} value="${escapeHtml(value)}">
     </div>`;
 }
 
@@ -386,12 +353,6 @@ function renderStimulusConfig(rows) {
     { length: 16 },
     (_, partid) => [partid, `P${partid}`],
   );
-  const partidOptionHelp = Object.fromEntries(
-    Array.from(
-      { length: 16 },
-      (_, partid) => [partid, `PARTID ${partid}：选择该线程使用的资源控制分区。`],
-    ),
-  );
   const typeOptions = [
     ["stream", "stream"],
     ["pointer_chase", "pointer"],
@@ -402,16 +363,16 @@ function renderStimulusConfig(rows) {
   $("#stimulusConfigTable").innerHTML = state.stimulusConfigs.map((row) => `
     <tr data-stimulus-row="${row.slot}">
       <td><span class="thread-chip">${escapeHtml(row.requester)}</span></td>
-      <td><input data-stimulus-field="enabled" data-help="${escapeHtml(stimulusFieldHelp.enabled)}" type="checkbox" ${row.enabled ? "checked" : ""}></td>
-      <td><select data-stimulus-field="partid" data-help="${escapeHtml(stimulusFieldHelp.partid)}">${selectOptions(partidOptions, row.partid, partidOptionHelp)}</select></td>
-      <td><input data-stimulus-field="pmg" data-help="${escapeHtml(stimulusFieldHelp.pmg)}" type="number" min="0" max="15" step="1" value="${row.pmg}"></td>
-      <td><select data-stimulus-field="workload_type" data-help="${escapeHtml(workloadTypeComparison)}">${selectOptions(typeOptions, row.workload_type, workloadTypeHelp)}</select></td>
-      <td><input data-stimulus-field="rate_value" data-help="${escapeHtml(stimulusFieldHelp.rate_value)}" type="number" min="0" max="4096" step="0.1" value="${row.rate_value}"></td>
-      <td><select data-stimulus-field="rate_unit" data-help="${escapeHtml(stimulusFieldHelp.rate_unit)}">${selectOptions([["gbps", "Gbps"], ["mrps", "MRPS"]], row.rate_unit, {gbps: "数据位率，按请求字节数换算请求频率。", mrps: "每秒百万请求数，与单请求字节数无关。"})}</select></td>
-      <td><input data-stimulus-field="request_size_bytes" data-help="${escapeHtml(stimulusFieldHelp.request_size_bytes)}" type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
-      <td><input data-stimulus-field="read_ratio" data-help="${escapeHtml(stimulusFieldHelp.read_ratio)}" type="number" min="0" max="1" step="0.05" value="${row.read_ratio}"></td>
-      <td><input data-stimulus-field="working_set_mb" data-help="${escapeHtml(stimulusFieldHelp.working_set_mb)}" type="number" min="1" max="262144" step="1" value="${row.working_set_mb}"></td>
-      <td><input data-stimulus-field="target_p99_ns" data-help="${escapeHtml(stimulusFieldHelp.target_p99_ns)}" type="number" min="0" max="1000000" step="1" value="${row.target_p99_ns}"></td>
+      <td><input data-stimulus-field="enabled" ${configHelpAttributes("stimulus", "enabled")} type="checkbox" ${row.enabled ? "checked" : ""}></td>
+      <td><select data-stimulus-field="partid" ${configHelpAttributes("stimulus", "partid", row.partid)}>${selectOptions(partidOptions, row.partid)}</select></td>
+      <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${row.pmg}"></td>
+      <td><select data-stimulus-field="workload_type" ${configHelpAttributes("stimulus", "workload_type", row.workload_type)}>${selectOptions(typeOptions, row.workload_type)}</select></td>
+      <td><input data-stimulus-field="rate_value" ${configHelpAttributes("stimulus", "rate_value")} type="number" min="0" max="4096" step="0.1" value="${row.rate_value}"></td>
+      <td><select data-stimulus-field="rate_unit" ${configHelpAttributes("stimulus", "rate_unit", row.rate_unit)}>${selectOptions([["gbps", "Gbps"], ["mrps", "MRPS"]], row.rate_unit)}</select></td>
+      <td><input data-stimulus-field="request_size_bytes" ${configHelpAttributes("stimulus", "request_size_bytes")} type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
+      <td><input data-stimulus-field="read_ratio" ${configHelpAttributes("stimulus", "read_ratio")} type="number" min="0" max="1" step="0.05" value="${row.read_ratio}"></td>
+      <td><input data-stimulus-field="working_set_mb" ${configHelpAttributes("stimulus", "working_set_mb")} type="number" min="1" max="262144" step="1" value="${row.working_set_mb}"></td>
+      <td><input data-stimulus-field="target_p99_ns" ${configHelpAttributes("stimulus", "target_p99_ns")} type="number" min="0" max="1000000" step="1" value="${row.target_p99_ns}"></td>
     </tr>
   `).join("");
 }
@@ -499,6 +460,11 @@ function showToast(message) {
 
 async function loadDefaults() {
   const payload = await requestJson("/api/defaults");
+  state.uiMetadata = payload.ui_metadata || {};
+  algorithmHelp = {
+    ...supplementalAlgorithmHelp,
+    ...(state.uiMetadata.control_algorithms || {}),
+  };
   state.defaults = payload.parameters;
   fillForm(state.defaults);
 }
@@ -2320,13 +2286,25 @@ function setHelp(target, text) {
 }
 
 function applyContextHelp() {
-  Object.entries(parameterHelp).forEach(([key, text]) => {
-    $$(`[data-param="${key}"]`).forEach((input) => {
-      setHelp(input.closest("label") || input, text);
+  $$("[data-param]").forEach((input) => {
+    setConfigHelp(
+      input.closest("label") || input,
+      "parameters",
+      input.dataset.param,
+      input.type === "radio" ? input.value : input.value,
+    );
+  });
+  Object.entries(configHeaderFields).forEach(([group, fields]) => {
+    const tableSelector = group === "stimulus"
+      ? ".stimulus-config-table"
+      : ".mpam-config-table";
+    $$(`${tableSelector} th`).forEach((header) => {
+      const key = fields[header.textContent.trim()];
+      if (key) setConfigHelp(header, group, key);
     });
   });
   $$("th").forEach((header) => {
-    if (!header.dataset.algorithm) {
+    if (!header.dataset.configKey && !header.dataset.algorithm) {
       setHelp(header, headerHelp[header.textContent.trim()]);
     }
   });
@@ -2335,14 +2313,6 @@ function applyContextHelp() {
   });
   $$(".config-section h2").forEach((heading) => {
     setHelp(heading, sectionHeadingHelp[heading.textContent.trim()]);
-  });
-  $$('input[name="policy"]').forEach((input) => {
-    const text = {
-      no_control: "保留监控，但关闭 NoC 优先级映射和 L3/MC 资源约束。",
-      static_mpam: "应用当前表格配置，不在运行期间自动修改控制值。",
-      closed_loop_qos: "按控制周期读取 P99；违约时提高保护组优先级并收紧背景组 BMAX。",
-    }[input.value];
-    setHelp(input.closest("label"), text);
   });
   const chartHelp = {
     "P99 延迟": "每个 PARTID 在各采样周期内完成请求的 99 分位总延迟。",
@@ -2367,6 +2337,7 @@ function applyContextHelp() {
     }
   });
   $$("[data-help]").forEach(bindHelpTarget);
+  auditConfigHelpCoverage();
 }
 
 let algorithmTimer = null;
@@ -2375,13 +2346,35 @@ let algorithmPinned = false;
 
 function positionAlgorithmPopover(target) {
   const popover = $("#algorithmPopover");
+  popover.style.maxHeight = "";
   const anchor = target.getBoundingClientRect();
-  const box = popover.getBoundingClientRect();
-  let left = anchor.right + 10;
-  if (left + box.width > window.innerWidth - 12) {
-    left = Math.max(12, anchor.left - box.width - 10);
+  let box = popover.getBoundingClientRect();
+  const gap = 10;
+  const rightSpace = window.innerWidth - anchor.right - 12;
+  const leftSpace = anchor.left - 12;
+  let left;
+  let top;
+  if (rightSpace >= box.width + gap) {
+    left = anchor.right + gap;
+    top = Math.max(12, anchor.top);
+  } else if (leftSpace >= box.width + gap) {
+    left = anchor.left - box.width - gap;
+    top = Math.max(12, anchor.top);
+  } else {
+    left = Math.max(
+      12,
+      Math.min(anchor.left, window.innerWidth - box.width - 12),
+    );
+    const below = window.innerHeight - anchor.bottom - 12;
+    const above = anchor.top - 12;
+    const useBelow = below >= above;
+    const available = Math.max(160, (useBelow ? below : above) - gap);
+    popover.style.maxHeight = `${available}px`;
+    box = popover.getBoundingClientRect();
+    top = useBelow
+      ? anchor.bottom + gap
+      : Math.max(12, anchor.top - box.height - gap);
   }
-  let top = Math.max(12, anchor.top);
   if (top + box.height > window.innerHeight - 12) {
     top = Math.max(12, window.innerHeight - box.height - 12);
   }
@@ -2397,11 +2390,36 @@ function showAlgorithmPopover(target, pin = false) {
   algorithmTarget = target;
   algorithmPinned = pin;
   $("#algorithmPopoverTitle").textContent = entry.title;
-  $("#algorithmPopoverBody").textContent = entry.body;
+  $("#algorithmPopoverBody").innerHTML = renderAlgorithmBody(entry);
   const popover = $("#algorithmPopover");
   popover.classList.add("visible");
   popover.setAttribute("aria-hidden", "false");
   requestAnimationFrame(() => positionAlgorithmPopover(target));
+}
+
+function renderAlgorithmBody(entry) {
+  if (entry.body) {
+    return `<p>${escapeHtml(entry.body)}</p>`;
+  }
+  const labels = {
+    summary: "功能",
+    inputs: "输入",
+    state: "保存状态",
+    cadence: "更新周期",
+    decision: "决策规则",
+    action: "动作点",
+    recovery: "恢复",
+    priority: "交互优先级",
+    forward_progress: "前向进展",
+    evidence: "可观察证据",
+    boundary: "模型边界",
+  };
+  return Object.entries(labels).map(([key, label]) => `
+    <section class="algorithm-detail">
+      <h4>${escapeHtml(label)}</h4>
+      <p>${escapeHtml(entry[key] || "未定义")}</p>
+    </section>
+  `).join("");
 }
 
 function scheduleAlgorithmPopover(target) {
@@ -2443,6 +2461,26 @@ function bindAlgorithmEvents() {
     const target = event.target.closest?.("[data-algorithm]");
     if (target) showAlgorithmPopover(target, true);
   });
+  document.addEventListener("focusin", (event) => {
+    const target = event.target.closest?.("[data-algorithm]");
+    if (target && target !== algorithmTarget) {
+      showAlgorithmPopover(target, false);
+    }
+  });
+  document.addEventListener("focusout", (event) => {
+    const target = event.target.closest?.("[data-algorithm]");
+    if (
+      target
+      && !target.contains(event.relatedTarget)
+      && !$("#algorithmPopover").contains(event.relatedTarget)
+      && !algorithmPinned
+    ) {
+      hideAlgorithmPopover();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideAlgorithmPopover(true);
+  });
   $("#algorithmPopover").addEventListener("mouseleave", () => {
     if (!algorithmPinned) hideAlgorithmPopover();
   });
@@ -2459,13 +2497,30 @@ function positionHelp(target) {
   const tooltip = $("#helpTooltip");
   const anchor = target.getBoundingClientRect();
   const box = tooltip.getBoundingClientRect();
-  let left = Math.min(
-    window.innerWidth - box.width - 12,
-    Math.max(12, anchor.left),
-  );
-  let top = anchor.bottom + 8;
+  const gap = 8;
+  const rightSpace = window.innerWidth - anchor.right - 12;
+  const leftSpace = anchor.left - 12;
+  let left;
+  let top;
+  if (rightSpace >= box.width + gap) {
+    left = anchor.right + gap;
+    top = Math.max(12, anchor.top);
+  } else if (leftSpace >= box.width + gap) {
+    left = anchor.left - box.width - gap;
+    top = Math.max(12, anchor.top);
+  } else {
+    left = Math.max(
+      12,
+      Math.min(anchor.left, window.innerWidth - box.width - 12),
+    );
+    const below = window.innerHeight - anchor.bottom - 12;
+    const above = anchor.top - 12;
+    top = below >= box.height || below >= above
+      ? anchor.bottom + gap
+      : Math.max(12, anchor.top - box.height - gap);
+  }
   if (top + box.height > window.innerHeight - 12) {
-    top = Math.max(12, anchor.top - box.height - 8);
+    top = Math.max(12, window.innerHeight - box.height - 12);
   }
   tooltip.style.left = `${left}px`;
   tooltip.style.top = `${top}px`;
@@ -2519,6 +2574,42 @@ function bindHelpEvents() {
     const target = event.target.closest?.("[data-help]");
     if (target) hideHelp(target);
   });
+}
+
+function auditConfigHelpCoverage() {
+  const controls = $$(
+    "#configForm input, #configForm select, #configForm textarea",
+  );
+  const missing = controls.filter(
+    (control) => !control.closest("[data-help], [data-algorithm]"),
+  );
+  controls.forEach((control) => {
+    control.toggleAttribute("data-help-missing", missing.includes(control));
+  });
+  if (missing.length) {
+    console.error(
+      "Configuration help metadata missing:",
+      missing.map((control) =>
+        control.dataset.param
+        || control.dataset.field
+        || control.dataset.stimulusField
+        || control.name
+        || control.id
+      ),
+    );
+  }
+  return missing;
+}
+
+function refreshChangedConfigHelp(control) {
+  const target = control.closest?.("[data-config-group]");
+  if (!target) return;
+  setConfigHelp(
+    target,
+    target.dataset.configGroup,
+    target.dataset.configKey,
+    control.value,
+  );
 }
 
 function togglePlayback() {
@@ -2643,7 +2734,10 @@ function bindEvents() {
     }
   });
   $("#configForm").addEventListener("input", renderConfigDiagnostics);
-  $("#configForm").addEventListener("change", renderConfigDiagnostics);
+  $("#configForm").addEventListener("change", (event) => {
+    refreshChangedConfigHelp(event.target);
+    renderConfigDiagnostics();
+  });
   window.addEventListener("resize", () => requestAnimationFrame(() => {
     renderCharts();
     if (

@@ -22,6 +22,7 @@ from src.config.loader import load_config
 from src.sim.simulation import Simulation
 
 from .config_builder import ParameterError, build_config, default_parameters
+from .config_metadata import config_metadata_payload
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1004,7 +1005,12 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         if path == "/api/defaults":
-            self._json({"parameters": default_parameters()})
+            self._json(
+                {
+                    "parameters": default_parameters(),
+                    "ui_metadata": config_metadata_payload(),
+                }
+            )
             return
         if path.startswith("/api/jobs/"):
             job_id = path.rsplit("/", 1)[-1]
