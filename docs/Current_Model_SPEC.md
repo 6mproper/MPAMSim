@@ -2949,42 +2949,70 @@ cost of starvation prevention.
 The preferred low-PPA optional mode SHALL be:
 
 ```yaml
-aging_mode: per_partid_counter
+aging_mode: per_partid_service_deficit
 aging_quantum_cycles: <positive integer>
 aging_counter_bits: <positive integer>
 aging_max_qos_steps: <0 through 7>
 ```
 
-The MC stores one small saturating wait counter per supported PARTID, not one
-timestamp per request:
+The counter is a PARTID-class service-deficit counter. It does not count
+requests and does not represent the age of an individual request.
+
+Required state per PARTID:
 
 ```text
-if PARTID has at least one service-ready candidate
-and no request of that PARTID was served during the aging quantum:
-    counter[partid] saturating-increments
+service_deficit_counter[partid] : aging_counter_bits
+grant_seen[partid]              : 1 bit
+```
 
-if a request of that PARTID is served:
-    counter[partid] resets to zero
+`grant_seen` is set when any request of the PARTID is granted during the
+current aging quantum. Multiple grants do not require a count in the low-PPA
+mode.
 
-if the PARTID has no service-ready candidate:
-    counter[partid] resets to zero
+At the end of every aging quantum:
+
+```text
+if PARTID has no service-ready candidate:
+    service_deficit_counter = 0
+
+else if PARTID is intentionally HARD_BLOCKED:
+    service_deficit_counter = 0
+
+else if grant_seen == 0:
+    service_deficit_counter =
+        saturating_increment(service_deficit_counter)
+
+else:
+    service_deficit_counter =
+        saturating_decrement(service_deficit_counter)
+
+grant_seen = 0
 ```
 
 QoS promotion is:
 
 ```text
 aging_qos_promote[partid] =
-    min(aging_max_qos_steps, counter[partid])
+    min(aging_max_qos_steps, service_deficit_counter[partid])
 ```
+
+For a PARTID with one or many pending requests, the counter updates at most
+once per aging quantum. It represents whether the PARTID class is receiving
+service opportunities, not whether every request is making progress.
+
+Saturating decrement on a grant is preferred to immediate reset. One
+occasional grant therefore does not erase a long accumulated service deficit.
 
 This provides coarse inter-PARTID starvation relief with approximately:
 
 ```text
-number_of_partids * aging_counter_bits
+number_of_partids * (aging_counter_bits + 1)
 ```
 
-bits of counter state, plus increment/reset logic. It does not preserve
-oldest-first order among entries of the same PARTID.
+bits for counters plus `grant_seen`, in addition to pending-PARTID detection
+already needed by the scheduler. It requires increment/decrement/reset logic
+only at the aging-quantum boundary. It does not preserve oldest-first order
+among entries of the same PARTID.
 
 A `per_entry_epoch` research mode MAY be added later. It SHALL be labeled as
 a higher-PPA option and SHALL not be the default.
@@ -3110,6 +3138,36 @@ The UI SHALL report:
 - redundant memory reads when merging is disabled;
 - same-line ordering blocks in MC;
 - allocation owner versus accessing PARTID.
+
+### REV-HW-CTRL-001: Hardware-realization checklist
+
+Every control algorithm added to the simulator SHALL document its proposed
+bottom-level hardware realization before it is considered specified.
+
+Required items:
+
+| Item | Required definition |
+| --- | --- |
+| Input source | Which counter, signal, queue state, or monitor register is read |
+| Input timing | Event-driven, every resource cycle, or every N-cycle monitor window |
+| Stored state | State bits, counters, pointers, tables, and scope: global/per-MSC/per-PARTID/per-entry |
+| Combinational logic | Comparators, adders, masks, priority encoders, scans, or reductions |
+| Action point | Admission, queue eligibility, arbitration score, replacement, or source OSTD |
+| Update ordering | Exact relation between sampling, decision, action, and counter reset |
+| Saturation | Numeric clamps and behavior when control authority is exhausted |
+| Recovery | Release threshold, hold time, step size, and stale-state behavior |
+| Interaction priority | Ordering relative to other enabled controls |
+| Forward progress | Conditions under which requests are guaranteed or allowed to progress |
+| PPA scaling | What grows with PARTID count, queue depth, associativity, or frequency |
+| Observability | State and events required to prove the action occurred |
+
+The simulator MAY retain richer state for measurement, such as exact
+timestamps, provided that state is explicitly excluded from the proposed
+hardware decision path.
+
+No control SHALL be described only by an ideal mathematical target. The spec
+must identify the finite counters, sampled signals, delays, saturation, and
+recovery that make target non-attainment possible.
 
 ### REV-CHI-001: CHI-shaped logical channels
 
