@@ -2232,7 +2232,7 @@ core OSTD has capacity
 AND thread OSTD is below its maximum
 AND core/PARTID OSTD is below its effective limit
 AND destination-MC CBusy permits admission
-AND the selected REQ path has credit
+AND the selected REQ ring accepts injection
 ```
 
 CBusy SHALL restrict only new request admission. It SHALL NOT cancel or recall
@@ -2277,7 +2277,7 @@ These limits have distinct meanings:
 | Core issue width | Maximum new requests submitted by one core per CPU cycle |
 | Core OSTD | Total core transactions awaiting terminal completion |
 | Thread source queue | Generated but not yet admitted requests |
-| REQ credit | Interconnect receive capacity |
+| REQ ring admission | Availability of an injectable ring slot |
 | L3 MSHR | L3 miss-tracking capacity |
 
 The default scheduler SHALL be round-robin and work-conserving. Other
@@ -2374,7 +2374,7 @@ static_partition_limit
 reserve_protection
 partid_ostd_limit
 cbusy_limit
-req_credit
+req_ring_backpressure
 source_queue_full
 scheduler_wait
 dependency_wait
@@ -2473,13 +2473,16 @@ classes:
 
 REQ, RSP, and DAT SHALL be independently configurable for:
 
-- bandwidth or flit throughput;
+- flit width and ring throughput;
 - fixed router/link latency;
-- queue depth;
-- credits;
-- arbitration;
+- ring topology and node order;
+- endpoint injection and ejection behavior;
 - per-PARTID monitoring;
 - backpressure.
+
+REQ, RSP, and DAT SHALL NOT expose configurable protocol credit counts. The
+NoC shall directly report whether each attached node can inject into or eject
+from the ring.
 
 The initial revised model SHALL set:
 
@@ -2516,10 +2519,178 @@ thread -> core OSTD -> REQ -> L3 lookup/MSHR
 
 RSP messages MAY accompany or precede DAT according to the selected abstract
 transaction template. Every template SHALL define its terminal event so OSTD,
-credits, MSHRs, and fill buffers are released deterministically.
+ring transactions, MSHRs, and fill buffers are released deterministically.
 
 Write flows, write acknowledgement, dirty eviction, and writeback-channel
 behavior remain to be specified before implementation.
+
+### REV-NOC-001: Abstract bufferless ring
+
+The revised NoC SHALL use abstract RN, HN, and SN attachment nodes connected
+by a bufferless ring.
+
+```text
+RN: CPU/request node
+HN: L3/home node
+SN: memory-controller/subordinate node
+```
+
+The ring SHALL have no router input buffers, virtual channels, or
+source/destination credit protocol. Transport capacity SHALL be represented
+by fixed pipeline slots on each ring link.
+
+Minimum configuration:
+
+```yaml
+noc_clock_mhz: <positive number>
+ring_direction: clockwise | counterclockwise | bidirectional
+ring_node_order: [<node ids in physical traversal order>]
+flit_bytes: <positive integer>
+link_slots_per_direction: <positive integer>
+hop_latency_cycles: <positive integer>
+```
+
+The meaning of `link_slots_per_direction` is the number of in-flight flit
+positions available on one directed link segment. It is not a queue depth.
+
+### REV-NOC-002: Bufferless movement
+
+Every occupied ring slot advances to the next ring position according to the
+configured hop latency. A flit SHALL NOT stop in a router.
+
+At its destination:
+
+```text
+if destination endpoint accepts the flit:
+    eject the flit
+    free the ring slot
+else:
+    keep the flit on the ring
+    continue to the next hop
+    attempt ejection again on the next visit
+```
+
+Failure to eject therefore creates recirculation rather than an in-network
+queue.
+
+Endpoint request queues, L3 ingress/MSHR state, MC ingress state, and response
+reassembly state remain permitted. They belong to attached nodes, not to the
+bufferless ring.
+
+### REV-NOC-003: Injection and node backpressure
+
+A node MAY inject a flit only when an injectable empty ring slot passes its
+injection point.
+
+```text
+if an empty injectable slot is available:
+    inject
+else:
+    assert NoC backpressure to the attached node
+```
+
+Backpressure SHALL stop new injection from that node. It SHALL NOT stop or
+recall flits already circulating on the ring.
+
+The model SHALL distinguish:
+
+- source waiting for an empty ring slot;
+- source waiting for its local injection turn;
+- destination unable to accept/eject;
+- flit recirculation;
+- endpoint queue or resource backpressure.
+
+There is no configurable REQ, RSP, or DAT credit count.
+
+### REV-NOC-004: No NoC QoS control
+
+The bufferless ring SHALL not provide PARTID-based or QoS-based priority for
+joining or leaving the ring.
+
+Injection and ejection SHALL use neutral deterministic rules. MC 3-bit QoS
+SHALL remain local to MC arbitration and SHALL NOT alter:
+
+- ring injection;
+- ring slot ownership;
+- ring traversal;
+- destination ejection.
+
+The request `priority` or `qos_class` metadata MAY remain visible for tracing,
+but the ring SHALL ignore it.
+
+If multiple local sources request the same injection opportunity, the node
+SHALL use a neutral work-conserving arbitration policy such as round-robin.
+This is a fairness rule, not a NoC QoS feature.
+
+### REV-NOC-005: Bufferless-ring monitoring
+
+For every ring, logical channel, node, link, and PARTID, the monitor plane
+SHALL expose:
+
+- offered flits;
+- injected flits;
+- ejected flits;
+- current and average occupied ring slots;
+- injection backpressure cycles;
+- injection arbitration wait;
+- first-pass ejections;
+- failed ejection attempts;
+- recirculation count;
+- full-ring traversals;
+- minimum, average, and maximum hop count;
+- nominal transport latency;
+- recirculation-added latency;
+- endpoint-blocked latency;
+- incomplete in-flight packets at simulation end.
+
+The UI SHALL display the ring occupancy and circulating flits over time.
+Users SHALL be able to select one or multiple PARTIDs and distinguish normal
+first-pass delivery from recirculated traffic.
+
+### REV-NOC-006: Required forward-progress evidence
+
+Bufferless recirculation prevents a flit from occupying a stopped router, but
+does not by itself guarantee bounded completion when:
+
+- the destination never becomes ready;
+- injection continuously consumes every newly freed slot;
+- multi-flit packet reassembly has no capacity;
+- one circulation pattern repeatedly loses a neutral arbitration.
+
+Automated verification SHALL therefore prove:
+
+- an in-flight flit continues moving every ring step;
+- a temporarily blocked destination eventually accepts after becoming ready;
+- injection backpressure prevents ring over-allocation;
+- no QoS metadata changes ring admission or ejection;
+- recirculation counters and added latency are accurate;
+- finite offered traffic drains when all destinations eventually accept.
+
+The verification target is correct ring behavior and observable forward
+progress under valid readiness assumptions, not a guarantee that arbitrary
+overload reaches a latency or throughput target.
+
+### REV-NOC-007: Superseded NoC assumptions and open mapping decisions
+
+The bufferless-ring requirements supersede revision proposals that assumed:
+
+- router queues;
+- configurable virtual channels;
+- REQ/RSP/DAT credit counts;
+- PARTID-aware NoC QoS;
+- MC QoS propagation into the NoC.
+
+The following physical mapping decisions remain open:
+
+1. whether REQ, RSP, and DAT use three independent rings or share one physical
+   ring with a channel-type field;
+2. whether a bidirectional ring chooses the shortest direction or uses a
+   static source/destination direction table;
+3. whether multi-flit DAT packets reserve consecutive slots or inject flits
+   independently and reassemble by transaction ID and flit index.
+
+These choices SHALL be resolved before implementation because they materially
+change interference, recirculation, bandwidth, and forward-progress behavior.
 
 ### REV-SW-001: Resctrl-like software configuration mode
 
