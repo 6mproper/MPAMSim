@@ -1,6 +1,8 @@
 # SoC Flow Control / MPAM Simulator
 # Current Architecture and Implementation Specification
 
+> 文档语言规则：本规格及后续 OpenSpec 提案、设计、差异规格和任务说明均以中文为正文语言。需求 ID、代码符号、配置字段、寄存器名、协议名、公式和必要的标准术语保留英文。当前英文历史内容将在章节讨论收敛后统一转换为中文。
+
 ## 0. Document Control
 
 | Item | Value |
@@ -1924,6 +1926,139 @@ Tests SHALL distinguish:
 - control saturated;
 - target achieved;
 - target not achieved.
+
+### REV-VERIFY-002：验证结果分级
+
+验证结果必须分为以下三类，禁止混用：
+
+| 类型 | 含义 | 仿真处理 |
+| --- | --- | --- |
+| `MODEL_ERROR` | 模型进入规格不允许的状态，或实现违反已定义硬件规则 | 立即停止 |
+| `CONFIG_ERROR` | 配置在仿真开始前已确定非法或无法解释 | 拒绝启动 |
+| `CONTROL_OUTCOME` | 控制已经按规则动作，但结果不理想或目标未达 | 继续仿真 |
+
+`MODEL_ERROR`至少包括：
+
+- 计数器小于零或超过物理容量；
+- 同一L3 set出现重复有效tag；
+- Ring槽位被重复占用；
+- flit无原因丢失、复制或停止移动；
+- MSHR、fill buffer或MC buffer超出配置深度；
+- 一个事务被重复完成或重复释放OSTD；
+- MC授权了不在candidate集合中的请求；
+- 控制器读取了规格禁止使用的隐藏真实状态；
+- 状态机发生未定义跳转；
+- 同一事件的因果ID无法闭合。
+
+发生`MODEL_ERROR`时，仿真必须：
+
+1. 冻结当前事件时间；
+2. 保存最近一段事件和资源状态；
+3. 输出违反的需求ID；
+4. 标明触发对象、PARTID、资源实例和事务ID；
+5. 停止继续产生结果，避免使用已污染的数据。
+
+### REV-VERIFY-003：控制不良结果不得中止
+
+以下情况属于需要保留的`CONTROL_OUTCOME`，不得作为模型错误中止：
+
+- CMIN、CMAX、BMIN或BMAX目标未达到；
+- BMAX采样延迟导致过冲；
+- 滤波和滞回导致响应变慢；
+- Hard BMAX产生锯齿；
+- Soft BMAX降到QoS 0后仍然超限；
+- BMIN提升到QoS 7后仍达不到目标；
+- CBusy导致过度限流；
+- 多个控制环相互作用产生振荡；
+- 某PARTID发生长时间饥饿；
+- 配置目标在当前物理能力下不可实现；
+- 吞吐、延迟或公平性显著恶化。
+
+这些结果必须继续运行到用户配置的结束时间，并保存：
+
+- 控制触发和动作证据；
+- 饱和状态；
+- 目标偏差；
+- 无进展持续时间；
+- 对其他PARTID和系统吞吐的影响。
+
+### REV-VERIFY-004：无进展watchdog
+
+仿真必须提供不改变控制结果的watchdog：
+
+```yaml
+progress_watchdog_enable: true
+progress_watchdog_cycles: <positive integer>
+```
+
+若在watchdog窗口内：
+
+- 有未完成事务；
+- 没有事务完成；
+- 没有任何资源状态能够在未来已安排事件中解除阻塞；
+
+则记录`NO_PROGRESS`诊断事件。
+
+`NO_PROGRESS`本身不是`MODEL_ERROR`。如果无进展是Hard BMAX、QoS饥饿、
+CBusy、目标配置或其他控制策略造成，仿真继续运行到结束时间，并将其作为
+控制方案结果。
+
+只有当无进展来自违反规格的内部状态，例如丢失唤醒事件、Ring flit停止移动、
+资源已释放但请求永远不再参与仲裁，才升级为`MODEL_ERROR`并停止。
+
+### REV-VERIFY-005：验证等级
+
+用户可配置：
+
+```yaml
+validation_level: basic | full
+```
+
+`basic`默认开启，检查：
+
+- 容量和计数不变量；
+- 事务创建、完成和释放闭环；
+- 监控采样与滤波公式；
+- 控制触发条件；
+- 控制动作合法性；
+- Ring、L3、MC和OSTD前向状态。
+
+`full`在`basic`基础上保存：
+
+- 每次L3 victim候选和排除原因；
+- 每次MC全buffer candidate mask和QoS计算；
+- 每个Ring flit的位置与绕行；
+- 每次CBusy比较器输入；
+- 监控样本、决策和动作完整因果链。
+
+`full`只增加检查和证据，不得改变调度、随机数序列或控制结果。
+
+### REV-VERIFY-006：确定性状态机微测试
+
+自动化微测试直接构造已知硬件状态，验证规则是否生效，不以性能对照为
+通过条件。
+
+例如：
+
+```text
+filtered_bw > BMAX
+AND hardlimit enabled
+-> HARD_BLOCK置位
+-> 对应PARTID的所有MC entry不具备服务资格
+```
+
+微测试必须覆盖：
+
+- MPAM原始监控和滤波更新；
+- CPBM、CMIN和CMAX动作；
+- BMIN、Soft BMAX和Hard BMAX状态；
+- 3-bit QoS计算与轮询同级仲裁；
+- CBusy断言、反馈和逐级释放；
+- CPU OSTD准入和终态释放；
+- 同地址MSHR合并和最小读写顺序；
+- Ring注入、绕行、下环和排空。
+
+通过条件是状态、动作和记录符合规格；不要求控制目标一定达到。
 
 ### REV-ARCH-001: Data, monitor, and control planes
 
