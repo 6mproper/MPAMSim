@@ -2137,3 +2137,258 @@ At each resource monitor boundary, the update order SHALL be deterministic:
 
 The trace SHALL preserve the monitor sample time, decision time, and action
 effective time so that feedback delay is visible.
+
+### REV-CPU-001: Eight-core, sixteen-thread requester hierarchy
+
+The reference topology SHALL use:
+
+```text
+8 physical cores
+2 hardware threads per core
+16 independently configurable thread stimuli
+```
+
+Each thread SHALL retain an independently configurable workload and raw
+PARTID/PMG assignment mode. The two hardware threads of one core SHALL share
+a core-level outstanding-request resource.
+
+The revised requester hierarchy SHALL contain:
+
+- a per-thread source queue;
+- a per-thread outstanding limit;
+- a per-core shared OSTD pool;
+- a per-PARTID effective OSTD limit;
+- core arbitration between the two hardware threads;
+- CBusy-derived OSTD clamps;
+- completion-driven release of the core and thread OSTD allocation.
+
+A request SHALL retain its OSTD allocation until its terminal response or
+read-data completion returns to the originating hardware thread.
+
+The allocation policy for multiple PARTIDs competing for one core OSTD pool
+remains a separate decision. The implementation SHALL NOT treat the core pool
+capacity as an independent full-capacity allowance for every PARTID.
+
+### REV-L3-PIPE-001: Configurable hit, miss, and fill latency
+
+The revised L3 SHALL expose separate local-clock latency parameters:
+
+```yaml
+l3_hit_latency_cycles: <positive integer>
+l3_miss_detect_latency_cycles: <positive integer>
+l3_fill_latency_cycles: <non-negative integer>
+```
+
+An L3 hit SHALL return data only after the configured hit latency and DAT
+channel transport.
+
+An L3 miss SHALL:
+
+```text
+1. consume an L3 lookup resource until miss detection
+2. allocate a miss-status/MSHR entry and a line-fill reservation
+3. issue a downstream memory request
+4. retain the miss entry while memory and return-network service proceed
+5. receive returned data
+6. perform victim selection and fill the L3
+7. wait for configured fill latency
+8. return data to the requester through the DAT channel
+9. release the requester's OSTD only after terminal completion
+```
+
+The miss SHALL occupy a bounded L3 miss resource until fill completion. It
+SHALL NOT implicitly hold the entire L3 lookup pipeline for the full memory
+latency. A future explicit `hold_lookup_on_miss` research option MAY model
+that behavior, but it is not the default because real caches normally track
+outstanding misses with MSHR/fill structures.
+
+The revised configuration SHALL add at least:
+
+```yaml
+l3_mshr_entries: <positive integer>
+l3_fill_buffer_entries: <positive integer>
+merge_same_line_misses: true | false
+```
+
+MSHR-full and fill-buffer-full stalls SHALL be separately observable.
+
+### REV-CHI-001: CHI-shaped logical channels
+
+The interconnect model SHALL be organized around the four AMBA CHI channel
+classes:
+
+| Channel | Revised simulator role |
+| --- | --- |
+| REQ | Read, write, memory, and control request transport |
+| RSP | Completion, acknowledgement, and protocol-control response transport |
+| DAT | Read-return, write-data, and cache-fill payload transport |
+| SNP | Reserved snoop transport interface |
+
+REQ, RSP, and DAT SHALL be independently configurable for:
+
+- bandwidth or flit throughput;
+- fixed router/link latency;
+- queue depth;
+- credits;
+- arbitration;
+- per-PARTID monitoring;
+- backpressure.
+
+The initial revised model SHALL set:
+
+```yaml
+coherency_mode: none
+snp_enable: false
+```
+
+In this mode the model has no private cache copies and no coherent line state,
+so no snoop traffic is required. The SNP interface remains visible and
+disabled for future extension.
+
+Using CHI channel names and flow-control structure SHALL be described as a
+`CHI-shaped abstraction`, not as a CHI-compliant protocol implementation.
+Full CHI transaction legality, ordering, retry, DVM, snoop response, cache
+state, and data-transfer rules remain outside scope unless coherency is
+explicitly enabled in a future change.
+
+### REV-CHI-002: Revised request flows
+
+The minimum read flows SHALL be:
+
+```text
+L3 hit:
+thread -> core OSTD -> REQ -> L3 lookup
+       -> DAT -> thread completion -> OSTD release
+
+L3 miss:
+thread -> core OSTD -> REQ -> L3 lookup/MSHR
+       -> REQ -> MC -> memory service
+       -> DAT -> L3 fill
+       -> DAT -> thread completion -> OSTD release
+```
+
+RSP messages MAY accompany or precede DAT according to the selected abstract
+transaction template. Every template SHALL define its terminal event so OSTD,
+credits, MSHRs, and fill buffers are released deterministically.
+
+Write flows, write acknowledgement, dirty eviction, and writeback-channel
+behavior remain to be specified before implementation.
+
+### REV-SW-001: Resctrl-like software configuration mode
+
+The simulator SHALL support two labeling modes:
+
+| Mode | Purpose |
+| --- | --- |
+| Raw hardware-thread mode | Direct per-thread PARTID/PMG assignment for hardware/debug experiments |
+| Software resource-group mode | Task/CPU assignment through resctrl-like control and monitor groups |
+
+The software mode SHALL expose named control/monitor groups rather than
+requiring application users to choose hardware PARTID/PMG values directly.
+
+Proposed software objects:
+
+```text
+CTRL_MON group
+  -> one control-group ID
+  -> internally allocated PARTID
+  -> resource-domain controls
+  -> assigned tasks and/or logical CPUs
+
+MON group
+  -> parent CTRL_MON group
+  -> one monitor-group ID
+  -> internally allocated PMG
+  -> assigned subset of parent tasks and/or CPUs
+```
+
+The simulator SHALL use `(PARTID, PMG)` as the monitor identity. PMG alone is
+not globally unique.
+
+Resource-assignment precedence SHALL follow the resctrl model:
+
+```text
+1. explicit non-default task control group
+2. otherwise the current logical CPU's non-default control group
+3. otherwise the default/root group
+```
+
+The corresponding monitoring group SHALL be selected independently within
+the chosen control group.
+
+The first implementation SHOULD omit code/data prioritization. Without CDP:
+
+```text
+control_group_id -> PARTID_D = PARTID_I
+monitor_group_id -> PMG_D = PMG_I
+```
+
+Task labels SHALL follow a software task across hardware-thread scheduling or
+migration. CPU-group defaults apply only when the task remains in the root
+task group.
+
+### REV-SW-002: Public-software-shaped API
+
+The UI and Python API SHOULD expose operations analogous to resctrl and
+libvirt resource grouping:
+
+```text
+create_control_group(name)
+delete_control_group(name)
+set_group_schema(name, resource, domain, controls)
+assign_tasks(name, task_ids)
+assign_cpus(name, logical_cpu_ids)
+create_monitor_group(parent, name)
+assign_monitor_tasks(parent, name, task_ids)
+read_monitor(group, resource, domain, event)
+```
+
+A configuration representation MAY use:
+
+```yaml
+software_groups:
+  latency_critical:
+    tasks: [task_rt0, task_rt1]
+    cpus: []
+    resources:
+      l3_0:
+        cpbm: 0x00ff
+        cmin_percent: 25
+        cmax_percent: 50
+      mc_0:
+        bmin_gbps: 20
+        bmax_gbps: 40
+        limit_mode: softlimit
+        qos: 7
+    monitor_groups:
+      rt0:
+        tasks: [task_rt0]
+      rt1:
+        tasks: [task_rt1]
+```
+
+The UI SHALL show the internally allocated PARTID and PMG as read-only
+hardware mappings so users can correlate software groups with per-PARTID
+waveforms.
+
+### REV-EVIDENCE-001: Public interface evidence
+
+The above software-interface direction is based on primary public sources:
+
+- Linux arm64 MPAM documentation states that traffic is labeled according to
+  the current task's resctrl control or monitor group, while policy and
+  monitor values are accessed through resctrl:
+  `https://docs.kernel.org/arch/arm64/mpam.html`
+- Linux resctrl defines CTRL_MON and MON directories, task/CPU assignment,
+  schemata, monitoring data, and task-versus-CPU precedence:
+  `https://docs.kernel.org/filesystems/resctrl.html`
+- Current Linux arm64 source maps resctrl CLOSID/RMID values to Arm
+  PARTID/PMG and loads task labels on context switch:
+  `https://github.com/torvalds/linux/blob/master/drivers/resctrl/mpam_resctrl.c`
+  and
+  `https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/mpam.h`
+- Libvirt exposes cache and memory-bandwidth allocations as groups of vCPUs
+  through `cachetune` and `memorytune`, providing a public VM-oriented example:
+  `https://libvirt.org/formatdomain.html`
+- Arm documents CHI as using REQ, RSP, SNP, and DAT channel classes:
+  `https://developer.arm.com/documentation/100180/0103/signal-descriptions/chi-interface-signals`
