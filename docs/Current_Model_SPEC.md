@@ -3169,6 +3169,255 @@ No control SHALL be described only by an ideal mathematical target. The spec
 must identify the finite counters, sampled signals, delays, saturation, and
 recovery that make target non-attainment possible.
 
+### REV-CBUSY-001: Hardware state and detector inputs
+
+CBusy SHALL be a fast per-MC, per-PARTID source-throttling loop. It is
+separate from BMIN/BMAX bandwidth allocation.
+
+Required state for every supported PARTID at each MC:
+
+```text
+partid_buffer_count       : ceil(log2(mc_request_buffer_depth + 1)) bits
+filtered_bandwidth        : existing MPAM monitor state
+cbusy_level               : 2 bits
+release_hold_counter      : configurable small saturating counter
+hard_block                : existing BMAX hard-block state
+```
+
+`partid_buffer_count` increments when a request of the PARTID allocates an MC
+buffer entry and decrements when that entry leaves the request buffer for
+service. It counts all valid entries, including entries currently ineligible
+because of Hard BMAX or same-line ordering.
+
+The fast input is the current integer `partid_buffer_count`. The slow input is
+the last published 256-MC-cycle filtered MPAM bandwidth. CBusy SHALL NOT read
+an unfiltered instantaneous byte rate.
+
+### REV-CBUSY-002: Precomputed integer thresholds
+
+Queue thresholds SHALL be configured directly as buffer-entry counts:
+
+```yaml
+cbusy_queue_entries_l1: <integer>
+cbusy_queue_entries_l2: <integer>
+cbusy_queue_entries_l3: <integer>
+```
+
+They SHALL satisfy:
+
+```text
+0 <= L1 <= L2 <= L3 <= mc_request_buffer_depth
+```
+
+Bandwidth thresholds MAY be entered as ratios of BMAX:
+
+```yaml
+cbusy_bw_ratio_l1: 1.00
+cbusy_bw_ratio_l2: 1.10
+cbusy_bw_ratio_l3: 1.25
+```
+
+Configuration logic SHALL convert them into fixed threshold values before the
+run. The modeled hardware path performs integer/fixed-point comparisons, not
+runtime floating-point division.
+
+### REV-CBUSY-003: Dual-timescale level calculation
+
+Every MC cycle, calculate the queue-derived level:
+
+```text
+queue_level =
+    3 if partid_buffer_count >= queue_threshold_l3
+    2 if partid_buffer_count >= queue_threshold_l2
+    1 if partid_buffer_count >= queue_threshold_l1
+    0 otherwise
+```
+
+At every 256-cycle MC monitor boundary, update the bandwidth-derived level
+from the newly published filtered MPAM bandwidth:
+
+```text
+bandwidth_level =
+    3 if filtered_bandwidth >= bw_threshold_l3
+    2 if filtered_bandwidth >= bw_threshold_l2
+    1 if filtered_bandwidth >= bw_threshold_l1
+    0 otherwise
+```
+
+Hard BMAX may force a minimum level:
+
+```yaml
+cbusy_hard_block_min_level: 2
+```
+
+The detected level is:
+
+```text
+detected_level =
+    max(queue_level, bandwidth_level, hard_block_min_level_if_active)
+```
+
+This combines fast queue protection with slower MPAM bandwidth evidence.
+
+### REV-CBUSY-004: Assertion and release state machine
+
+If `detected_level > cbusy_level`, the CBusy level SHALL rise immediately to
+the detected level and clear the release counter.
+
+If `detected_level >= cbusy_level`, the release counter SHALL clear.
+
+If `detected_level < cbusy_level`, the release counter SHALL increment once
+per configured release sample:
+
+```yaml
+cbusy_release_sample_cycles: <positive integer>
+cbusy_release_hold_samples: <positive integer>
+```
+
+After the hold count is reached:
+
+```text
+cbusy_level = cbusy_level - 1
+release_hold_counter = 0
+```
+
+Release is one level at a time. This state machine requires only level
+comparators, a 2-bit state register, and one small counter per PARTID.
+
+### REV-CBUSY-005: Low-PPA feedback transport
+
+The default feedback mode SHALL be:
+
+```yaml
+cbusy_feedback_mode: response_piggyback
+```
+
+Every RSP or DAT terminal return from an MC path SHALL carry:
+
+```text
+source_mc_id
+request_partid
+cbusy_level[request_partid]
+```
+
+The CBusy level is a 2-bit sideband value in the abstract model. It follows
+the normal RSP or DAT ring path and can therefore be delayed by:
+
+- memory service;
+- endpoint readiness;
+- ring injection wait;
+- ring traversal;
+- failed ejection and recirculation.
+
+No dedicated CBusy broadcast network is assumed. If several RNs issue the
+same PARTID, each RN learns the level opportunistically on its own returning
+traffic. This can create different temporary views at different RNs and is an
+intentional low-PPA feedback tradeoff.
+
+A future `transition_message` mode MAY send dedicated RSP control messages on
+level transitions. It SHALL be labeled as a higher-traffic/higher-state
+option and is not the default.
+
+### REV-CBUSY-006: RN state and OSTD action
+
+Every RN SHALL retain the last received level for each active
+`(destination_mc, PARTID)` pair:
+
+```text
+rn_cbusy_level[mc_id][partid] : 2 bits
+```
+
+The corresponding configured OSTD caps SHALL satisfy:
+
+```text
+normal_ostd >= l1_ostd >= l2_ostd >= l3_ostd >= 1
+```
+
+For a new request whose address maps to MC `m`:
+
+```text
+effective_ostd[core, partid, m] =
+    min(
+        configured_partid_ostd,
+        software_partid_ostd,
+        cbusy_ostd_cap[rn_cbusy_level[m][partid]]
+    )
+```
+
+CBusy limits only new source admission. It does not:
+
+- cancel in-flight requests;
+- block RSP or DAT returns;
+- alter NoC ring arbitration;
+- change MC QoS directly.
+
+The minimum cap of one preserves a path for new traffic and future feedback.
+
+### REV-CBUSY-007: Interaction with BMIN/BMAX
+
+The control ordering SHALL be:
+
+```text
+MC monitor:
+    publish filtered bandwidth every 256 MC cycles
+
+BMIN/BMAX:
+    update slow QoS or Hard-BMAX service eligibility for the next interval
+
+CBusy detector:
+    combine current queue count, last filtered bandwidth,
+    and current Hard-BMAX state
+
+RN:
+    apply the most recently received CBusy cap to new OSTD admission
+```
+
+BMAX controls MC service allocation. CBusy controls source pressure and queue
+growth. Both may be active simultaneously.
+
+The UI SHALL expose when stacked controls cause:
+
+- Hard BMAX service blocking;
+- MC buffer growth;
+- higher CBusy;
+- lower RN OSTD;
+- source stalls;
+- delayed bandwidth recovery.
+
+This interaction may over-throttle or oscillate. Such behavior is a valid
+control result, not something the simulator SHALL automatically correct.
+
+### REV-CBUSY-008: Hardware scaling and verification
+
+For `P` PARTIDs, MC buffer depth `D`, and `R` RNs, the default state scales
+approximately as:
+
+```text
+MC:
+    P * (
+        ceil(log2(D + 1))
+      + 2
+      + release_counter_bits
+    )
+
+RN:
+    active_or_dense_storage_for R * P * 2-bit levels per destination MC
+```
+
+The implementation MAY use dense tables or an active-entry structure. The
+choice SHALL be explicit because it changes PPA and stale-entry behavior.
+
+Automated verification SHALL prove:
+
+- per-PARTID buffer counts update correctly;
+- queue-level comparison reacts at MC-cycle granularity;
+- bandwidth level changes only at monitor boundaries;
+- assertion is immediate and release is held and stepwise;
+- feedback experiences modeled RSP/DAT delay;
+- the RN applies the level only to the matching MC and PARTID;
+- existing requests and all responses continue to make progress;
+- control activation is visible even when the bandwidth target is not met.
+
 ### REV-CHI-001: CHI-shaped logical channels
 
 The interconnect model SHALL be organized around the four AMBA CHI channel
