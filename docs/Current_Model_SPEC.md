@@ -2459,6 +2459,184 @@ merge_same_line_misses: true | false
 
 MSHR-full and fill-buffer-full stalls SHALL be separately observable.
 
+### REV-L3-DATA-001: Cache-line definition
+
+`line_size_bytes` is the amount of data represented by one L3 tag/way entry
+and transferred by one L3 line fill. A typical default is 64 bytes, but the
+value SHALL be configurable and SHALL be a positive power of two.
+
+```yaml
+line_size_bytes: 64
+```
+
+For an address:
+
+```text
+byte_offset = address mod line_size_bytes
+line_address = floor(address / line_size_bytes)
+mapped_line = configured_interleave(line_address)
+set_index = mapped_line mod set_count
+tag = floor(mapped_line / set_count)
+```
+
+Example for a 64-byte line:
+
+```text
+address 0x1000 through 0x103f -> one cache line
+address 0x1040               -> the next cache line
+```
+
+The line size affects:
+
+- address offset, set, and tag extraction;
+- L3 capacity in lines;
+- cache allocation and replacement granularity;
+- MSHR matching and same-line miss merging;
+- memory fill size;
+- DAT flit count;
+- occupancy-monitor conversion from lines to bytes.
+
+A request that crosses a line boundary SHALL be split into line-aligned child
+transactions. Each child participates independently in L3 lookup, MSHR,
+memory fill, and DAT transfer. The parent operation completes only after all
+children complete. In the default L3-facing CPU mode, each child consumes one
+CPU transaction/OSTD entry.
+
+### REV-L3-DATA-002: Real set/tag/way state
+
+The revised L3 SHALL replace probabilistic hit generation with explicit
+cache state for every set and way:
+
+```text
+valid
+tag
+owner_partid
+owner_pmg
+replacement_state
+```
+
+A lookup is a hit only when an eligible valid way in the indexed set has the
+matching tag. Otherwise it is a miss.
+
+The replacement policy SHALL be configurable:
+
+```yaml
+replacement_policy: lru | plru
+```
+
+`lru` SHALL implement exact least-recently-used ordering for each set.
+`plru` SHALL implement a documented deterministic approximation, such as
+tree-PLRU for a supported power-of-two associativity. The UI help SHALL
+explain that PLRU may choose a different victim from exact LRU.
+
+The full set/tag/way state is data-plane truth. MPAM occupancy monitoring
+still samples only the first set in each eight-set group.
+
+### REV-L3-CTRL-001: Direct and monitor-driven controls
+
+CPBM is a direct allocation constraint and SHALL be evaluated for every fill:
+
+```text
+eligible_ways = ways whose CPBM bit is one
+```
+
+CMIN and CMAX are monitor-driven controls. For monitor interval `k`, all
+replacement and allocation decisions SHALL use the last published filtered
+MPAM occupancy value:
+
+```text
+control_input_occupancy[k] = filtered_occupancy[k - 1]
+```
+
+At the end of interval `k`, the L3 computes and publishes
+`filtered_occupancy[k]`, which becomes the control input for interval
+`k + 1`.
+
+The controller SHALL NOT use actual all-set occupancy or the unfinished raw
+sample from the current interval.
+
+### REV-L3-CTRL-002: CMIN replacement protection
+
+When evaluating a candidate victim:
+
+```text
+if victim_owner_filtered_occupancy <= victim_owner_effective_cmin:
+    victim is protected from replacement
+```
+
+CMIN is demand-driven protection. It does not prefill cache lines and does
+not guarantee that either actual or filtered occupancy reaches CMIN.
+
+Because the control input is sampled and filtered, actual occupancy may
+temporarily fall below CMIN before the next control update. The UI SHALL show
+the monitor and control delay rather than treating every instantaneous
+crossing as an implementation error.
+
+### REV-L3-CTRL-003: CMAX growth restriction
+
+When the requesting PARTID's last published filtered occupancy is at or above
+effective CMAX:
+
+- an existing matching line may still hit;
+- the requester may replace one of its own eligible lines in the indexed set;
+- it may not consume an empty way to increase occupancy;
+- it may not evict another PARTID to increase occupancy.
+
+If no requester-owned eligible victim exists, the fill SHALL bypass L3 and
+the data SHALL still return to the requester.
+
+CMAX does not actively invalidate existing lines. Actual and filtered
+occupancy may remain above CMAX while lines age out or replace themselves.
+
+### REV-L3-CTRL-004: No legal victim
+
+If CPBM eligibility, CMIN protection, and CMAX restriction leave no legal
+victim:
+
+```text
+do not allocate the returned line in L3
+record allocation_bypass
+return data to the requester
+```
+
+The monitor plane SHALL separately report:
+
+- CPBM-ineligible ways considered;
+- CMIN-protected victim candidates;
+- CMAX growth blocks;
+- no-legal-victim bypasses;
+- self-replacement under CMAX.
+
+These events demonstrate that controls activated even when a target was not
+achieved.
+
+### REV-MC-CTRL-001: BMIN/BMAX consume filtered MPAM bandwidth
+
+BMIN and BMAX SHALL follow the same monitor-driven timing principle as
+CMIN/CMAX. For MC monitor interval `k`:
+
+```text
+control_input_bandwidth[k] = filtered_bandwidth[k - 1]
+```
+
+At the end of interval `k`, the MC publishes `filtered_bandwidth[k]`; the
+result may alter scheduling or limiting behavior for interval `k + 1`.
+
+The MC controller SHALL NOT secretly use all-service instantaneous bandwidth
+when a function is specified as MPAM-monitor driven.
+
+Consequences that SHALL be visible:
+
+- at least one monitor-period observation/action delay;
+- overshoot or undershoot caused by sampling;
+- additional lag caused by `history_weight`;
+- target non-attainment under conflicting demand or resource limits;
+- control oscillation or saturation if the algorithm is poorly tuned.
+
+The exact BMIN promotion and BMAX soft/hard action for the next interval
+remains to be defined in the MC chapter. This requirement fixes the control
+input and update timing, not yet the complete enforcement algorithm.
+
 ### REV-CHI-001: CHI-shaped logical channels
 
 The interconnect model SHALL be organized around the four AMBA CHI channel
