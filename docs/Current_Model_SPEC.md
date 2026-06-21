@@ -2680,17 +2680,39 @@ The bufferless-ring requirements supersede revision proposals that assumed:
 - PARTID-aware NoC QoS;
 - MC QoS propagation into the NoC.
 
-The following physical mapping decisions remain open:
+The following physical mapping decisions are agreed:
 
-1. whether REQ, RSP, and DAT use three independent rings or share one physical
-   ring with a channel-type field;
-2. whether a bidirectional ring chooses the shortest direction or uses a
-   static source/destination direction table;
-3. whether multi-flit DAT packets reserve consecutive slots or inject flits
-   independently and reassemble by transaction ID and flit index.
+1. REQ, RSP, and DAT SHALL use three independent physical/logical rings.
+2. Every ring SHALL be bidirectional.
+3. A flit SHALL choose the direction with the shorter hop distance.
+4. Equal-distance ties SHALL use a fixed configurable tie direction so runs
+   remain deterministic.
+5. DAT flits SHALL inject independently and reassemble by transaction ID,
+   flit index, and flit count.
 
-These choices SHALL be resolved before implementation because they materially
-change interference, recirculation, bandwidth, and forward-progress behavior.
+Each ring MAY have independent flit width, slot count, and hop latency. The
+basic UI SHOULD provide linked defaults so users do not need to tune NoC
+microarchitecture before running an MPAM experiment.
+
+### REV-NOC-008: MPAM-focused fidelity boundary
+
+The three-ring model SHALL implement enough transport behavior to preserve:
+
+- request and response causality;
+- finite ring capacity;
+- endpoint injection backpressure;
+- ejection failure and recirculation;
+- multi-flit DAT completion;
+- terminal-event OSTD/MSHR release;
+- per-PARTID traffic and delay monitoring.
+
+The NoC SHALL remain a neutral shared transport. The project SHALL not add
+NoC QoS, adaptive routing, speculative routing, virtual channels, or complex
+router microarchitecture unless a later MPAM or flow-control experiment
+requires them.
+
+NoC verification SHALL focus on basic behavior correctness and on preventing
+the transport model from hiding or fabricating MPAM control effects.
 
 ### REV-SW-001: Resctrl-like software configuration mode
 
