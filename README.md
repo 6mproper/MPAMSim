@@ -112,6 +112,11 @@ Its stimulus tab exposes 16 independent hardware-thread workloads, matching
 the 16 configurable PARTIDs. See `docs/MPAM_Capability_Map.md` for the model's
 implemented, approximated, reserved, and out-of-scope MPAM capabilities.
 
+The code-derived architecture and implementation baseline is
+`docs/Current_Model_SPEC.md`. Edit that specification when proposing changes
+to component behavior, algorithms, configuration, monitoring, or verification
+contracts.
+
 ## OpenSpec Workflow
 
 Architecture and behavior changes use OpenSpec:
