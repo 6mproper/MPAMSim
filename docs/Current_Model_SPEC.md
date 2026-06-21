@@ -2637,6 +2637,326 @@ The exact BMIN promotion and BMAX soft/hard action for the next interval
 remains to be defined in the MC chapter. This requirement fixes the control
 input and update timing, not yet the complete enforcement algorithm.
 
+### REV-MC-QUEUE-001: Shared request buffer
+
+Each MC SHALL have one shared physical request buffer:
+
+```yaml
+mc_request_buffer_depth: <positive integer>
+```
+
+Every valid entry SHALL retain at least:
+
+```text
+valid
+transaction_id
+partid
+pmg
+source_node
+address
+operation
+size_bytes
+enqueue_mc_cycle
+enqueue_sequence
+ready
+```
+
+`enqueue_mc_cycle` is captured when the complete REQ transaction successfully
+ejects from the REQ ring and allocates a valid MC-buffer entry:
+
+```text
+enqueue_mc_cycle = current_mc_cycle
+```
+
+MC queue age is:
+
+```text
+queue_age_cycles =
+    current_mc_cycle - enqueue_mc_cycle
+```
+
+REQ-ring transport and recirculation before successful ejection are NoC
+latency, not MC queue latency.
+
+`enqueue_sequence` is a monotonically increasing MC-local value used for
+deterministic oldest-entry tie-breaking. The simulator MAY also report the
+equivalent nanosecond timestamp, but cycle count is the normative MC age.
+
+The simulator may store an unbounded integer timestamp for correctness.
+Hardware-PPA studies SHOULD expose a quantized/saturating age representation:
+
+```yaml
+aging_quantum_cycles: <positive integer>
+aging_counter_bits: <positive integer>
+```
+
+This allows the model to show the accuracy and area cost of per-entry age
+tracking without claiming that hardware stores a full software timestamp.
+
+### REV-MC-QUEUE-002: Admission and ring interaction
+
+If the shared MC request buffer has no free entry, the destination SN SHALL
+not eject the incoming REQ flit or packet. The transaction SHALL continue to
+circulate on the REQ ring until an entry becomes available.
+
+The monitor SHALL separate:
+
+- REQ-ring recirculation before MC admission;
+- MC-buffer residence time after admission;
+- DAT return-ring delay after service.
+
+### REV-MC-SCHED-001: Full-buffer QoS candidate set
+
+All valid and service-ready entries in the configured MC buffer depth SHALL
+participate in each QoS scheduling decision.
+
+```text
+candidate =
+    valid
+    AND ready
+    AND not hard-blocked by the entry's PARTID
+    AND not blocked by an explicit ordering rule
+```
+
+The revised model SHALL NOT reduce the candidate set to one FIFO head per
+PARTID.
+
+Because detailed DRAM bank/row timing is initially outside scope, every valid
+entry is normally service-ready. A later DRAM timing model MAY first mask out
+entries that are not command-ready, then apply the same QoS selection to all
+remaining candidates.
+
+Scanning and comparing the whole buffer is a hardware-PPA cost. The UI and
+report SHALL identify:
+
+- buffer depth;
+- number of candidates examined per decision;
+- QoS comparator width;
+- aging metadata width.
+
+These are implementation-cost indicators, not an area/power number unless
+calibrated against RTL or synthesis evidence.
+
+### REV-MC-CTRL-002: Configurable hysteresis
+
+Hysteresis SHALL use different assert and release thresholds so filtered
+bandwidth noise near a target does not toggle control state every monitor
+period.
+
+For BMAX with hysteresis fraction `h`:
+
+```text
+assert OVER_BMAX when:
+    filtered_bw > BMAX
+
+release OVER_BMAX when:
+    filtered_bw <= BMAX * (1 - h)
+```
+
+Example:
+
+```text
+BMAX = 40 GB/s
+h = 5%
+assert above 40 GB/s
+release at or below 38 GB/s
+```
+
+For BMIN:
+
+```text
+assert UNDER_BMIN when:
+    filtered_bw < BMIN
+
+release UNDER_BMIN when:
+    filtered_bw >= BMIN * (1 + h)
+```
+
+Example:
+
+```text
+BMIN = 20 GB/s
+h = 5%
+assert below 20 GB/s
+release at or above 21 GB/s
+```
+
+Configuration:
+
+```yaml
+bandwidth_hysteresis_percent: <0 through less than 100>
+```
+
+Zero disables hysteresis. The recommended default is 5%. The UI SHALL display
+the derived assert and release thresholds.
+
+Hysteresis adds one state bit per control state and threshold comparisons.
+Threshold values SHOULD be precomputed from configuration so the modeled
+hardware decision does not require a runtime floating-point multiply.
+
+Hysteresis reduces state chatter but can increase overshoot, undershoot, and
+recovery time. Its effect SHALL be visible in the time-series view.
+
+### REV-MC-CTRL-003: Contention definition
+
+The MC is contended for BMIN and soft-BMAX purposes only when at least two
+different PARTIDs have pending service-ready candidates:
+
+```text
+contended =
+    count(distinct PARTIDs among service-ready candidates) >= 2
+```
+
+Multiple requests from only one PARTID do not constitute inter-PARTID
+contention.
+
+### REV-MC-CTRL-004: BMIN action
+
+At each monitor boundary, update `UNDER_BMIN` from the previous published
+filtered bandwidth and the hysteresis rule.
+
+BMIN QoS promotion applies only when:
+
+```text
+BMIN enabled
+AND UNDER_BMIN is asserted
+AND the PARTID has pending candidates
+AND the MC is contended
+```
+
+For every candidate of that PARTID:
+
+```text
+bmin_adjustment = configured_bmin_qos_promote
+```
+
+BMIN is a scheduling preference. It does not pre-reserve idle bandwidth and
+does not guarantee target attainment.
+
+An aggregate configured BMIN above physical MC capacity SHALL produce a
+warning and a visible infeasible-target status, but the simulation SHALL
+remain runnable.
+
+### REV-MC-CTRL-005: Soft BMAX action
+
+At each monitor boundary, update `OVER_BMAX` from the previous published
+filtered bandwidth and hysteresis.
+
+Soft-BMAX demotion applies only when:
+
+```text
+BMAX enabled
+AND mode == softlimit
+AND OVER_BMAX is asserted
+AND the MC is contended
+```
+
+For every candidate of that PARTID:
+
+```text
+soft_bmax_adjustment = configured_soft_bmax_qos_demote
+```
+
+Soft-limit requests remain eligible. If effective QoS reaches zero and the
+PARTID still exceeds BMAX, the controller is saturated; this is a valid result.
+
+Without inter-PARTID contention, soft-BMAX is work-conserving and does not
+prevent use of otherwise idle memory bandwidth.
+
+### REV-MC-CTRL-006: Hard BMAX interval gate
+
+Hard BMAX SHALL use coarse monitor-period service gating rather than a hidden
+per-request token bucket.
+
+```text
+if BMAX enabled
+AND mode == hardlimit
+AND OVER_BMAX is asserted:
+    mark every request of the PARTID ineligible for MC service
+```
+
+The hard-block state remains fixed until the next MC monitor update. Requests
+remain in the MC buffer and retain their enqueue age.
+
+When filtered bandwidth falls to the BMAX release threshold, the block is
+removed for the next interval. This can produce:
+
+```text
+service burst
+-> delayed over-limit observation
+-> full-interval block
+-> filtered decay
+-> release
+-> another service burst
+```
+
+The resulting overshoot, sawtooth bandwidth, buffer growth, and recovery time
+are expected low-PPA implementation behavior.
+
+### REV-MC-SCHED-002: 3-bit QoS selection
+
+For every candidate entry:
+
+```text
+effective_qos = clamp(
+    base_mc_qos[partid]
+  + bmin_qos_promote_if_active
+  - soft_bmax_qos_demote_if_active
+  + aging_qos_promote[entry],
+    0,
+    7
+)
+```
+
+The scheduler SHALL:
+
+1. form the full-buffer service-ready candidate set;
+2. remove hard-BMAX-blocked entries;
+3. calculate effective QoS for every remaining entry;
+4. select the highest effective QoS;
+5. break equal-QoS ties by the oldest `enqueue_sequence`.
+
+Because base and monitor-driven adjustments are per PARTID, entries of the
+same PARTID normally preserve oldest-first service. A future detailed DRAM
+readiness mask may permit a younger ready entry to bypass an older not-ready
+entry; that behavior SHALL be explicitly reported.
+
+Aging SHALL have an independent enable. When enabled:
+
+```text
+age_steps =
+    min(
+        aging_max_steps,
+        floor(queue_age_cycles / aging_quantum_cycles)
+    )
+```
+
+When disabled, strict QoS starvation is a possible observable result rather
+than something silently prevented by the model.
+
+### REV-MC-MON-002: MC control evidence
+
+For every PARTID and monitor interval, the UI and trace SHALL expose:
+
+- BMIN and BMAX configured targets;
+- BMIN/BMAX assert and release thresholds;
+- raw and filtered monitored bandwidth;
+- actual serviced bandwidth;
+- `UNDER_BMIN`, `OVER_BMAX`, and `HARD_BLOCK` state;
+- base, BMIN, soft-BMAX, aging, and final effective QoS;
+- number of candidate entries;
+- selected request and its enqueue age;
+- QoS saturation at zero or seven;
+- queue depth and oldest age;
+- hard-block cycles;
+- BMAX overshoot area;
+- response and recovery intervals;
+- feasible, achieved, not achieved, and saturated target status.
+
+Automated verification SHALL prove state transitions, candidate eligibility,
+QoS calculation, tie-breaking, and hard gating. It SHALL NOT require BMIN or
+BMAX targets to be achieved under every workload.
+
 ### REV-CHI-001: CHI-shaped logical channels
 
 The interconnect model SHALL be organized around the four AMBA CHI channel
