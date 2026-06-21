@@ -1,212 +1,234 @@
-# interactive-simulation-console Specification
+# interactive-simulation-console 规格
 
 ## Purpose
-Define the local user interface for configuring, running, observing, and
-reporting SoC flow-control and MPAM simulations.
+
+定义当前已实现的本地Web控制台，用于配置、运行、动态观察、验证和导出SoC流控与
+MPAM仿真，并规定16线程、16组PARTID、因果时间线和上下文帮助等交互能力。
+
 ## Requirements
-### Requirement: Direct configuration
-The local web console SHALL allow users to configure SoC topology, multicore stimulus, simulation timing, flow-control policy, and all 16 PARTID control rows without editing source files.
 
-#### Scenario: Configure a non-default PARTID
-- **WHEN** a user selects arbitrary protected and background PARTIDs and edits their controls
-- **THEN** the submitted simulation uses those PARTIDs and settings in the validated common configuration schema
+### Requirement: 直接配置
 
-### Requirement: Dynamic simulation execution
-The local web console SHALL start simulations as background jobs and SHALL update progress and interval results while a run is active.
+控制台 MUST 允许用户配置SoC、16线程激励、仿真时序、policy和16组PARTID控制，
+无需修改源码。
 
-#### Scenario: Run from the interface
-- **WHEN** the user activates the run command with valid parameters
-- **THEN** the interface transitions through running state to done or failed state and remains responsive
+#### Scenario: 配置非默认PARTID
 
-### Requirement: MPAM result visualization
-The console SHALL display per-PARTID latency and bandwidth, per-MSC queue occupancy, delay attribution, control updates, and a 16-row MPAM monitor table.
+- **WHEN** 用户修改任意PARTID控制
+- **THEN** 提交任务使用统一校验schema中的设置
 
-#### Scenario: Inspect MPAM results
-- **WHEN** a simulation completes
-- **THEN** the MPAM monitor view contains one row for every PARTID and shows L3 sampled estimates plus memory-controller bandwidth-control events
+### Requirement: 动态执行
 
-### Requirement: Report access
-The console SHALL provide access to the static report generated from the same completed simulation job.
+控制台 MUST 后台运行仿真，并在运行中更新进度和周期结果。
 
-#### Scenario: Open a completed report
-- **WHEN** a job completes successfully
-- **THEN** the interface exposes a link to that job's generated HTML report
+#### Scenario: 从界面运行
 
-### Requirement: Sixteen-thread stimulus editor
-The interactive console SHALL display exactly 16 stimulus rows mapped one-to-one to the hardware-thread requesters of an eight-core, two-thread topology.
+- **WHEN** 用户提交有效参数
+- **THEN** UI经历running到done或failed且保持响应
 
-#### Scenario: Inspect requester mapping
-- **WHEN** the stimulus editor is initialized
-- **THEN** its rows identify `cpu0.t0`, `cpu0.t1`, through `cpu7.t1` exactly once each
+### Requirement: MPAM结果可视化
 
-### Requirement: Per-thread stimulus controls
-Each stimulus row SHALL configure enable state, PARTID, PMG, workload type, injection rate, rate unit, request size, read ratio, working-set size, and optional P99 target.
+当前控制台 MUST 显示每PARTID延迟/带宽、MSC queue、延迟归因、控制更新和16行监控。
 
-#### Scenario: Configure a thread independently
-- **WHEN** a user changes the PARTID, PMG, traffic type, or rate of one row
-- **THEN** no other thread row is implicitly modified
+#### Scenario: 检查结果
 
-### Requirement: Stable interactive topology
-The interactive reference scenario SHALL use eight cores and two threads per core while the generic YAML and Python interfaces remain topology-configurable.
+- **WHEN** 仿真完成
+- **THEN** 监控视图包含全部16个PARTID及L3/MC证据
 
-#### Scenario: Load web defaults
-- **WHEN** the console loads its default parameters
-- **THEN** it reports eight cores, two threads per core, and 16 thread stimulus rows
+### Requirement: 报告访问
 
-### Requirement: Contextual configuration help
-The interactive console SHALL provide concise explanations for configuration categories, fields, table columns, policy choices, result categories, and abbreviated MPAM terms through pointer hover and keyboard focus.
+完成任务 MUST 提供同一次运行生成的HTML报告链接。
 
-#### Scenario: Inspect a field explanation
-- **WHEN** a user hovers over or focuses a supported configuration label or table control
-- **THEN** a tooltip explains its unit, behavior, or modeling meaning without changing the configured value
+#### Scenario: 打开完成报告
 
-### Requirement: Stimulus type comparison
-The stimulus Type control SHALL explain the behavioral distinction among stream, pointer chase, random read, mixed read/write, and burst traffic.
+- **WHEN** 仿真任务成功完成
+- **THEN** UI提供该任务的HTML报告链接
 
-#### Scenario: Inspect the Type control
-- **WHEN** a user hovers over or focuses a stimulus Type selector
-- **THEN** the tooltip lists the locality, address, and burst characteristics of every supported type
+### Requirement: 16线程激励编辑器
 
-### Requirement: Live monitor-group view
-The console SHALL display the latest software-visible values for every configured `(PARTID, PMG)` monitor group and SHALL update them at simulation control intervals.
+控制台 MUST 显示16行，固定映射`cpu0.t0`到`cpu7.t1`。
 
-#### Scenario: Observe a running simulation
-- **WHEN** a control-interval snapshot is received
-- **THEN** the monitor-group table updates L3 estimated occupancy/utilization and MC bandwidth/utilization without waiting for final export
+#### Scenario: 检查映射
 
-#### Scenario: Inspect an idle group
-- **WHEN** a configured stimulus group has no activity in the latest interval
-- **THEN** its row remains visible with zero activity values
+- **WHEN** 编辑器初始化
+- **THEN** 每个硬件线程恰好出现一次
 
-### Requirement: Resource-Oriented PARTID Monitoring
-The interactive console SHALL provide CPU, L3, and memory-controller resource views that aggregate the selected control-interval snapshot by PARTID.
+### Requirement: 每线程激励控制
 
-#### Scenario: Inspect CPU state
-- **WHEN** the operator selects the CPU resource view
-- **THEN** each visible PARTID reports requester mapping, current and interval-peak outstanding requests, configured outstanding capacity, issued/completed requests, and requester backpressure
+每行 MUST 配置enable、PARTID、PMG、type、rate、unit、size、read ratio、
+working set和可选P99 target。
 
-#### Scenario: Inspect L3 state
-- **WHEN** the operator selects the L3 resource view
-- **THEN** each visible PARTID reports sampled bandwidth, estimated occupancy/utilization, hit rate, allocation denials, and effective CMIN/CMAX/CPBM controls
+#### Scenario: 独立修改
 
-#### Scenario: Inspect memory-controller state
-- **WHEN** the operator selects the MC resource view
-- **THEN** each visible PARTID reports achieved bandwidth/utilization, requests, queue and throttle delay, effective BMIN/BMAX/mode/priority, and limit events
+- **WHEN** 修改一行
+- **THEN** 不隐式修改其他行
 
-### Requirement: Independent PARTID Visibility
-The interactive console SHALL expose independent visibility selection for all 16 PARTIDs and SHALL use that selection for resource rows and per-PARTID trend/detail views.
+### Requirement: 稳定参考拓扑
 
-#### Scenario: Select a subset
-- **WHEN** the operator enables PARTID 2 and PARTID 7 and disables all others
-- **THEN** the resource table and per-PARTID chart series show only PARTID 2 and PARTID 7
+Web参考场景 MUST 固定8核2线程，通用YAML和Python接口仍可配置拓扑。
 
-#### Scenario: Clear the selection
-- **WHEN** the operator clears all PARTID visibility toggles
-- **THEN** the console shows an explicit no-selection state without changing the simulation configuration
+#### Scenario: 加载Web默认值
 
-### Requirement: Feedback-Control Status
-The interactive console SHALL show the feedback-control state for each visible PARTID at the selected simulation time.
+- **WHEN** 控制台加载默认配置
+- **THEN** 显示8核、每核2线程和16行激励
 
-#### Scenario: Closed-loop update exists
-- **WHEN** a closed-loop control update has been applied to a visible PARTID
-- **THEN** the dashboard identifies the PARTID as adjusted and shows the latest update time, target, field, and reason
+### Requirement: 上下文帮助
 
-#### Scenario: No runtime update exists
-- **WHEN** no control update exists for a visible PARTID
-- **THEN** the dashboard distinguishes no-control, static-control, and closed-loop monitoring states
+配置类别、字段、表列、policy、结果类别和缩写 MUST 支持hover和键盘focus说明。
 
-### Requirement: Per-Control Switches
-The PARTID editor SHALL expose independent switches for CPBM, proportional
-CMIN, proportional CMAX, BMIN, BMAX, 3-bit MC QoS, and CBusy.
+#### Scenario: 检查字段说明
 
-#### Scenario: Configure proportional cache and MC QoS
-- **WHEN** the operator edits a PARTID row
-- **THEN** CMIN/CMAX use percentage units and MC QoS accepts zero through seven
+- **WHEN** 用户指向或focus支持的字段
+- **THEN** tooltip解释单位、行为或模型含义且不修改配置
 
-### Requirement: CBusy Configuration And Evidence
-The console SHALL configure CBusy timing/threshold parameters and per-level OSTD caps and SHALL display the resulting feedback evidence.
+### Requirement: 激励类型说明
 
-#### Scenario: Observe CBusy feedback
-- **WHEN** an MC raises CBusy for a selected PARTID
-- **THEN** the MC view shows detector level/inputs and the CPU view shows the matching effective OSTD and CBusy stall
+Type说明 MUST 区分stream、pointer chase、random read、mixed和burst。
 
-#### Scenario: Compare mechanisms
-- **WHEN** runs differ only in BMAX and CBusy enable switches
-- **THEN** exported and live metrics are sufficient to compare queueing, latency, throughput, source stall, and control transitions
+#### Scenario: 指向Type控件
 
-### Requirement: Deterministic Mechanism Experiment
-The console SHALL run reference, BMAX-only, CBusy-only, and combined cases from one submitted configuration using identical topology, stimulus, duration, and seed.
+- **WHEN** 用户指向或focus Type选择器
+- **THEN** 说明每种类型的地址、局部性和burst特征
 
-#### Scenario: Run comparison
-- **WHEN** the operator starts a mechanism experiment
-- **THEN** all four cases run sequentially with static policy and differ only in BMAX and CBusy enable state
+### Requirement: 监控组实时视图
 
-### Requirement: Experiment Effect Comparison
-The console SHALL compare control benefit and cost overall and for a selected PARTID.
+控制台 MUST 按控制周期更新所有配置`(PARTID, PMG)`组。
 
-#### Scenario: Inspect overall effect
-- **WHEN** the experiment completes
-- **THEN** the console reports throughput, P99, completion, queue peak/area, throttle, source stall, hard blocks, and CBusy transitions for every case
+#### Scenario: 运行中观察
 
-#### Scenario: Inspect one PARTID
-- **WHEN** the operator selects a PARTID
-- **THEN** the console reports that PARTID's throughput, P99, queue pressure, effective OSTD, CBusy stall, and throttle across all four cases
+- **WHEN** 收到周期快照
+- **THEN** 更新L3估算占用和MC带宽，无需等待最终报告
 
-### Requirement: Causal Timeline
-The console SHALL join pressure, feedback, source enforcement, and workload response by PARTID and control interval.
+### Requirement: 资源导向PARTID监控
 
-#### Scenario: Follow a feedback event
-- **WHEN** CBusy changes for the selected PARTID
-- **THEN** the same timeline shows MC pressure, CBusy level, effective OSTD, source stall, throughput, P99, and associated control events
+控制台 MUST 提供CPU、L3和MC资源视图。
 
-### Requirement: Configuration Diagnostics
-The console SHALL identify invalid and risky control combinations before a run.
+#### Scenario: CPU视图
 
-#### Scenario: Overcommitted reservation
-- **WHEN** aggregate enabled BMIN exceeds one MC capacity
-- **THEN** the console shows an explicit warning with the configured sum and capacity
+- **WHEN** 选择CPU
+- **THEN** 显示requester映射、OSTD、容量、issued/completed和backpressure
 
-#### Scenario: Aggressive double throttle
-- **WHEN** hard BMAX and a severe CBusy OSTD cap are enabled together
-- **THEN** the console warns that queue reduction may incur excess throughput loss
+#### Scenario: L3视图
 
-### Requirement: Flow-Control Algorithm Configuration
-The console SHALL configure L3 queue depth and lookup parallelism plus MC token
-window, aging, BMIN boost, soft-limit penalty, and aging cap.
+- **WHEN** 选择L3
+- **THEN** 显示采样带宽、估算占用、hit rate、allocation denial和有效控制
 
-#### Scenario: Edit an algorithm parameter
-- **WHEN** the operator changes a supported algorithm parameter
-- **THEN** the submitted validated configuration and monitor snapshots use the new value
+#### Scenario: MC视图
 
-### Requirement: Built-In Control Verification
-The console SHALL run deterministic CMIN, CMAX, BMIN, BMAX soft-limit, and
-BMAX hard-limit microbenchmarks and SHALL display explicit checks and evidence.
+- **WHEN** 选择MC
+- **THEN** 显示带宽、利用率、延迟、BMIN/BMAX/mode/QoS和limit事件
 
-#### Scenario: Run the control verification suite
-- **WHEN** the operator starts algorithm verification
-- **THEN** the cases execute sequentially and each mechanism reports pass/fail, expected behavior, and measured evidence
+### Requirement: PARTID独立显示选择
 
-### Requirement: Structured Algorithm Explanations
-The console SHALL show an anchored algorithm explanation when the pointer
-hovers over a tagged control, flow stage, or result metric.
+MUST 允许独立选择PARTID 0到15，并应用到表格和图表。
 
-#### Scenario: Inspect an algorithm
-- **WHEN** the pointer rests on CMIN, CMAX, BMIN, BMAX, MC QoS, CBusy, or OSTD
-- **THEN** the window shows formula, activation rules, monitor evidence, model version, and boundary without overlapping the target
+#### Scenario: 选择子集
 
-### Requirement: PARTID Control-Effect Overview
-The console SHALL summarize all 16 PARTIDs by configured targets, latest
-actual resource shares, full-run adherence, effective QoS, P99 target/result,
-and state.
+- **WHEN** 只选择PARTID 2和7
+- **THEN** 只显示2和7
 
-#### Scenario: Scan control health
-- **WHEN** a simulation has interval data
-- **THEN** each PARTID row distinguishes satisfied, borrowing, inactive, limited, and violation states
+### Requirement: 反馈控制状态
 
-### Requirement: Selected-PARTID Full-Run Effect
-The console SHALL show synchronized full-run target and actual trends for one
-selected PARTID.
+控制台 MUST 显示所选时间每个可见PARTID的反馈状态。
 
-#### Scenario: Inspect one PARTID
-- **WHEN** the operator selects a PARTID
-- **THEN** L3 share, MC bandwidth, base/effective QoS, P99, throughput, flow-control evidence, and control events are aligned by time
+#### Scenario: 存在闭环更新
+
+- **WHEN** 某PARTID已有运行时更新
+- **THEN** 显示更新时间、target、field和reason
+
+### Requirement: 每控制独立开关
+
+PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBusy。
+
+#### Scenario: 修改单项开关
+
+- **WHEN** 用户只关闭某一项控制
+- **THEN** 其他控制开关和值保持不变
+
+### Requirement: CBusy配置和证据
+
+控制台 MUST 配置CBusy阈值、时序和OSTD cap，并显示MC detector和CPU有效OSTD。
+
+#### Scenario: 观察CBusy
+
+- **WHEN** MC提升某PARTID CBusy
+- **THEN** MC视图显示detector，CPU视图显示有效OSTD和stall
+
+### Requirement: 确定性机制实验
+
+当前控制台 MUST 能从一个配置运行reference、BMAX-only、CBusy-only和combined案例。
+
+#### Scenario: 运行比较
+
+- **WHEN** 用户启动实验
+- **THEN** 四个案例保持topology、stimulus、duration和seed一致
+
+### Requirement: 因果时间线
+
+时间线 MUST 按PARTID连接MC压力、CBusy、OSTD、stall、throughput、P99和控制事件。
+
+#### Scenario: 跟踪CBusy变化
+
+- **WHEN** 所选PARTID的CBusy变化
+- **THEN** 同一时间线显示压力、反馈、OSTD和结果
+
+### Requirement: 配置诊断
+
+控制台 MUST 在运行前识别非法和高风险组合。
+
+#### Scenario: BMIN过量
+
+- **WHEN** 启用BMIN总和超过MC能力
+- **THEN** 显示配置总和和能力警告
+
+#### Scenario: 双重强限流
+
+- **WHEN** Hard BMAX和严重CBusy cap同时启用
+- **THEN** 警告可能产生额外吞吐损失
+
+### Requirement: 流控算法配置
+
+当前控制台 MUST 配置L3 queue/parallelism和MC token、aging、BMIN提升及soft penalty。
+
+#### Scenario: 修改算法参数
+
+- **WHEN** 用户修改受支持的算法参数
+- **THEN** submitted config和监控快照使用新值
+
+### Requirement: 内置控制验证
+
+控制台 MUST 运行确定性CMIN、CMAX、BMIN、soft BMAX和hard BMAX微测试，
+并显示检查和证据。
+
+#### Scenario: 运行验证套件
+
+- **WHEN** 用户启动算法验证
+- **THEN** 各案例顺序执行并报告检查、预期行为和证据
+
+### Requirement: 结构化算法说明
+
+指向CMIN、CMAX、BMIN、BMAX、MC QoS、CBusy和OSTD时，控制台 MUST 显示
+公式、触发规则、证据和边界。
+
+#### Scenario: 指向控制算法
+
+- **WHEN** pointer停留在已标记控制项
+- **THEN** 显示锚定说明且不遮挡目标控件
+
+### Requirement: PARTID控制效果概览
+
+当前控制台 MUST 按16个PARTID汇总目标、实际值、QoS、P99和状态。
+
+#### Scenario: 扫描控制状态
+
+- **WHEN** 仿真存在周期数据
+- **THEN** 每个PARTID显示目标、结果和状态
+
+### Requirement: 所选PARTID完整趋势
+
+选择一个PARTID时， MUST 按时间对齐L3、MC、QoS、P99、throughput和控制事件。
+
+#### Scenario: 检查一个PARTID
+
+- **WHEN** 用户选择一个PARTID
+- **THEN** 相关目标、实际值和控制事件按统一时间轴显示

@@ -1,122 +1,134 @@
-# mpam-memory-bandwidth Specification
+# mpam-memory-bandwidth 规格
 
 ## Purpose
-Define per-memory-controller, per-PARTID bandwidth reservation, limiting,
-scheduling, and monitoring behavior.
-## Requirements
-### Requirement: Sixteen PARTID memory settings
-Each memory-controller MSC SHALL expose independent bandwidth settings, token
-state, 3-bit MC QoS, and monitoring entries for exactly 16 PARTIDs numbered
-zero through 15.
 
-#### Scenario: Configure MC QoS
-- **WHEN** software configures a PARTID MC QoS value
-- **THEN** the accepted value is in `[0, 7]` and is local to MC arbitration
+定义当前已实现的每MC、每PARTID带宽设置、token限制、3-bit QoS调度、
+四档CBusy和监控行为，作为当前memory-controller MSC能力的机器可验证基线。
+
+## Requirements
+
+### Requirement: 16组PARTID memory设置
+
+每个MC MSC MUST 为PARTID 0到15提供独立带宽设置、token状态、3-bit MC QoS和监控项。
+
+#### Scenario: 配置MC QoS
+
+- **WHEN** 软件配置PARTID MC QoS
+- **THEN** 取值 MUST 在`[0, 7]`且仅用于MC仲裁
 
 ### Requirement: BMAX hard limit
-The memory-controller model SHALL implement hard BMAX as a per-PARTID token bucket that blocks dispatch until sufficient tokens exist.
 
-#### Scenario: Exceed a hard limit
-- **WHEN** a queued request lacks BMAX tokens in `hardlimit` mode
-- **THEN** dispatch waits, throttle delay increases, and a hard-limit block event is monitored
+当前MC模型 MUST 用每PARTID token bucket实现hard BMAX，token不足时阻止dispatch。
+
+#### Scenario: 超过hard limit
+
+- **WHEN** `hardlimit`请求缺少BMAX token
+- **THEN** dispatch等待、throttle delay增加并记录hard-block事件
 
 ### Requirement: BMAX soft limit
-The memory-controller model SHALL keep soft-limit traffic eligible and SHALL
-demote its effective MC QoS only while it is over BMAX and contending.
 
-#### Scenario: Uncontended soft-limit traffic
-- **WHEN** a PARTID exceeds BMAX without another eligible contender
-- **THEN** its effective MC QoS is not demoted and service remains work-conserving
+soft-limit请求 MUST 保持eligible，仅在超过BMAX且存在竞争时降低有效MC QoS。
 
-#### Scenario: Contended soft-limit traffic
-- **WHEN** a PARTID exceeds BMAX while another request is eligible
-- **THEN** its effective MC QoS is reduced by the configured bounded demotion
+#### Scenario: 无竞争soft limit
 
-### Requirement: BMIN reservation approximation
-The memory-controller scheduler SHALL promote effective MC QoS for a candidate
-whose request is covered by BMIN credit.
+- **WHEN** PARTID超过BMAX但没有其他eligible contender
+- **THEN** 不降低QoS，服务保持work-conserving
 
-#### Scenario: Compete below BMIN
-- **WHEN** a request is covered by BMIN credit
-- **THEN** its effective QoS is promoted by the configured bounded number of levels
+#### Scenario: 有竞争soft limit
 
-### Requirement: Bandwidth monitoring
-The memory-controller monitor SHALL report achieved bandwidth, configured
-BMIN and BMAX, limit mode, base/effective MC QoS, queue delay, service delay,
-throttle delay, soft-limit requests, and hard-limit block events per PARTID.
+- **WHEN** PARTID超过BMAX且存在其他eligible请求
+- **THEN** 有效QoS按配置值降低并钳位
 
-#### Scenario: Display aggregate results
-- **WHEN** the interactive console combines multiple memory-controller snapshots
-- **THEN** aggregate bandwidth and configured limits are labeled as sums across controller instances
+### Requirement: BMIN近似
 
-### Requirement: PMG-scoped memory bandwidth monitoring
-The memory-controller monitor SHALL attribute serviced requests and bytes to `(PARTID, PMG)` monitor groups while retaining PARTID-only bandwidth enforcement.
+当前MC scheduler MUST 对被BMIN credit覆盖的candidate提升有效QoS。
 
-#### Scenario: Service a monitor-group request
-- **WHEN** the memory controller dispatches a request with PARTID P and PMG G
-- **THEN** the corresponding group counters record requests, bytes, queue delay, service delay, and applicable limit events
+#### Scenario: 低于BMIN竞争
 
-#### Scenario: Report group bandwidth utilization
-- **WHEN** a memory-controller interval snapshot is captured
-- **THEN** each active monitor group reports achieved bandwidth and utilization relative to that controller's total modeled bandwidth
+- **WHEN** 请求被BMIN credit覆盖
+- **THEN** 有效QoS按配置级数提升并钳位
 
-### Requirement: Independent Memory-Control Enables
-The memory-controller MSC SHALL independently enable or disable BMIN, BMAX,
-MC QoS, and CBusy per PARTID.
+### Requirement: 带宽监控
 
-#### Scenario: Disable BMAX
-- **WHEN** BMAX is disabled for a PARTID
-- **THEN** neither hard token blocking nor soft over-limit demotion is applied while BMIN and MC QoS may remain active
+MC MUST 按PARTID报告带宽、BMIN/BMAX、mode、base/effective QoS、queue/service/
+throttle delay、soft-limit请求和hard-block事件。
 
-#### Scenario: Disable MC QoS
-- **WHEN** MC QoS is disabled for a PARTID
-- **THEN** its configured QoS is retained but its base arbitration QoS is zero
+#### Scenario: 多MC聚合
 
-### Requirement: Four-Level PARTID CBusy
-Each memory controller SHALL generate a configurable four-level CBusy signal independently for every CBusy-enabled PARTID.
+- **WHEN** UI聚合多个MC快照
+- **THEN** 带宽和配置limit MUST 标明为跨实例求和
 
-#### Scenario: Assert pressure
-- **WHEN** queue pressure, hard-block activity, or contended bandwidth overage crosses an enabled threshold
-- **THEN** the MC raises the PARTID to the highest matching CBusy level
+### Requirement: PMG分组带宽监控
 
-#### Scenario: Release pressure
-- **WHEN** detector inputs fall below the release condition
-- **THEN** CBusy decreases by one level only after the configured release-hold samples
+MC MUST 按`(PARTID, PMG)`归因已服务请求和字节，控制仍按PARTID。
 
-#### Scenario: CBusy disabled
-- **WHEN** CBusy is disabled for a PARTID
-- **THEN** the MC reports and transmits level zero regardless of detector inputs
+#### Scenario: 服务监控组请求
 
-### Requirement: Configurable MC Scheduling Constants
-The memory-controller model SHALL expose token bucket window, aging quantum,
-aging step cap, BMIN QoS promotion, and soft-limit QoS demotion as
-validated configuration fields.
+- **WHEN** MC dispatch PARTID P、PMG G的请求
+- **THEN** 对应组记录请求、字节、延迟和limit事件
 
-#### Scenario: Change BMIN preference strength
-- **WHEN** the configured BMIN QoS promotion is increased
-- **THEN** under-BMIN candidates receive the new bounded promotion without source changes
+### Requirement: 独立MC控制开关
 
-#### Scenario: Change soft-limit penalty strength
-- **WHEN** the configured soft-limit QoS demotion is increased
-- **THEN** over-BMAX candidates lose the new bounded number of levels only while contended
+每个PARTID MUST 独立开关BMIN、BMAX、MC QoS和CBusy。
 
-### Requirement: Control Algorithm Evidence
-The memory-controller monitor SHALL report the algorithm parameters and
-per-PARTID BMIN-credit, soft-limit, hard-block, and throttle evidence needed
-to validate scheduling behavior.
+#### Scenario: 关闭BMAX
 
-#### Scenario: Inspect a controlled interval
-- **WHEN** BMIN or BMAX affects request selection
-- **THEN** monitor output identifies the configured QoS constants, base and effective QoS, and affected request counters
+- **WHEN** BMAX关闭
+- **THEN** 不执行hard token阻塞或soft demotion，其他控制可保持
 
-### Requirement: 3-bit QoS Arbitration
-The MC scheduler SHALL choose the highest effective QoS candidate and SHALL
-choose the oldest request when effective QoS values are equal.
+#### Scenario: 关闭MC QoS
 
-#### Scenario: Clamp QoS adjustments
-- **WHEN** aging, BMIN promotion, or soft demotion changes QoS
-- **THEN** effective QoS remains within zero through seven
+- **WHEN** MC QoS关闭
+- **THEN** 保留配置值，但base arbitration QoS为0
 
-#### Scenario: Hard limit blocks a high-QoS request
-- **WHEN** a QoS-seven hard-limited request lacks tokens
-- **THEN** it is excluded from arbitration until tokens are available
+### Requirement: 四档PARTID CBusy
+
+每个MC MUST 为每个启用CBusy的PARTID独立生成Level 0到3。
+
+#### Scenario: 断言压力
+
+- **WHEN** queue、hard-block或竞争带宽超过阈值
+- **THEN** 提升到最高匹配等级
+
+#### Scenario: 释放压力
+
+- **WHEN** detector输入降低
+- **THEN** 满足hold后每次下降一级
+
+#### Scenario: CBusy关闭
+
+- **WHEN** PARTID关闭CBusy
+- **THEN** 始终报告和发送Level 0
+
+### Requirement: 可配置MC调度常量
+
+当前模型 MUST 配置token window、aging quantum、aging cap、BMIN promotion和
+soft-limit demotion。
+
+#### Scenario: 修改BMIN提升
+
+- **WHEN** 增大BMIN promotion
+- **THEN** under-BMIN candidate使用新提升值
+
+### Requirement: 控制算法证据
+
+监控 MUST 提供BMIN credit、soft-limit、hard-block、throttle和QoS证据。
+
+#### Scenario: 检查受控周期
+
+- **WHEN** BMIN或BMAX影响选择
+- **THEN** 输出 MUST 标识配置常量、base/effective QoS和受影响请求
+
+### Requirement: 3-bit QoS仲裁
+
+当前MC scheduler MUST 选择最高有效QoS，相同QoS选择最老请求。
+
+#### Scenario: QoS钳位
+
+- **WHEN** aging、BMIN或soft demotion改变QoS
+- **THEN** 有效QoS保持在0到7
+
+#### Scenario: Hard limit阻塞高QoS
+
+- **WHEN** QoS 7请求缺少hard BMAX token
+- **THEN** token恢复前排除该请求

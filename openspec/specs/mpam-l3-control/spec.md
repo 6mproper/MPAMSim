@@ -1,111 +1,136 @@
-# mpam-l3-control Specification
+# mpam-l3-control 规格
 
 ## Purpose
-Define 16-PARTID L3/SLC allocation controls and the bounded-cost approximate
-set/way monitor used for system architecture exploration.
+
+定义当前已实现的16-PARTID L3/SLC分配控制、独立控制开关、有界请求队列、
+比例校验和低成本近似set/way监控，作为当前cache MSC能力的机器可验证基线。
+
 ## Requirements
-### Requirement: Sixteen PARTID cache settings
-Each configured L3/SLC MSC SHALL expose independent settings and monitoring entries for exactly 16 PARTIDs numbered 0 through 15.
 
-#### Scenario: Inspect an idle PARTID
-- **WHEN** a configured PARTID generates no requests during an interval
-- **THEN** its L3 monitor row remains present with zero activity counters
+### Requirement: 16组PARTID cache设置
 
-### Requirement: L3 allocation controls
-The L3 model SHALL apply CPBM as the eligible-way mask, CMAX as the maximum
-percentage of physical L3 capacity owned by a PARTID, and CMIN as the minimum
-percentage protected from replacement after demand has populated lines.
+每个L3/SLC MSC MUST 为PARTID 0到15提供独立设置和监控项。
 
-#### Scenario: Restrict proportional allocation
-- **WHEN** a PARTID reaches its effective CMAX percentage
-- **THEN** its aggregate ownership across sampled sets cannot grow further
+#### Scenario: 检查空闲PARTID
 
-#### Scenario: Protect proportional minimum
-- **WHEN** a victim PARTID is at or below its effective CMIN sampled-line target
-- **THEN** another PARTID cannot evict that victim
+- **WHEN** 某PARTID在周期内没有请求
+- **THEN** 其监控行仍然存在且活动计数为零
 
-### Requirement: One-in-eight-set approximate monitor
-The L3 model SHALL sample the first set in every group of eight sets and SHALL scale sampled access and occupancy observations by eight.
+### Requirement: L3分配控制
 
-#### Scenario: Access a sampled set
-- **WHEN** a request maps to a set whose index modulo eight is zero
-- **THEN** the model updates sampled per-way PARTID ownership and sampled traffic counters
+当前L3模型 MUST 使用CPBM作为eligible-way mask，使用CMAX作为PARTID可占物理L3的
+最大比例，使用CMIN保护已由需求填充的最小比例。
 
-#### Scenario: Access a non-sampled set
-- **WHEN** a request maps to any other set in the eight-set group
-- **THEN** the model does not allocate sampled tag or way state for that access
+#### Scenario: 限制比例增长
 
-### Requirement: Control-disabled monitoring
-The no-control policy SHALL preserve all 16 monitor entries while reporting unrestricted effective cache settings.
+- **WHEN** PARTID达到有效CMAX
+- **THEN** 其采样set聚合owner数量不能继续增长
 
-#### Scenario: Run without MPAM enforcement
-- **WHEN** the selected policy is `no_control`
-- **THEN** CPBM, CMIN, and CMAX do not restrict allocation, but all PARTID monitor rows remain available
+#### Scenario: 保护比例下限
 
-### Requirement: PMG-scoped sampled cache monitoring
-The L3 monitor SHALL attribute sampled traffic and sampled way ownership to `(PARTID, PMG)` monitor groups while retaining PARTID-only cache controls.
+- **WHEN** victim PARTID处于或低于有效CMIN采样目标
+- **THEN** 其他PARTID不能驱逐该victim
 
-#### Scenario: Allocate a sampled cache line
-- **WHEN** a miss from a request with PARTID P and PMG G allocates a sampled way
-- **THEN** the sampled way records P and G for occupancy attribution
+### Requirement: 每8个set采样1个
 
-#### Scenario: Report group occupancy
-- **WHEN** a cache interval snapshot is captured
-- **THEN** each active monitor group reports sampled requests, estimated access bandwidth, estimated occupancy bytes, allowed PARTID capacity, and estimated occupancy utilization
+L3 MUST 采样每8个set中的第一个set，并把采样访问和占用按8倍估算。
 
-### Requirement: Independent L3 Control Enables
-The L3 MSC SHALL independently enable or disable CPBM, CMIN, and CMAX per PARTID while retaining configured values for monitoring and later re-enable.
+#### Scenario: 访问采样set
 
-#### Scenario: Disable CPBM only
-- **WHEN** CPBM is disabled and CMAX remains enabled for a PARTID
-- **THEN** every physical way is eligible while the configured CMAX still limits allocation
+- **WHEN** `set_index modulo 8 == 0`
+- **THEN** 更新采样way owner和流量计数
 
-#### Scenario: Disable CMIN only
-- **WHEN** CMIN is disabled for a PARTID
-- **THEN** replacement applies no minimum-way protection for that PARTID while CPBM and CMAX retain their enabled behavior
+#### Scenario: 访问非采样set
 
-#### Scenario: Disable CMAX only
-- **WHEN** CMAX is disabled for a PARTID
-- **THEN** the effective maximum equals the number of ways allowed by the effective CPBM
+- **WHEN** 访问组内其他set
+- **THEN** 当前实现不为该访问更新采样tag/way状态
 
-### Requirement: Bounded L3 Request Queue
-Each L3/SLC MSC SHALL admit requests through a configurable bounded FIFO queue
-and SHALL execute no more than the configured lookup parallelism concurrently.
+### Requirement: 控制关闭时仍监控
 
-#### Scenario: L3 queue has capacity
-- **WHEN** a request arrives and a queue entry is available
-- **THEN** it is admitted, waits for a lookup slot, and records its queue delay
+`no_control` MUST 保留16组监控，同时报告不受限的有效cache设置。
 
-#### Scenario: L3 queue is full
-- **WHEN** a request arrives while the bounded queue is full
-- **THEN** it retries later and accumulates L3 admission backpressure
+#### Scenario: 不启用MPAM强制
 
-### Requirement: L3 Queue Monitoring
-The L3 monitor SHALL report configured queue depth, lookup parallelism,
-average and peak queue occupancy, active lookups, queue delay, admission
-backpressure, and queue-full events.
+- **WHEN** policy为`no_control`
+- **THEN** CPBM、CMIN和CMAX不限制分配，但监控行保留
 
-#### Scenario: Observe L3 pressure
-- **WHEN** offered lookup concurrency exceeds available lookup slots
-- **THEN** queue occupancy and queue delay become non-zero
+### Requirement: PMG分组cache监控
 
-### Requirement: CMIN-Aware Growth Below CMAX
-A PARTID below CMAX SHALL be allowed to replace an eligible global LRU victim
-whose owner remains above CMIN.
+L3 MUST 按`(PARTID, PMG)`归因采样流量和采样way owner，控制仍按PARTID。
 
-#### Scenario: Aggressor competes with protected owner
-- **WHEN** an aggressor is below CMAX and the victim owner is at CMIN
-- **THEN** that victim is skipped and another eligible owner above CMIN is selected
+#### Scenario: 采样line分配
 
-### Requirement: Proportional Control Validation
-The configuration SHALL require each enabled CMIN/CMAX pair to satisfy
-`0 <= CMIN <= CMAX <= 100`, SHALL reject enabled CMIN totals above 100%, and
-SHALL reject CMIN above the effective CPBM reachable percentage.
+- **WHEN** PARTID P、PMG G的miss分配采样way
+- **THEN** 该way记录P和G用于占用归因
 
-#### Scenario: Overcommit CMIN
-- **WHEN** enabled CMIN percentages on one L3 sum above 100%
-- **THEN** configuration validation fails with the configured sum
+#### Scenario: 报告分组占用
 
-#### Scenario: CMAX totals exceed 100%
-- **WHEN** multiple CMAX percentages sum above 100%
-- **THEN** configuration remains valid because CMAX is a per-PARTID ceiling
+- **WHEN** 捕获cache周期快照
+- **THEN** 每个活动监控组报告采样请求、估算带宽、占用和利用率
+
+### Requirement: 独立L3控制开关
+
+每个PARTID MUST 独立开关CPBM、CMIN和CMAX，同时保留配置值。
+
+#### Scenario: 仅关闭CPBM
+
+- **WHEN** CPBM关闭而CMAX开启
+- **THEN** 所有物理way可用，CMAX仍限制分配
+
+#### Scenario: 仅关闭CMIN
+
+- **WHEN** CMIN关闭
+- **THEN** 不执行最小保护，其他控制保持
+
+#### Scenario: 仅关闭CMAX
+
+- **WHEN** CMAX关闭
+- **THEN** 有效最大值由有效CPBM可达way决定
+
+### Requirement: 有界L3请求队列
+
+每个L3/SLC MSC MUST 通过可配置FIFO接收请求，并限制并发lookup数量。
+
+#### Scenario: 队列有空间
+
+- **WHEN** 请求到达且有entry
+- **THEN** 请求入队、等待lookup并记录queue delay
+
+#### Scenario: 队列已满
+
+- **WHEN** 请求到达且队列满
+- **THEN** 请求稍后重试并累计L3 admission backpressure
+
+### Requirement: L3队列监控
+
+L3 MUST 报告queue depth、lookup parallelism、平均/峰值占用、active lookup、
+queue delay和queue-full事件。
+
+#### Scenario: 观察L3压力
+
+- **WHEN** offered lookup并发超过可用lookup slot
+- **THEN** queue occupancy和queue delay变为非零
+
+### Requirement: CMIN感知的CMAX以下增长
+
+低于CMAX的PARTID可以替换eligible的LRU victim，但victim owner MUST 保持在CMIN以上。
+
+#### Scenario: Aggressor竞争受保护owner
+
+- **WHEN** aggressor低于CMAX且victim owner处于CMIN
+- **THEN** 跳过该victim并寻找其他合法victim
+
+### Requirement: 比例控制校验
+
+配置 MUST 满足`0 <= CMIN <= CMAX <= 100`，启用CMIN总和不能超过100%，
+CMIN不能超过CPBM可达比例。
+
+#### Scenario: CMIN过量
+
+- **WHEN** 同一L3启用CMIN总和超过100%
+- **THEN** 配置校验失败
+
+#### Scenario: CMAX总和超过100%
+
+- **WHEN** 多个CMAX总和超过100%
+- **THEN** 配置仍有效，因为CMAX是独立上限

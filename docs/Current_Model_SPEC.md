@@ -1,2992 +1,623 @@
-# SoC Flow Control / MPAM Simulator
-# Current Architecture and Implementation Specification
+# SoC系统流控与MPAM仿真器总体规格
 
-> 文档语言规则：本规格及后续 OpenSpec 提案、设计、差异规格和任务说明均以中文为正文语言。需求 ID、代码符号、配置字段、寄存器名、协议名、公式和必要的标准术语保留英文。当前英文历史内容将在章节讨论收敛后统一转换为中文。
+## 0. 文档控制
 
-## 0. Document Control
-
-| Item | Value |
+| 项目 | 内容 |
 | --- | --- |
-| Document status | Current implementation baseline |
-| Baseline commit | `85721e3` |
-| Baseline date | 2026-06-21 |
-| Primary implementation | Python deterministic discrete-event simulation |
-| Interactive UI | Local HTML/CSS/JavaScript console served by Python |
-| Main scope | SoC flow control, L3/SLC contention, MC bandwidth/QoS, MPAM-style PARTID/PMG monitoring |
-| Explicitly excluded | Cache coherency, CPU pipeline timing, detailed DRAM timing, full Arm MPAM register model |
+| 文档状态 | 已确认的目标架构与实现基线 |
+| 文档日期 | 2026-06-21 |
+| 当前代码基线 | `85721e3`，后续提交仅更新规格文档 |
+| 仿真方法 | 确定性离散事件仿真 |
+| 参考拓扑 | 8核、每核2线程、16个硬件线程、16个PARTID |
+| 研究重点 | 系统流控、MPAM监控与控制、控制动态和PPA折中 |
+| 暂不覆盖 | 完整一致性、完整CHI协议、CPU流水线、精确DRAM时序 |
 
-This document describes what the current code actually does. It is intended
-to be edited as the authoritative input for the next implementation change.
+本文是后续代码修改的权威规格。当前代码尚未全部实现本文目标行为，
+第17章明确列出当前实现与目标规格的差异。
 
-Normative words:
+### 0.1 文档语言
 
-- **SHALL**: required behavior of the current baseline or requested future revision.
-- **SHOULD**: recommended behavior that is not yet mandatory.
-- **MAY**: optional behavior or extension point.
+本文及后续OpenSpec提案、设计、差异规格和任务说明均使用中文正文。
+需求ID、代码符号、配置字段、寄存器名、协议名和公式保留英文。
 
-Implementation labels:
+### 0.2 规范用语
 
-- **IMPLEMENTED**: directly implemented and covered by code.
-- **APPROXIMATE**: implemented as a system-level behavioral approximation.
-- **RESERVED**: configuration or interface exists, but behavior is not implemented.
-- **OUT OF SCOPE**: intentionally excluded from the current model.
-- **KNOWN GAP**: current implementation differs from the desired or documented behavior.
+- **必须**：实现和验证必须满足。
+- **应当**：推荐实现，偏离时必须说明原因。
+- **可以**：可选能力。
+- **当前实现**：代码已经具备。
+- **目标实现**：已确认但尚待实现。
+- **近似模型**：有意降低硬件细节的系统级模型。
+- **预留接口**：接口存在或已定义，但行为尚未实现。
+- **范围外**：当前阶段不实现。
 
-This specification supersedes older project text where that text still refers
-to L3 CMIN/CMAX as way counts or to one shared priority value for both NoC and
-memory-controller arbitration.
+### 0.3 基本原则
 
----
-
-## 1. System Objective
-
-### SYS-OBJ-001: Primary objective
-
-The simulator SHALL evaluate causal SoC flow-control behavior:
-
-1. how request injection creates contention;
-2. where queues and backpressure accumulate;
-3. how L3 allocation controls affect occupancy and hit probability;
-4. how MC bandwidth and QoS controls affect service order;
-5. how downstream congestion feeds back to requester OSTD;
-6. how controls affect throughput, tail latency, fairness, and queue pressure.
-
-### SYS-OBJ-002: Fidelity level
-
-The model is a system-architecture exploration model. It is:
-
-- not RTL;
-- not cycle accurate;
-- not a CPU microarchitecture model;
-- not a coherent cache model;
-- not a JEDEC DRAM command/timing model;
-- not a full Arm MPAM architectural register emulator;
-- not a Linux `resctrl`, ACPI, firmware, or hypervisor model.
-
-### SYS-OBJ-003: Evidence boundary
-
-Results SHALL be interpreted as model evidence for mechanism directionality
-and control-loop behavior. Numerical correlation to silicon requires external
-calibration of:
-
-- queue depths;
-- service parallelism;
-- latency constants;
-- traffic distributions;
-- cache hit model;
-- bandwidth windows;
-- CBusy thresholds;
-- software control periods.
+1. 验证控制是否按规则生效，不假设控制目标必然达到。
+2. 控制器只能读取规格允许的硬件信号或MPAM监控值。
+3. 仿真可以保留更丰富的观测状态，但不得让其暗中参与硬件决策。
+4. 每个控制逻辑必须说明底层状态、更新周期、动作点、饱和和恢复。
+5. 控制效果必须能沿时间轴被用户观察和解释。
+6. 新特性通过模块接口和策略扩展，不在主仿真流程堆积特例。
 
 ---
 
-## 2. Overall Architecture
+## 1. 模型目标与边界
+
+### SYS-OBJ-001：核心目标
+
+模型用于研究以下因果链：
+
+```text
+激励和内存级并行度
+-> CPU/RN请求准入
+-> NoC传输和反压
+-> L3命中、miss和资源分配
+-> MC排队、QoS和带宽控制
+-> CBusy反馈
+-> CPU OSTD变化
+-> 吞吐、延迟、占用和公平性结果
+```
+
+模型必须能够回答：
+
+- 控制触发条件是否被正确识别；
+- 控制状态机是否按规则变化；
+- 控制动作是否作用到正确资源和PARTID；
+- 目标达到、未达到或饱和的原因；
+- 采样、滤波、反馈延迟和PPA折中造成的动态效果。
+
+### SYS-OBJ-002：可信度分层
+
+模型目标分为：
+
+1. **机制正确性**：状态、动作和约束符合规格。
+2. **系统趋势可信**：能够解释排队、反压、过冲、振荡和资源竞争方向。
+3. **绝对性能预测**：需要RTL、FPGA或硅片数据校准，当前不作承诺。
+
+### SYS-OBJ-003：明确范围
+
+当前纳入：
+
+- PARTID/PMG标签；
+- 16组L3和MC设置；
+- CPU共享OSTD和源端准入；
+- REQ/RSP/DAT三条bufferless ring；
+- 真实L3 set/tag/way、MSHR和fill；
+- CPBM、CMIN、CMAX；
+- MC共享buffer、3-bit QoS、BMIN和BMAX；
+- 四档CBusy及RN OSTD反馈；
+- MPAM原始监控、滤波监控和实际值对照；
+- 用户可配置控制开关、场景和可视化。
+
+当前范围外：
+
+- L1/L2私有缓存和完整一致性状态；
+- SNP事务处理；
+- 完整CHI合法性、排序、DVM和重试；
+- CPU ROB、分支预测和指令提交；
+- 精确TLB、页表遍历和内存屏障；
+- DRAM bank、row、refresh、turnaround和FR-FCFS；
+- 完整Arm MPAM寄存器和异常模型；
+- 完整ACPI、固件和虚拟化实现。
+
+---
+
+## 2. 总体架构
 
 ```mermaid
 flowchart LR
-    CFG["YAML or Web Parameters"] --> VAL["Typed Config + Validation"]
-    VAL --> K["Deterministic Event Kernel"]
-    K --> TG["Workload Generators"]
-    TG --> PE["Requester / OSTD Gate"]
-    PE --> NOC["NoC FIFO / Serialization"]
-    NOC --> L3["L3 Queue + Approximate Cache MSC"]
-    L3 -->|hit| DONE["Completion"]
-    L3 -->|miss| MC["MC Queue + BMIN/BMAX + 3-bit QoS"]
-    MC --> DONE
-    MC --> CB["Per-PARTID CBusy L0-L3"]
-    CB --> PE
-    DONE --> MON["Metrics Collector"]
-    MON --> SW["Slow P99 Closed Loop"]
-    SW --> MC
-    MON --> OUT["JSON / CSV / HTML / Live UI"]
+    CFG["配置与场景"] --> VAL["统一Schema与三级诊断"]
+    VAL --> K["确定性离散事件内核"]
+    K --> SRC["16线程激励"]
+    SRC --> CPU["8核共享OSTD / RN"]
+    CPU --> REQ["双向REQ Ring"]
+    REQ --> L3["L3 HN: Set/Tag/Way + MSHR"]
+    L3 -->|Miss REQ| MC["MC SN: Buffer + QoS + BMIN/BMAX"]
+    MC --> DAT["双向DAT Ring"]
+    DAT --> L3
+    L3 --> DATCPU["DAT返回CPU"]
+    MC --> RSP["双向RSP Ring"]
+    RSP --> CPU
+    MC --> CB["每PARTID CBusy"]
+    CB --> RSP
+    CB --> DAT
+    CPU --> MON["监控与验证"]
+    L3 --> MON
+    MC --> MON
+    REQ --> MON
+    MON --> UI["配置驱动监控工作区"]
 ```
 
-### SYS-ARCH-001: Component ownership
+### SYS-ARCH-001：三平面
 
-| Component | Responsibility | Implementation |
+| 平面 | 内容 | 控制器可见性 |
 | --- | --- | --- |
-| Config loader | YAML to typed dataclasses | `src/config/loader.py` |
-| Config validator | Topology and control constraints | `src/config/validator.py` |
-| Event kernel | Time-ordered deterministic callbacks | `src/sim/kernel.py` |
-| Workload generator | Address, operation, and injection timing | `src/traffic/generator.py` |
-| Requester runtime | Global/per-PARTID OSTD and source backpressure | `src/traffic/requester.py` |
-| NoC fabric | One abstract bottleneck queue and link | `src/noc/fabric.py` |
-| Cache MSC | L3 queue, hit probability, sampled ownership | `src/cache/cache_msc.py` |
-| MC MSC | Queue, token state, QoS scheduler, CBusy | `src/ddr/memctrl.py` |
-| Settings table | Per-MSC, per-PARTID control state | `src/mpam/settings.py` |
-| Slow policy | P99-driven MC QoS/BMAX update | `src/scheduler/closed_loop.py` |
-| Metrics collector | Interval/cumulative metrics and traces | `src/monitor/collector.py` |
-| Web server | Background jobs, experiments, verification | `src/web/server.py` |
-| Web client | Configuration and live visualization | `src/web/static/` |
+| 数据面 | 完整请求、set/way、buffer、Ring槽位和服务状态 | 仅明确授权的信号 |
+| 监控面 | MPAM采样值、滤波值、事件和计数器 | 是 |
+| 控制面 | CPBM、CMIN/CMAX、BMIN/BMAX、QoS、CBusy、OSTD动作 | 读取规定输入 |
 
-### SYS-ARCH-002: Request path
+控制器不得读取完整数据面真实值，除非该控制明确具有直接硬件信号。
+UI可以显示真实值，用于验证监控误差，但必须与MPAM可见值分开标注。
 
-A request follows exactly one path:
+### SYS-ARCH-002：节点
+
+| 节点 | 作用 |
+| --- | --- |
+| RN | CPU请求节点，每个物理核一个 |
+| HN | L3/Home节点 |
+| SN | MC/内存服务节点 |
+
+### SYS-ARCH-003：最小读流程
+
+L3 hit：
 
 ```text
-workload generator
-  -> requester OSTD admission
-  -> NoC
-  -> requester-selected L3
-  -> completion on modeled L3 hit
-  -> address-selected MC on modeled L3 miss
-  -> completion
+线程请求
+-> RN分配OSTD
+-> REQ Ring
+-> L3 lookup
+-> DAT Ring
+-> CPU完成
+-> 释放OSTD
 ```
 
-The model has no retry from MC to L3, no coherence traffic, no snoop path, and
-no writeback/eviction request path.
+L3 miss：
+
+```text
+线程请求
+-> RN分配OSTD
+-> REQ Ring
+-> L3 lookup和MSHR
+-> REQ Ring到MC
+-> MC服务
+-> DAT Ring返回L3
+-> L3 fill
+-> DAT Ring返回CPU
+-> 释放OSTD、MSHR和fill资源
+```
 
 ---
 
-## 3. Simulation Kernel
+## 3. 仿真内核与时间
 
-### SIM-KERNEL-001: Event ordering
+### SIM-001：事件顺序
 
-Events are ordered by:
+事件按以下键排序：
 
 ```text
 (event_time_ns, monotonically_increasing_sequence)
 ```
 
-Events scheduled at the same time execute in creation order.
+相同时间的事件按创建顺序执行。
 
-### SIM-KERNEL-002: Determinism
+### SIM-002：确定性
 
-For identical:
+以下输入相同时，结果必须一致：
 
-- validated configuration;
-- seed;
-- Python/runtime behavior;
-- event insertion order;
+- resolved config；
+- seed；
+- 组件实现版本；
+- 事件插入顺序。
 
-the simulation SHALL produce identical metrics.
+### SIM-003：时钟域
 
-Each stochastic component uses an independent deterministic seed offset:
-
-- each cache: `simulation.seed + 100 + cache_index`;
-- each workload/requester generator: `simulation.seed + 1000 + generator_index`.
-
-### SIM-KERNEL-003: Time unit
-
-The internal time unit is floating-point nanoseconds.
-
-### SIM-KERNEL-004: Run termination
-
-The kernel executes all events with:
-
-```text
-event.time_ns <= simulation_end_ns
-```
-
-Pending requests may remain incomplete at simulation end. Therefore:
-
-```text
-completion_ratio = completed_requests / issued_requests
-```
-
-may be below one.
-
-### SIM-KERNEL-005: Control sampling
-
-Monitor capture and slow control are scheduled every:
-
-```text
-simulation.control_interval_ns
-```
-
-The final interval is captured at simulation end if the end time is not an
-exact control-period boundary.
-
----
-
-## 4. Configuration Model
-
-### CFG-001: Generic YAML interface
-
-The generic YAML/Python model supports configurable:
-
-- clusters and cores;
-- threads per core;
-- requester attachment nodes;
-- explicit non-CPU requesters;
-- L3 instances and sharing;
-- NoC size and abstract link parameters;
-- MC instances and aggregate channel bandwidth;
-- PARTID/PMG definitions;
-- per-MSC controls;
-- workloads and policies.
-
-### CFG-002: Interactive reference boundary
-
-The current web console intentionally fixes:
-
-```text
-8 cores
-2 hardware threads per core
-16 requester rows
-16 PARTID rows
-PARTID 0..15
-PMG 0..15 in the web editor
-```
-
-The generic YAML model is not restricted to the same core count, but the web
-builder currently validates `active_cores == 8` and `threads_per_core == 2`.
-
-### CFG-003: Main typed configuration
-
-| Area | Key fields |
-| --- | --- |
-| Simulation | `time_ns`, `seed`, `control_interval_ns` |
-| Cluster | `id`, `cores`, `l3` |
-| L3 | `size_bytes`, `sets`, `ways`, `line_size`, `hit_latency_ns`, `queue_depth`, `lookup_parallelism` |
-| NoC | `routers`, `link_bandwidth_gbps`, `router_latency_ns`, `queue_depth`, `virtual_channels`, `average_hops` |
-| MC | channels, bandwidth/channel, base latency, queue, token/QoS/CBusy parameters |
-| Requester | `id`, type, core/thread mapping, attach node, `max_outstanding` |
-| MPAM setting | CPBM, CMIN, CMAX, BMIN, BMAX, MC QoS, CBusy, independent enables |
-| Workload | requester set, PARTID/PMG, type, rate, address/locality, phase |
-| Policy | `no_control`, `static_mpam`, or `closed_loop_qos` |
-
-### CFG-004: Validation constraints
-
-The validator currently enforces:
-
-- positive simulation and control periods;
-- at least one cache and one MC;
-- unique component, requester, core, and workload IDs;
-- positive L3 sets, ways, queue depth, and lookup parallelism;
-- `monitor_group_sets == 8`;
-- positive MC token and aging periods;
-- QoS adjustment fields in `0..7`;
-- ordered CBusy bandwidth and queue thresholds;
-- valid requester-to-router references;
-- exactly one workload injection rate;
-- valid workload PARTID and requester references;
-- BMIN not greater than BMAX;
-- `softlimit` or `hardlimit`;
-- MC QoS in `0..7`;
-- `1 <= cbusy_l3_ostd <= cbusy_l2_ostd <= cbusy_l1_ostd`;
-- CPBM within configured way width when a CPBM value is supplied;
-- `0 <= CMIN <= CMAX <= 100` when a CPBM value is supplied;
-- CMIN no greater than CPBM-reachable percentage when a CPBM value is supplied;
-- enabled CMIN total no greater than 100% per L3 settings table.
-
-### CFG-005: Compatibility aliases
-
-The loader accepts some legacy names:
-
-| Legacy | Current |
-| --- | --- |
-| `priority` | `mc_qos`, clamped to `0..7` |
-| `priority_enable` | `mc_qos_enable` |
-| `aging_priority_cap` | `qos_aging_max_steps`, clamped |
-| `bmin_priority_boost` | `bmin_qos_promote`, clamped |
-| `softlimit_priority_penalty` | `softlimit_qos_demote`, clamped |
-| `cmin` | `cmin_percent` |
-| `cmax` | `cmax_percent` |
-| `bmin` | `bw_min_gbps` |
-| `bmax` | `bw_max_gbps` |
-
-### CFG-006: Web safety limits
-
-The web builder rejects:
-
-- more than 1000 control intervals;
-- estimated total offered requests above 2,000,000;
-- invalid 16-row PARTID/stimulus matrices;
-- rates or sizes outside UI ranges;
-- invalid CBusy threshold ordering.
-
-### CFG-KNOWN-001: Policy limit-name mismatch
-
-**KNOWN GAP**
-
-The web builder currently writes:
+至少支持：
 
 ```yaml
-priority_min: 0
-priority_max: 15
+cpu_clock_mhz:
+noc_clock_mhz:
+l3_clock_mhz:
+mc_clock_mhz:
 ```
 
-while `ClosedLoopQoSPolicy` reads:
+组件的周期数必须转换为统一纳秒时间，同时在监控记录中保留本地周期。
 
-```yaml
-qos_min
-qos_max
-```
+### SIM-004：运行终止
 
-Therefore the current web-generated policy uses the code defaults:
+仿真执行所有时间不超过结束时间的事件。结束时允许存在未完成事务，
+但必须报告：
 
-```text
-qos_min = 0
-qos_max = 7
-```
-
-The legacy fields are ignored. A future revision SHOULD rename the emitted
-fields and add a regression test.
-
-### CFG-KNOWN-002: Generic CMIN/CMAX validation depends on CPBM presence
-
-**KNOWN GAP**
-
-In the generic YAML validator, the percentage range, CMIN/CMAX ordering, and
-CPBM-reachability checks are currently nested under:
-
-```text
-cache_portion_bitmap is not None
-```
-
-The web builder always emits a CPBM value, so the interactive configuration
-path receives these checks. A hand-written YAML setting that omits CPBM can
-currently bypass the per-entry percentage and ordering checks. The aggregate
-enabled-CMIN check still runs.
-
-A future revision SHOULD validate CMIN/CMAX independently of whether CPBM is
-present, using all ways as the reachable set when CPBM is omitted.
+- issued；
+- completed；
+- completion ratio；
+- 各资源剩余事务；
+- 未完成原因。
 
 ---
 
-## 5. Request Data Model
+## 4. 配置、诊断与复现
 
-### REQ-001: Request metadata
+### CFG-001：统一配置源
 
-Each abstract request contains:
-
-```text
-request_id
-workload_name
-workload_type
-requester_id
-PARTID
-PMG
-address
-size_bytes
-operation
-issue_time_ns
-working_set_bytes
-locality
-source_attach_node
-priority
-qos_class
-cache_id
-memory_controller_id
-```
-
-It also accumulates:
-
-```text
-noc_delay_ns
-cache_delay_ns
-cache_queue_delay_ns
-mem_queue_delay_ns
-mem_service_delay_ns
-throttle_delay_ns
-cache_hit
-```
-
-### REQ-002: Latency definition
-
-Measured completion latency is:
-
-```text
-completion_time_ns - issue_time_ns
-```
-
-The request's attributed total is:
-
-```text
-noc_delay
-+ cache_delay
-+ mem_queue_delay
-+ mem_service_delay
-+ throttle_delay
-```
-
-`cache_delay` already includes L3 admission retry, L3 queue delay, and lookup
-latency. `cache_queue_delay_ns` is a diagnostic subset and SHALL not be added
-again.
-
-### REQ-KNOWN-001: Reserved metadata
-
-`qos_class` is currently unused.
-
-The request `priority` field is consumed by the NoC priority heap, but
-`Simulation._default_priority()` always returns zero. Therefore all normal
-requests currently enter NoC with neutral priority.
-
----
-
-## 6. Workload and Requester Model
-
-### TRAFFIC-001: Injection rate
-
-MRPS conversion:
-
-```text
-requests_per_ns = injection_rate_mrps / 1000
-```
-
-Gbps conversion:
-
-```text
-requests_per_ns = injection_rate_gbps / (request_size_bytes * 8)
-```
-
-For `rate_scope == aggregate`, the rate is divided across assigned
-requesters. For `per_requester`, every requester receives the full rate.
-
-### TRAFFIC-002: Injection modes
-
-Implemented timing modes:
-
-- fixed interval;
-- Poisson interval;
-- generic burst timing if `burst_length > 1`.
-
-### TRAFFIC-003: Address generation
-
-`stream` distribution increments by request size and wraps in the working set.
-
-Other distributions choose an aligned random request-size slot in the working
-set.
-
-### TRAFFIC-004: Read/write generation
-
-The operation is sampled from `read_ratio`.
-
-**APPROXIMATE:** read and write currently follow the same NoC/L3/MC service
-path and cost. The operation field is metadata only.
-
-### TRAFFIC-005: Requester admission
-
-A requester may issue when both are true:
-
-```text
-requester_total_outstanding < configured_max_outstanding
-PARTID_outstanding < effective_PARTID_max_outstanding
-```
-
-If blocked, the generator retries after:
-
-```text
-min(10 ns, nominal_injection_interval)
-```
-
-### TRAFFIC-006: Effective OSTD
-
-For a PARTID:
-
-```text
-effective_ostd =
-    max(1,
-        min(requester.max_outstanding,
-            minimum_cap_from_highest_active_CBusy_level))
-```
-
-Across multiple MCs:
-
-1. use the maximum reported CBusy level;
-2. among sources at that level, use the minimum OSTD cap.
-
-### TRAFFIC-007: Source-stall attribution
-
-Requester backpressure is split into:
-
-- configured global OSTD stall;
-- CBusy-derived PARTID OSTD stall.
-
-### TRAFFIC-KNOWN-001: Workload type fidelity
-
-**KNOWN GAP**
-
-`pointer_chase` does not serialize requests on data dependency. It currently
-uses random addresses and a lower cache-locality weight, while requester OSTD
-may still allow many concurrent requests.
-
-`bursty_dma` does not automatically set burst timing in the web builder. It
-behaves as a random workload unless burst parameters are supplied through the
-generic configuration.
-
-These workload names SHALL not be interpreted as detailed CPU or DMA models.
-
----
-
-## 7. NoC Model
-
-### NOC-001: Abstract structure
-
-The NoC is one abstract bottleneck priority queue plus one serialized link.
-It is not a router-by-router network simulation.
-
-### NOC-002: Admission
-
-If the queue is full:
-
-```text
-retry_delay = 2 ns
-```
-
-The request accumulates NoC delay and per-PARTID backpressure.
-
-### NOC-003: Arbitration
-
-The internal heap key is:
-
-```text
-(-request.priority, enqueue_sequence)
-```
-
-Because normal request priority is currently zero, effective behavior is FIFO.
-
-### NOC-004: Delay
-
-```text
-serialization_ns = request_size_bytes * 8 / link_bandwidth_gbps
-fixed_latency_ns = average_hops * router_latency_ns
-stage_delay_ns = queue_delay + serialization_ns + fixed_latency_ns
-```
-
-Dispatch of the next request occurs after serialization, while downstream
-arrival occurs after serialization plus fixed latency.
-
-### NOC-005: Monitoring
-
-The NoC reports:
-
-- utilization from serialization busy time;
-- average sampled queue occupancy;
-- requests and bytes;
-- per-PARTID requests, bytes, delay, and admission backpressure.
-
-### NOC-RESERVED-001: Unused configuration
-
-`topology`, `routers`, and `virtual_channels` are preserved in configuration
-and topology export, but do not create individual router/VC state.
-
-### NOC-RESERVED-002: Future control point
-
-NoC QoS SHALL be treated as an independent future mechanism. MC QoS SHALL not
-be copied into NoC automatically.
-
----
-
-## 8. L3/SLC Model
-
-### L3-001: Request queue
-
-Each L3 has:
-
-- bounded FIFO waiting queue;
-- `lookup_parallelism` concurrent lookup slots;
-- fixed lookup duration `hit_latency_ns`.
-
-If the waiting queue is full:
-
-```text
-retry_delay = 2 ns
-```
-
-The retry contributes to both `cache_delay_ns` and
-`cache_queue_delay_ns`.
-
-### L3-002: Lookup utilization
-
-L3 utilization is:
-
-```text
-sum(lookup_busy_ns) /
-(interval_ns * lookup_parallelism)
-```
-
-### L3-003: Hit-probability model
-
-The modeled hit probability is:
-
-```text
-fit = min(1, allowed_capacity_bytes / working_set_bytes)
-
-base_locality =
-    low:    0.45
-    medium: 0.75
-    high:   0.95
-    default:0.65
-
-stream multiplier        = 0.35
-pointer_chase multiplier = 0.65
-
-hit_probability = min(0.98, 0.01 + locality_weight * fit)
-```
-
-The random draw determines the functional hit/miss result.
-
-### L3-004: Important sampled-state boundary
-
-**APPROXIMATE**
-
-The sampled tag/way state does not determine the functional hit probability.
-It is used for:
-
-- approximate ownership monitoring;
-- CPBM eligibility;
-- CMIN replacement protection;
-- CMAX sampled ownership enforcement;
-- allocation-denial evidence.
-
-Consequently, functional hit rate and sampled ownership are related through
-the same capacity settings but are not an exact cache-state simulation.
-
-### L3-005: Set and tag mapping
-
-```text
-set_index = floor(address / line_size) mod sets
-tag = floor(address / (line_size * sets))
-```
-
-### L3-006: One-in-eight sampling
-
-Only sets satisfying:
-
-```text
-set_index mod monitor_group_sets == 0
-```
-
-hold sampled way/tag state. The validator fixes `monitor_group_sets` to 8.
-
-```text
-sampled_set_count_capacity = ceil(sets / 8)
-sampled_capacity_lines = sampled_set_count_capacity * ways
-```
-
-Observed sampled traffic and occupancy are scaled by 8.
-
-### L3-007: CPBM
-
-For a PARTID:
-
-```text
-eligible_way_indexes = bits set in CPBM
-reachable_percent = popcount(CPBM) / ways * 100
-```
-
-If CPBM control is disabled, all ways are eligible.
-
-CPBM is an allocation eligibility mask, not a security/access permission.
-
-### L3-008: CMIN and CMAX units
-
-CMIN and CMAX are percentages of the whole physical L3 instance.
-
-```text
-effective_cmin_percent =
-    min(configured_cmin_percent, reachable_percent)
-
-effective_cmax_percent =
-    min(configured_cmax_percent or 100, reachable_percent)
-```
-
-If controls are globally disabled:
-
-```text
-effective_cmin = 0%
-effective_cmax = 100%
-```
-
-### L3-009: Sampled quota conversion
-
-```text
-cmin_quota_lines =
-    ceil(sampled_capacity_lines * effective_cmin_percent / 100)
-
-cmax_quota_lines =
-    floor(sampled_capacity_lines * effective_cmax_percent / 100)
-```
-
-CMIN rounds upward; CMAX rounds downward.
-
-### L3-010: Allocation and replacement
-
-On a sampled modeled miss:
-
-```text
-global_owned = total sampled lines owned by requester PARTID
-
-if global_owned >= requester_cmax_quota:
-    replace requester's own LRU eligible way in the current sampled set
-    if none exists: deny allocation
-else:
-    use an empty eligible way in the current sampled set
-    otherwise:
-        among current-set eligible ways,
-        reject a victim if its owner's global count <= owner_cmin_quota
-        choose the remaining LRU victim
-        if none remains: deny allocation
-```
-
-The owner count is global across all sampled sets; the victim itself is chosen
-from the current sampled set.
-
-### L3-011: CMIN meaning
-
-CMIN is demand-driven replacement protection, not pre-allocation.
-
-A PARTID with no demand does not receive reserved physical lines. A PARTID
-must first populate sampled ownership before CMIN can protect it.
-
-### L3-012: CMAX meaning
-
-CMAX is an independent ceiling. CMAX values across PARTIDs may total above
-100%.
-
-### L3-013: Capacity used by hit model
-
-```text
-allowed_capacity_bytes =
-    physical_cache_size_bytes * effective_cmax_percent / 100
-```
-
-CMIN does not directly increase hit probability. It influences sampled
-replacement retention under contention.
-
-### L3-014: L3 monitoring
-
-Per PARTID:
-
-- requests, bytes, hits, misses;
-- sampled requests and bytes;
-- estimated access bandwidth;
-- sampled way count;
-- estimated occupancy bytes;
-- physical-cache occupancy share;
-- allowed capacity;
-- effective/configured CMIN, CMAX, CPBM;
-- quota lines and reachable percentage;
-- queue delay, queue-full retries, allocation denials, CMIN-protected skips.
-
-Per `(PARTID, PMG)`:
-
-- sampled traffic;
-- estimated bandwidth;
-- sampled ownership;
-- estimated occupancy;
-- occupancy relative to PARTID allowed capacity;
-- occupancy relative to physical sampled capacity.
-
-### L3-KNOWN-001: CMIN-protection counter semantics
-
-`cmin_protected_evictions` counts protected victim candidates skipped while
-the requesting PARTID searches for a replacement. It is not a count of actual
-evictions.
-
-### L3-KNOWN-002: Non-sampled-set behavior
-
-Non-sampled accesses affect functional hit/miss counters but do not update
-sampled ownership. CMIN/CMAX enforcement is therefore an approximation
-applied through sampled sets and the capacity-based hit model.
-
----
-
-## 9. Memory-Controller Model
-
-### MC-001: Address-to-MC mapping
-
-On an L3 miss:
-
-```text
-mc_index =
-    floor(address / l3_line_size) mod number_of_memory_controllers
-```
-
-This is a simple line-interleave mapping. There is no channel/rank/bank hash.
-
-### MC-002: Queue structure
-
-The MC maintains:
-
-- one FIFO deque per PARTID;
-- one total queue-depth admission limit;
-- one candidate per active PARTID, always its FIFO head.
-
-If total queued requests reach `queue_depth`:
-
-```text
-retry_delay = 5 ns
-```
-
-This delay is added to memory queue delay.
-
-### MC-003: Aggregate service bandwidth
-
-```text
-total_bandwidth_gbps =
-    channels * bandwidth_gbps_per_channel
-
-serialization_ns =
-    request_size_bytes * 8 / total_bandwidth_gbps
-
-service_delay_ns =
-    base_latency_ns + serialization_ns
-```
-
-The next dispatch is scheduled after serialization, not after full service
-latency. Thus base latency may overlap across requests while aggregate
-serialization rate limits throughput.
-
-`scheduler` is currently configuration metadata; it does not select different
-scheduler implementations.
-
-### MC-004: Token capacity
-
-Both BMIN and BMAX use independent per-PARTID token states:
-
-```text
-bytes_per_ns = configured_gbps / 8
-bucket_capacity_bytes =
-    max(64, bytes_per_ns * token_bucket_window_ns)
-```
-
-Tokens start at zero and refill from time zero.
-
-### MC-005: Hard BMAX
-
-For `hardlimit`, a request is eligible only if:
-
-```text
-bmax_tokens >= request_size_bytes
-```
-
-If no candidate is eligible, the scheduler waits for the minimum token
-recovery time among blocked heads.
-
-The wait is accumulated into:
-
-- per-request throttle delay;
-- per-PARTID and per-group throttle counters;
-- hard-block event counters.
-
-### MC-006: Soft BMAX
-
-For `softlimit`, the request always remains eligible.
-
-It is considered over limit when its BMAX bucket lacks one request's tokens.
-
-If the MC is considered contended, the candidate receives:
-
-```text
-softlimit_qos_demote
-```
-
-QoS levels of demotion.
-
-### MC-007: BMIN approximation
-
-The BMIN bucket represents bounded positive service credit.
-
-If:
-
-```text
-bmin_tokens >= request_size_bytes
-```
-
-the candidate receives:
-
-```text
-bmin_qos_promote
-```
-
-QoS levels of promotion. Credit is consumed when the request dispatches.
-
-BMIN is a preference approximation, not a hard reservation or real-time
-guarantee.
-
-### MC-008: 3-bit QoS
-
-Base MC QoS is per PARTID:
-
-```text
-0..7, where 7 is highest
-```
-
-If MC QoS is disabled, base QoS is zero while the configured value is retained.
-
-### MC-009: Aging
-
-```text
-aging_steps =
-    min(qos_aging_max_steps,
-        floor(queue_age_ns / aging_ns))
-```
-
-### MC-010: Effective QoS
-
-For every eligible PARTID-head candidate:
-
-```text
-effective_qos = clamp(
-    base_mc_qos
-  + aging_steps
-  + bmin_qos_promote_if_credited
-  - softlimit_qos_demote_if_over_and_contended,
-    0,
-    7)
-```
-
-### MC-011: Arbitration
-
-Selection order:
-
-1. remove hard-BMAX-ineligible candidates;
-2. choose highest `effective_qos`;
-3. for equal QoS, choose the oldest global enqueue sequence.
-
-Per-PARTID ordering remains FIFO.
-
-### MC-012: Contention definition
-
-The current MC implementation defines:
-
-```text
-contended = total_MC_queue_length > 1
-```
-
-**KNOWN GAP:** this does not require multiple PARTIDs. Two queued requests
-from one PARTID satisfy the condition. The QoS demotion does not change the
-winner when there is only one active PARTID head, but demotion counters may
-still report activity.
-
-### MC-013: MC monitoring
-
-Per PARTID:
-
-- requests and bytes;
-- achieved bandwidth;
-- queue, service, and throttle delay;
-- configured/effective BMIN/BMAX and mode;
-- configured/base/effective QoS;
-- QoS minimum, maximum, and request-weighted average;
-- promotion, demotion, aging-step counters;
-- soft-over-limit requests and bytes;
-- hard-block events;
-- CBusy evidence.
-
-Per `(PARTID, PMG)`:
-
-- serviced requests and bytes;
-- queue/service/throttle delay;
-- achieved bandwidth and utilization;
-- active BMIN/BMAX/QoS/CBusy values.
-
-### MC-KNOWN-001: Initial token transient
-
-Because token buckets initialize at zero, hard BMAX can produce an initial
-startup delay. The current model has no configurable initial token fill.
-
-### MC-KNOWN-002: Aggregate channel model
-
-Channels contribute only to total bandwidth. The model has no:
-
-- channel selection;
-- bank conflicts;
-- row hits/misses;
-- read/write turnaround;
-- refresh;
-- command bus;
-- rank timing;
-- FR-FCFS state.
-
----
-
-## 10. CBusy Fast Feedback Loop
-
-### CBUSY-001: Loop structure
-
-```mermaid
-flowchart LR
-    M["MC per-PARTID bytes / queue / hard blocks"] --> D["CBusy detector"]
-    D --> L["Level 0..3"]
-    L --> T["Feedback delay"]
-    T --> P["Requester per-PARTID OSTD cap"]
-    P --> M
-```
-
-### CBUSY-002: Sampling
-
-Every MC evaluates each configured/active PARTID every:
-
-```text
-cbusy_sample_ns
-```
-
-### CBUSY-003: Detector inputs
-
-```text
-sample_bandwidth =
-    sampled_bytes * 8 / cbusy_sample_ns
-
-bandwidth_ratio =
-    sample_bandwidth / BMAX
-    only when BMAX is enabled and positive
-
-queue_ratio =
-    queued_requests_for_PARTID / MC_total_queue_depth
-```
-
-Hard-block activity is also an input.
-
-### CBUSY-004: Level selection
-
-For candidate levels 1, 2, and 3, a level matches if either:
-
-```text
-queue_ratio >= level_queue_threshold
-```
-
-or:
-
-```text
-BMAX enabled
-and MC total queue length > 1
-and bandwidth_ratio >= level_bandwidth_threshold
-```
-
-The highest matching level is selected.
-
-If hard-block activity is non-zero:
-
-```text
-detected_level = max(detected_level, 2)
-```
-
-### CBUSY-005: Assertion and release
-
-- Higher detected level asserts immediately.
-- Lower detected level increments a release counter.
-- After `cbusy_release_hold_samples`, the current level decreases by one.
-- Release is stepwise; it does not jump directly to the detected lower level.
-
-### CBUSY-006: Feedback transport
-
-A level change is delivered after:
-
-```text
-cbusy_feedback_latency_ns
-```
-
-The delivered event is recorded as a control trace with policy `mc_cbusy`.
-
-### CBUSY-007: OSTD caps
-
-```text
-level 1 -> cbusy_l1_ostd
-level 2 -> cbusy_l2_ostd
-level 3 -> cbusy_l3_ostd
-```
-
-Level 0 removes the CBusy-derived clamp.
-
-### CBUSY-008: Monitoring
-
-The MC reports:
-
-- current level;
-- last and interval-peak bandwidth ratio;
-- last and interval-peak queue ratio;
-- transition and assertion count;
-- active duty ratio;
-- current OSTD cap.
-
-The requester reports:
-
-- effective OSTD;
-- current maximum CBusy level;
-- CBusy transitions;
-- CBusy-attributed source stall.
-
-### CBUSY-KNOWN-001: Request-class blindness
-
-CBusy currently throttles all requests of a PARTID equally. It does not
-distinguish demand, prefetch, instruction, data, writeback, DMA, or table-walk
-classes.
-
----
-
-## 11. Slow Closed-Loop Policy
-
-### POLICY-001: Modes
-
-| Mode | Enforcement |
-| --- | --- |
-| `no_control` | L3/MC controls and CBusy enforcement disabled; monitors remain |
-| `static_mpam` | Configured controls active; no slow updates |
-| `closed_loop_qos` | Configured controls active plus interval P99 policy |
-
-Global enforcement is disabled only when the policy list contains exactly one
-policy named `no_control`.
-
-### POLICY-002: Protected/background derivation in web UI
-
-- protected PARTIDs: any enabled stimulus with positive P99 target;
-- background PARTIDs: active PARTIDs minus protected PARTIDs.
-
-### POLICY-003: Violation condition
-
-For a protected PARTID with interval completions:
-
-```text
-interval_p99 >
-target_p99 * (1 + p99_hysteresis)
-```
-
-### POLICY-004: Violation action
-
-When any protected PARTID violates:
-
-For every MC:
-
-1. increase every enabled protected PARTID MC QoS by one, capped by `qos_max`;
-2. multiply every enabled background BMAX by:
-
-```text
-1 - max_bw_step_percent / 100
-```
-
-with a lower floor of `0.001 Gbps`.
-
-### POLICY-005: Relax condition
-
-All protected PARTIDs must be below:
-
-```text
-target_p99 * (1 - p99_hysteresis)
-```
-
-### POLICY-006: Relax action
-
-Background BMAX values are increased toward their initial values by:
-
-```text
-current_bmax * (1 + max_bw_step_percent / 100)
-```
-
-and clamped to the initial BMAX.
-
-### POLICY-007: Hold time
-
-Updates are separated by at least:
-
-```text
-min_hold_intervals
-```
-
-control intervals.
-
-### POLICY-KNOWN-001: Protected QoS does not relax
-
-**KNOWN GAP**
-
-The current relax path restores background BMAX only. It does not reduce
-protected MC QoS. Therefore protected QoS is monotonic non-decreasing during
-a run and may remain at the maximum after a transient violation.
-
-### POLICY-KNOWN-002: Limited control objectives
-
-The slow policy does not directly control:
-
-- L3 CMIN/CMAX/CPBM;
-- CBusy thresholds;
-- requester base OSTD;
-- NoC QoS;
-- BMIN;
-- fairness;
-- throughput loss;
-- queue targets.
-
----
-
-## 12. Monitoring and Metrics
-
-### MON-001: Interval PARTID metrics
-
-For completed requests in each interval:
-
-- requests and bytes;
-- throughput;
-- average, P50, P95, P99, P99.9, maximum latency;
-- average NoC delay;
-- average cache delay;
-- average cache queue delay;
-- average MC queue delay;
-- average MC service delay;
-- average throttle delay;
-- cache hits, misses, and hit rate.
-
-### MON-002: Percentile method
-
-Percentiles use sorted values and linear interpolation:
-
-```text
-position = (N - 1) * percentile / 100
-```
-
-### MON-003: Cumulative metrics
-
-Cumulative metrics use the complete-run elapsed time as the throughput
-denominator.
-
-### MON-004: Request timeline sampling
-
-Completed-request traces are retained when:
-
-- full request tracing is enabled; or
-- completion index is within the first 1000; or
-- completion index is a multiple of 100.
-
-The in-memory timeline is capped at 20,000 rows. The web job returns the last
-3000 timeline rows.
-
-### MON-005: Control trace
-
-Every slow update and delivered CBusy transition records:
-
-```text
-time_ns
-policy
-target_msc
-PARTID
-field
-old_value
-new_value
-reason
-```
-
-### MON-006: Monitor enable semantics
-
-**KNOWN GAP**
-
-`monitor_enable` is reported in snapshots, but currently does not suppress
-counter collection or UI visibility.
-
-### MON-007: Multi-MSC aggregation
-
-The web UI generally sums:
-
-- usage across L3s/MCs;
-- capacity across L3s/MCs;
-- BMIN/BMAX values across MC instances.
-
-Ratios SHOULD be computed after summing numerator and denominator.
-
----
-
-## 13. Output Artifacts
-
-### OUT-001: Exported files
-
-Each completed run may emit:
-
-```text
-run_summary.json
-resolved_config.json
-topology.json
-metrics.csv
-per_cpu_partid.csv
-per_partid_latency.csv
-per_msc_utilization.csv
-control_trace.csv
-timeline_trace.csv
-report.html
-```
-
-### OUT-002: Static report
-
-The report includes:
-
-- modeled flow;
-- run summary;
-- P99, throughput, and throttle charts;
-- control updates;
-- topology table.
-
-### OUT-KNOWN-001: Static-report terminology
-
-The static report still labels one stage as `Priority scheduler`. The current
-MC implementation is 3-bit QoS and current NoC arbitration is neutral. This
-label SHOULD be updated in a future cleanup.
-
-### OUT-KNOWN-002: Resolved config source
-
-`resolved_config.json` currently exports `ProjectConfig.raw`, which is the
-input YAML dictionary. Runtime policy updates are not written back into it.
-
----
-
-## 14. Interactive Web Console
-
-### UI-001: Server architecture
-
-The UI is served by Python `ThreadingHTTPServer`. Simulation jobs execute in
-daemon threads and expose polling snapshots.
-
-### UI-002: HTTP endpoints
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| GET | `/` | Main console |
-| GET | `/api/defaults` | Web parameter defaults |
-| POST | `/api/jobs` | Start one simulation |
-| GET | `/api/jobs/<id>` | Poll one simulation |
-| POST | `/api/experiments` | Start four-case BMAX/CBusy experiment |
-| GET | `/api/experiments/<id>` | Poll experiment |
-| POST | `/api/verifications` | Start algorithm verification suite |
-| GET | `/api/verifications/<id>` | Poll verification |
-| GET | `/runs/<path>` | Serve generated artifacts |
-
-POST bodies are limited to 1,000,000 bytes.
-
-### UI-003: Configuration views
-
-- SoC timing/topology/capacity;
-- 16 independent hardware-thread stimuli;
-- 16 PARTID MPAM control rows;
-- policy and fast/slow control parameters.
-
-### UI-004: Result views
-
-- CPU/L3/MC resource monitor;
-- 16-PARTID control-effect overview;
-- selected-PARTID effect timeline;
-- four-case experiment;
-- algorithm verification;
-- CBusy causal timeline;
-- PARTID summary;
-- `(PARTID, PMG)` monitor groups;
-- MPAM aggregate monitor;
-- component monitor;
-- control trace.
-
-### UI-005: Algorithm explanations
-
-Tagged controls and metrics open one anchored algorithm popover. The normal
-tooltip is suppressed on the same target to avoid overlap.
-
-### UI-006: Control-effect target construction
-
-For the selected PARTID:
-
-```text
-L3 target = configured per-L3 CMIN/CMAX percentages
-
-aggregate BMIN target =
-    configured per-MC BMIN * number_of_MCs
-
-aggregate BMAX target =
-    configured per-MC BMAX * number_of_MCs
-
-P99 target =
-    minimum positive target among enabled stimuli using the PARTID
-```
-
-### UI-007: L3 effect-state heuristic
-
-L3 pressure evidence is true when any cache snapshot for the PARTID reports:
-
-```text
-allocation_denials > 0
-or cmin_protected_evictions > 0
-```
-
-Failure rules:
-
-```text
-actual_share > CMAX + 1 percentage point
-or
-pressure exists and actual_share + 1 percentage point < CMIN
-```
-
-Without replacement pressure, a low CMIN occupancy is shown as observation,
-not failure.
-
-### UI-008: MC effect-state heuristic
-
-MC contention evidence is true when any MC has:
-
-```text
-queue_occupancy > 1
-or utilization > 0.8
-```
-
-Failure rules:
-
-```text
-hard BMAX:
-actual_bandwidth > target_BMAX * 1.08
-
-BMIN:
-contention exists and actual_bandwidth + 0.5 Gbps < target_BMIN
-```
-
-Soft-BMAX excess without a failure is displayed as borrowing.
-
-### UI-KNOWN-001: Overview is latest-interval state
-
-**KNOWN GAP**
-
-The overview table uses the latest visible interval for state classification.
-The selected-PARTID charts show the full run, but the overview does not yet
-calculate time-in-compliance, violation duration, overshoot area, or worst
-interval.
-
-### UI-KNOWN-002: Client-side heuristic
-
-Control-effect pass/fail state is calculated in JavaScript and is not exported
-as a server-side canonical result. Future automated signoff SHOULD move the
-calculation into a tested Python analysis module.
-
----
-
-## 15. Controlled Experiments
-
-### EXP-001: Four-case BMAX/CBusy experiment
-
-Cases:
-
-1. reference: BMAX off, CBusy off;
-2. BMAX only;
-3. CBusy only;
-4. BMAX plus CBusy.
-
-All cases:
-
-- preserve topology, workload, timing, and seed;
-- force `static_mpam`;
-- disable CPBM, CMIN, CMAX, BMIN, and MC QoS;
-- vary only BMAX and CBusy enable states for active PARTIDs.
-
-### EXP-002: Reported evidence
-
-System level:
-
-- throughput;
-- maximum P99;
-- completion ratio;
-- MC queue peak;
-- queue area;
-- throttle delay;
-- hard blocks;
-- CBusy stall;
-- configured-OSTD stall;
-- CBusy transitions.
-
-Per PARTID:
-
-- throughput and P99;
-- queue ratio peak;
-- effective OSTD minimum;
-- source stalls;
-- throttle and hard blocks.
-
----
-
-## 16. Built-In Algorithm Verification
-
-### VERIFY-001: Suite structure
-
-The current suite runs 13 deterministic cases and evaluates 7 checks.
-
-### VERIFY-002: CMIN check
-
-Topology:
-
-```text
-1 L3
-8 sets
-16 ways
-one sampled set
-```
-
-Protected traffic starts before aggressor traffic.
-
-Pass intent:
-
-- CMIN 50% retains at least 8 sampled ways;
-- enabled case retains more than disabled case;
-- protected victim skips are observed.
-
-### VERIFY-003: CMAX check
-
-Pass intent:
-
-- CMAX 12.5% owns no more than 2 of 16 sampled lines;
-- unrestricted case owns more.
-
-### VERIFY-004: MC QoS check
-
-Compare equal QoS `3/3` with split QoS `7/0`.
-
-Pass intent:
-
-- selected effective QoS is high;
-- QoS-7 PARTID gains more than 5% throughput over its equal-QoS case.
-
-### VERIFY-005: BMIN check
-
-Pass intent:
-
-- BMIN promotion requests are observed;
-- protected throughput improves by more than 5%.
-
-### VERIFY-006: Soft BMAX without contention
-
-Pass intent:
-
-- over-limit soft requests are observed;
-- soft throughput remains at least 85% of BMAX-disabled throughput.
-
-### VERIFY-007: Hard BMAX
-
-For 10 Gbps configured BMAX:
-
-- hard blocks and throttle delay must be non-zero;
-- throughput must be no more than 12.5 Gbps.
-
-### VERIFY-008: Soft BMAX with contention
-
-Pass intent:
-
-- demotion events are observed;
-- controlled throughput is below 95% of BMAX-disabled contended throughput.
-
-### VERIFY-KNOWN-001: Stale evidence wording
-
-The verification UI/server evidence string for CMIN still says `CMIN=8`
-although the user-facing configuration is now `CMIN=50%`, which maps to 8 of
-16 sampled lines in this microbenchmark. The formula is correct; the wording
-SHOULD be updated.
-
----
-
-## 17. Current Test Contract
-
-The test suite currently proves:
-
-- baseline configuration loads;
-- invalid requesters fail;
-- CMIN overcommit and CPBM reachability fail;
-- MC QoS is limited to 3 bits;
-- fixed seed is deterministic;
-- hard BMAX produces bounded throughput and throttle delay;
-- larger cache portion improves modeled hit rate and latency;
-- L3 queue pressure/backpressure is observable;
-- all 16 PARTID monitor rows exist;
-- soft limit is work-conserving relative to hard limit;
-- no-control preserves monitors and neutral effective controls;
-- `(PARTID, PMG)` monitoring works;
-- CPU outstanding monitoring works;
-- independent control switches report neutral effective values;
-- BMAX and CBusy can be isolated and combined;
-- per-requester rate scales with requester count;
-- higher MC QoS reduces protected queue delay and P99;
-- web configuration and experiment derivation are valid;
-- all 7 built-in algorithm checks pass.
-
-Current baseline:
-
-```text
-28 pytest tests passing
-4 archived OpenSpec capability specs passing strict validation
-```
-
----
-
-## 18. Capability Status
-
-| Capability | Status | Current meaning |
-| --- | --- | --- |
-| PARTID | IMPLEMENTED | Per-request control identity |
-| PMG | IMPLEMENTED | Monitor attribution only |
-| 16 web PARTIDs | IMPLEMENTED | Fixed web reference table |
-| Per-MSC settings | IMPLEMENTED | Independent L3 and MC tables |
-| CPBM | APPROXIMATE | Sampled-way eligibility and capacity reachability |
-| CMIN | APPROXIMATE | Global sampled-owner replacement protection |
-| CMAX | APPROXIMATE | Global sampled-owner ceiling and hit capacity |
-| CSU | APPROXIMATE | One sampled set per 8 sets |
-| MBWU | IMPLEMENTED behaviorally | Interval serviced bandwidth |
-| BMAX hard | IMPLEMENTED behaviorally | Token eligibility blocking |
-| BMAX soft | IMPLEMENTED behaviorally | Work-conserving QoS demotion |
-| BMIN | APPROXIMATE | Positive credit and QoS promotion |
-| MC 3-bit QoS | IMPLEMENTED | Local MC arbitration only |
-| NoC QoS | RESERVED | Internal heap exists; requests are neutral |
-| CBusy | APPROXIMATE | Per-MC, per-PARTID L0-L3 feedback |
-| PE OSTD control | IMPLEMENTED behaviorally | Requester issue clamp |
-| Slow P99 loop | IMPLEMENTED | MC QoS increase and background BMAX reduction |
-| Exact cache tags | OUT OF SCOPE | Only sampled tags exist |
-| Coherency | OUT OF SCOPE | No snoops or sharing protocol |
-| DRAM timing | OUT OF SCOPE | Aggregate service only |
-| MPAM registers | OUT OF SCOPE | No feature pages/register encoding |
-| ACPI/Linux integration | OUT OF SCOPE | YAML/web are control plane |
-| Security spaces | OUT OF SCOPE | No Secure/Realm/Root namespace |
-| SMMU/device tagging | RESERVED | Explicit requester interface exists |
-
----
-
-## 19. Modification Interfaces
-
-The following are the preferred places to change behavior.
-
-### MOD-001: Add a new request attribute
-
-Modify:
-
-- `src/traffic/request.py`;
-- generator population;
-- relevant component consumption;
-- timeline/export fields;
-- UI aggregation if visible.
-
-### MOD-002: Add a new per-PARTID control
-
-Modify:
-
-1. `MPAMSettingConfig`;
-2. runtime `MPAMSetting`;
-3. loader and validator;
-4. web default/parse/build path;
-5. enforcement component;
-6. monitor snapshot;
-7. UI editor and help;
-8. mechanism verification;
-9. OpenSpec capability spec.
-
-### MOD-003: Replace the L3 algorithm
-
-Primary replacement points:
-
-- `_hit_probability`;
-- `_sample_access`;
-- `_choose_victim`;
-- `_effective_min_percent`;
-- `_effective_max_percent`;
-- monitor quota/occupancy calculations.
-
-A future exact-cache model SHOULD preserve the existing `CacheMSC.receive`,
-callback, settings-table, and monitor interfaces.
-
-### MOD-004: Replace the MC scheduler
-
-Primary replacement points:
-
-- `_eligible`;
-- `_select_request`;
-- `_consume_tokens`;
-- dispatch cadence;
-- monitor evidence.
-
-A future scheduler MAY implement WRR, DRR, stride, deficit/credit, deadline,
-FR-FCFS, or channel-aware arbitration behind the same component boundary.
-
-### MOD-005: Add NoC QoS
-
-Define separately:
-
-- control field and range;
-- PARTID-to-class mapping;
-- whether aging exists;
-- whether rate control exists;
-- queue/VC scope;
-- interaction with MC QoS;
-- monitor counters;
-- starvation protection.
-
-Do not reuse MC QoS implicitly.
-
-### MOD-006: Extend CBusy
-
-Candidate extensions:
-
-- request classes;
-- route/destination-aware feedback;
-- bandwidth debt;
-- queue-watermark hysteresis;
-- minimum assertion hold;
-- gradual OSTD recovery;
-- separate read/write signals;
-- per-requester rather than global PARTID delivery.
-
-### MOD-007: Extend the slow loop
-
-Define:
-
-- controlled variables;
-- objective function;
-- constraints;
-- update law;
-- saturation;
-- anti-windup;
-- hysteresis;
-- hold period;
-- recovery behavior;
-- stability and oscillation KPIs.
-
----
-
-## 20. Recommended Next Decisions
-
-These decisions should be resolved before increasing fidelity.
-
-### DEC-001: L3 target semantics
-
-Choose whether CMIN/CMAX are:
-
-- percentages of each L3 instance;
-- percentages of the sum of all L3 instances;
-- percentages within CPBM reachability;
-- proportional targets enforced by a controller rather than sampled quotas.
-
-Current choice: percentage of each physical L3 instance, intersected with
-CPBM reachability.
-
-### DEC-002: BMIN semantics
-
-Choose:
-
-- positive credit promotion, current;
-- signed deficit;
-- guaranteed weighted service;
-- minimum over a configured measurement window;
-- reservation plus borrowing.
-
-### DEC-003: MC contention definition
-
-Choose:
-
-- total queued requests greater than one, current;
-- more than one active PARTID;
-- utilization threshold;
-- queue threshold;
-- scheduler has at least two eligible candidates.
-
-### DEC-004: CBusy source
-
-Choose which evidence should assert each level:
-
-- BMAX ratio;
-- actual MC utilization;
-- queue depth;
-- hard-token debt;
-- latency;
-- bank/channel pressure;
-- downstream credit state.
-
-### DEC-005: Control-effect signoff
-
-Choose canonical metrics:
-
-- latest interval;
-- worst interval;
-- percentage of time compliant;
-- violation duration;
-- overshoot area;
-- convergence time;
-- recovery time;
-- throughput cost;
-- P99/P99.9 change;
-- starvation threshold.
-
-### DEC-006: Workload fidelity
-
-Choose whether to add:
-
-- true dependent pointer chase;
-- prefetch traffic;
-- read/write asymmetry;
-- DMA bursts;
-- cache writebacks;
-- page walks;
-- instruction/data classes;
-- phased workload start/stop profiles.
-
----
-
-## 21. Change Proposal Template
-
-Edit this section or copy it into a new document.
-
-```text
-Change title:
-
-Problem:
-
-Observed evidence:
-
-Affected requirement IDs:
-
-New behavior:
-
-Algorithm or state machine:
-
-Configuration fields:
-
-Monitor fields:
-
-UI changes:
-
-Compatibility requirements:
-
-Pass/fail criteria:
-
-Required deterministic test cases:
-
-Explicit non-goals:
-```
-
-For algorithm changes, provide:
-
-```text
-input state
-output/action
-update period
-units
-clamps/saturation
-tie-breaking
-startup state
-recovery state
-multi-MSC aggregation
-failure/forward-progress behavior
-```
-
----
-
-## 22. Traceability Index
-
-| Requirement family | Main code |
-| --- | --- |
-| `SIM-*` | `src/sim/` |
-| `CFG-*` | `src/config/`, `src/web/config_builder.py` |
-| `REQ-*` | `src/traffic/request.py` |
-| `TRAFFIC-*` | `src/traffic/generator.py`, `requester.py` |
-| `NOC-*` | `src/noc/fabric.py` |
-| `L3-*` | `src/cache/cache_msc.py` |
-| `MC-*` | `src/ddr/memctrl.py` |
-| `CBUSY-*` | `src/ddr/memctrl.py`, `src/traffic/requester.py` |
-| `POLICY-*` | `src/scheduler/closed_loop.py` |
-| `MON-*`, `OUT-*` | `src/monitor/` |
-| `UI-*`, `EXP-*`, `VERIFY-*` | `src/web/` |
-
-The archived OpenSpec change that introduced proportional L3 controls,
-3-bit MC QoS, and the effect view is:
-
-```text
-openspec/changes/archive/
-  2026-06-20-add-qos-proportional-cache-and-effect-view/
-```
-
----
-
-## 23. Agreed Revision Decisions
-
-Status of this section:
-
-```text
-AGREED SPECIFICATION DIRECTION
-NOT YET IMPLEMENTED UNLESS ALSO STATED IN SECTIONS 1-22
-```
-
-This section records decisions made during the chapter-by-chapter model
-review. It must not be interpreted as a claim that the current code already
-implements the behavior.
-
-### REV-VERIFY-001: Control activation is not target achievement
-
-Automated verification SHALL prove that a configured control is active and
-that its defined causal path executes:
-
-```text
-trigger condition
--> monitor update
--> control decision
--> enforcement action
--> observable effect at the controlled resource
-```
-
-Automated verification SHALL NOT require every control target to be achieved.
-A target may legitimately remain unmet because of:
-
-- insufficient demand;
-- insufficient physical resource;
-- conflicting controls;
-- sampling or filtering error;
-- control saturation;
-- response latency;
-- an implementation-defined work-conserving policy;
-- an intentionally limited control algorithm.
-
-Tests SHALL distinguish:
-
-- control disabled;
-- control enabled but not triggered;
-- control triggered and action applied;
-- control saturated;
-- target achieved;
-- target not achieved.
-
-### REV-VERIFY-002：验证结果分级
-
-验证结果必须分为以下三类，禁止混用：
-
-| 类型 | 含义 | 仿真处理 |
-| --- | --- | --- |
-| `MODEL_ERROR` | 模型进入规格不允许的状态，或实现违反已定义硬件规则 | 立即停止 |
-| `CONFIG_ERROR` | 配置在仿真开始前已确定非法或无法解释 | 拒绝启动 |
-| `CONTROL_OUTCOME` | 控制已经按规则动作，但结果不理想或目标未达 | 继续仿真 |
-
-`MODEL_ERROR`至少包括：
-
-- 计数器小于零或超过物理容量；
-- 同一L3 set出现重复有效tag；
-- Ring槽位被重复占用；
-- flit无原因丢失、复制或停止移动；
-- MSHR、fill buffer或MC buffer超出配置深度；
-- 一个事务被重复完成或重复释放OSTD；
-- MC授权了不在candidate集合中的请求；
-- 控制器读取了规格禁止使用的隐藏真实状态；
-- 状态机发生未定义跳转；
-- 同一事件的因果ID无法闭合。
-
-发生`MODEL_ERROR`时，仿真必须：
-
-1. 冻结当前事件时间；
-2. 保存最近一段事件和资源状态；
-3. 输出违反的需求ID；
-4. 标明触发对象、PARTID、资源实例和事务ID；
-5. 停止继续产生结果，避免使用已污染的数据。
-
-### REV-VERIFY-003：控制不良结果不得中止
-
-以下情况属于需要保留的`CONTROL_OUTCOME`，不得作为模型错误中止：
-
-- CMIN、CMAX、BMIN或BMAX目标未达到；
-- BMAX采样延迟导致过冲；
-- 滤波和滞回导致响应变慢；
-- Hard BMAX产生锯齿；
-- Soft BMAX降到QoS 0后仍然超限；
-- BMIN提升到QoS 7后仍达不到目标；
-- CBusy导致过度限流；
-- 多个控制环相互作用产生振荡；
-- 某PARTID发生长时间饥饿；
-- 配置目标在当前物理能力下不可实现；
-- 吞吐、延迟或公平性显著恶化。
-
-这些结果必须继续运行到用户配置的结束时间，并保存：
-
-- 控制触发和动作证据；
-- 饱和状态；
-- 目标偏差；
-- 无进展持续时间；
-- 对其他PARTID和系统吞吐的影响。
-
-### REV-VERIFY-004：无进展watchdog
-
-仿真必须提供不改变控制结果的watchdog：
-
-```yaml
-progress_watchdog_enable: true
-progress_watchdog_cycles: <positive integer>
-```
-
-若在watchdog窗口内：
-
-- 有未完成事务；
-- 没有事务完成；
-- 没有任何资源状态能够在未来已安排事件中解除阻塞；
-
-则记录`NO_PROGRESS`诊断事件。
-
-`NO_PROGRESS`本身不是`MODEL_ERROR`。如果无进展是Hard BMAX、QoS饥饿、
-CBusy、目标配置或其他控制策略造成，仿真继续运行到结束时间，并将其作为
-控制方案结果。
-
-只有当无进展来自违反规格的内部状态，例如丢失唤醒事件、Ring flit停止移动、
-资源已释放但请求永远不再参与仲裁，才升级为`MODEL_ERROR`并停止。
-
-### REV-VERIFY-005：验证等级
-
-用户可配置：
-
-```yaml
-validation_level: basic | full
-```
-
-`basic`默认开启，检查：
-
-- 容量和计数不变量；
-- 事务创建、完成和释放闭环；
-- 监控采样与滤波公式；
-- 控制触发条件；
-- 控制动作合法性；
-- Ring、L3、MC和OSTD前向状态。
-
-`full`在`basic`基础上保存：
-
-- 每次L3 victim候选和排除原因；
-- 每次MC全buffer candidate mask和QoS计算；
-- 每个Ring flit的位置与绕行；
-- 每次CBusy比较器输入；
-- 监控样本、决策和动作完整因果链。
-
-`full`只增加检查和证据，不得改变调度、随机数序列或控制结果。
-
-### REV-VERIFY-006：确定性状态机微测试
-
-自动化微测试直接构造已知硬件状态，验证规则是否生效，不以性能对照为
-通过条件。
-
-例如：
-
-```text
-filtered_bw > BMAX
-AND hardlimit enabled
--> HARD_BLOCK置位
--> 对应PARTID的所有MC entry不具备服务资格
-```
-
-微测试必须覆盖：
-
-- MPAM原始监控和滤波更新；
-- CPBM、CMIN和CMAX动作；
-- BMIN、Soft BMAX和Hard BMAX状态；
-- 3-bit QoS计算与轮询同级仲裁；
-- CBusy断言、反馈和逐级释放；
-- CPU OSTD准入和终态释放；
-- 同地址MSHR合并和最小读写顺序；
-- Ring注入、绕行、下环和排空。
-
-通过条件是状态、动作和记录符合规格；不要求控制目标一定达到。
-
-### REV-CFG-001：统一配置源
-
-Web界面、YAML文件和Python API必须使用同一份类型化配置schema：
+Web、YAML和Python API使用同一类型化schema：
 
 ```text
 用户输入
 -> 统一配置对象
--> 校验与派生计算
+-> 校验和派生计算
 -> resolved config
 -> 仿真
 ```
 
-界面不得维护一套与CLI或Python API不同的隐藏默认值。所有默认值必须写入
-`resolved config`并随运行结果保存。
+UI不得维护隐藏默认值。
 
-### REV-CFG-002：基础与高级配置分层
+### CFG-002：基础与高级配置
 
-基础配置至少包括：
+基础配置：
 
-- 仿真时间、seed和验证等级；
-- CPU、L3、MC和NoC时钟；
-- 16线程激励和PARTID/PMG映射；
+- 仿真时长、seed和验证等级；
+- CPU/L3/MC/NoC时钟；
+- 16线程激励及PARTID/PMG；
 - CPBM、CMIN、CMAX；
-- BMIN、BMAX、MC QoS和CBusy；
-- 监控周期及`history_weight`、`current_weight`。
+- BMIN、BMAX、MC QoS、CBusy；
+- 监控周期和滤波权重。
 
-高级配置至少包括：
+高级配置：
 
-- CPU OSTD分配策略、发射窗口和依赖链；
-- L3 MSHR、fill buffer、LRU/PLRU；
+- OSTD分配策略、发射窗口、pointer chains；
+- MSHR、fill buffer、LRU/PLRU；
 - 地址交织；
-- REQ/RSP/DAT Ring槽位、flit宽度和hop延迟；
-- 滞回、service-deficit、watchdog；
-- `full`验证和硬件诊断记录。
+- Ring槽位、flit和hop参数；
+- 滞回、service deficit、watchdog；
+- full验证和详细追踪。
 
-高级配置必须保持可用，但不得遮挡常用配置路径。
-
-### REV-CFG-003：三级诊断
-
-配置诊断分为：
+### CFG-003：三级诊断
 
 | 等级 | 处理 |
 | --- | --- |
 | `ERROR` | 拒绝启动 |
-| `WARNING` | 允许启动，突出风险 |
-| `INFO` | 解释行为，不阻止运行 |
+| `WARNING` | 允许运行并突出风险 |
+| `INFO` | 解释行为 |
 
-`ERROR`至少包括：
+典型`ERROR`：
 
-- 滤波权重不满足规范化要求；
+- 权重和不满足规范化要求；
 - CMIN大于CMAX；
 - CMIN超过CPBM可达比例；
-- CPBM启用但bitmap为空；
-- buffer、MSHR、fill buffer或Ring容量非正；
-- CBusy、滞回或OSTD阈值次序非法；
-- PARTID/PMG超过配置宽度；
-- Ring节点缺失、重复或不可达；
-- 资源、请求器、线程或场景ID重复；
-- 单位或枚举值无法解释。
+- CPBM启用但为空；
+- buffer、MSHR、fill或Ring容量非正；
+- CBusy或OSTD阈值次序非法；
+- PARTID/PMG越界；
+- Ring节点缺失、重复或不可达。
 
-`WARNING`至少包括：
+典型`WARNING`：
 
-- BMIN总和超过MC物理带宽；
-- Hard BMAX与CBusy叠加可能过度限流；
-- 监控窗口或`history_weight`导致响应过慢；
-- CMIN可能因需求不足无法达到；
+- BMIN总和超过MC能力；
+- Hard BMAX与CBusy叠加；
+- 监控窗口或历史权重过大；
 - OSTD不足以形成目标带宽；
-- aging关闭时存在饥饿风险；
-- 目标在当前物理能力下可能不可实现。
+- aging关闭可能造成饥饿；
+- 目标可能不可实现。
 
-`INFO`至少包括：
+### CFG-004：不得自动改值
 
-- Soft BMAX在无竞争时允许借用空闲带宽；
-- BMIN在无竞争时不会产生调度提升；
-- SNP和一致性当前关闭；
-- 实际值与MPAM采样值预期可能不同。
+工具可以解释、计算和建议，但不得自动修改用户参数。
+用户接受预设或建议后，变化必须显式进入原始配置和resolved config。
 
-### REV-CFG-004：不得自动修改用户参数
+### CFG-005：派生值
 
-配置工具可以：
+UI至少显示：
 
-- 计算派生值；
-- 解释风险；
-- 给出修改建议；
-- 提供用户主动选择的预设。
-
-配置工具不得：
-
-- 自动降低BMIN或提高BMAX；
-- 自动修改CPBM、CMIN或CMAX；
-- 自动打开aging、CBusy或其他控制；
-- 为了让验证通过而修改激励；
-- 在`resolved config`中隐藏改写。
-
-用户接受预设或建议后，修改必须作为显式配置变化记录。
-
-### REV-CFG-005：派生参数
-
-界面必须实时显示与当前配置有关的派生值，包括：
-
-- L3总line数和每set的way数；
+- L3总line数；
 - CPBM可达比例；
-- 256个本地周期对应的时间；
-- 滤波响应速度或近似时间常数；
-- MC理论总带宽；
-- BMIN总配置量及其相对MC能力的比例；
-- CBusy预计算整数阈值；
-- 一次line fill需要的DAT flit数；
-- 基于OSTD、line size和往返延迟的带宽上界估计；
-- 各硬件表、计数器和buffer的规模。
+- 256拍对应时间；
+- 滤波响应速度；
+- MC理论带宽；
+- BMIN总量；
+- CBusy整数阈值；
+- 每次fill的DAT flit数；
+- OSTD带宽上界估计；
+- 表项、计数器和buffer规模。
 
-派生值必须标明是精确计算、上界估计还是近似提示。
+派生值必须标明精确值、上界或近似值。
 
-### REV-CFG-006：场景和结果可复现
+### CFG-006：运行快照
 
-每次运行必须保存：
+每次运行保存：
 
 ```text
-用户原始配置
+原始配置
 resolved config
 全部默认值
 seed
 代码commit
 SPEC版本
-OpenSpec change标识
+OpenSpec change
 验证等级
-仿真开始时间和结束时间
-模型能力开关
+能力开关
+运行时间
 ```
 
-场景管理必须支持：
+支持保存、复制、导入导出、重新运行和配置差异比较。
 
-- 命名保存；
-- 复制后修改；
-- YAML导入和导出；
-- 从历史结果重新运行；
-- 比较两个场景的配置差异；
-- 标识结果是否来自同一代码和SPEC版本。
+---
 
-工具不强制用户运行固定对照场景。用户可以自行复制场景、切换控制开关并
-比较结果。
+## 5. 事务与延迟模型
 
-### REV-CFG-007：PPA结构提示
+### REQ-001：类型化事务
 
-配置界面必须显示由参数直接决定的硬件结构规模，例如：
-
-- L3 tag、owner和替换状态数量；
-- MSHR和fill buffer项数；
-- MC buffer深度和全buffer QoS候选数；
-- 每PARTID监控、BMIN/BMAX、service-deficit和CBusy状态bit；
-- RN中PARTID乘MC的OSTD计数器数量；
-- 三条Ring的槽位数量；
-- 关键比较器、扫描宽度和表项数量。
-
-没有RTL综合、工艺库或实测证据时，不得把这些结构规模换算成虚构的面积、
-功耗或时序数值。
-
-### REV-IMPL-001：原位替换，不维护双模型
-
-新架构必须直接替换现有模块中的旧实现，不引入长期并存的：
+事务至少包含：
 
 ```text
-legacy
-mpam_v2
+transaction_id
+parent_transaction_id
+requester_id
+core_id
+thread_id
+PARTID
+PMG
+source_node
+destination_node
+address
+line_address
+size_bytes
+operation
+request_class
+issue_time
+completion_condition
 ```
 
-两套完整数据通路。
+禁止通过动态属性临时挂载QoS或控制状态。
 
-迁移期间允许使用短期feature branch、测试桩或适配器，但主分支合入后的每个
-阶段必须只有一个权威实现。旧行为被替换后应删除或归档，不保留运行时双模型
-开关。
+### REQ-002：请求类别
 
-### REV-IMPL-002：稳定的积木化分层
-
-实现必须保持以下稳定分层：
+预留：
 
 ```text
-Configuration
-    -> Component Factory
-    -> Transaction Model
-    -> Resource Components
-    -> Monitor Sources
-    -> Control Policies
-    -> Trace / UI
+demand_read
+demand_write
+prefetch
+page_walk
+writeback
+instruction_fetch
+maintenance
 ```
 
-主仿真路径只依赖稳定接口，不直接依赖具体算法类。
+当前默认激励主要使用`demand_read`和`demand_write`。
 
-至少定义以下接口族：
+### REQ-003：延迟分解
 
-| 接口 | 职责 |
-| --- | --- |
-| `Transaction` | 请求、flit、父子事务和完成条件 |
-| `EndpointPort` | 节点注入、接收、反压和完成回调 |
-| `RingTransport` | REQ/RSP/DAT槽位移动、绕行和下环 |
-| `CacheLookupPipeline` | L3 ingress、lookup和hit/miss结果 |
-| `ReplacementPolicy` | LRU、PLRU及后续替换策略 |
-| `MshrTable` | 同line合并、waiter和fill完成 |
-| `McReadinessPolicy` | 生成MC service-ready candidate mask |
-| `McScheduler` | 对candidate计算QoS并授权 |
-| `MonitorSource` | 原始计数、采样和滤波值发布 |
-| `ControlPolicy` | 读取规定监控值并产生控制动作 |
-| `ValidationHook` | 不变量、动作检查和诊断证据 |
+完成请求必须能够分解：
 
-### REV-IMPL-003：机制与策略解耦
+- CPU source queue等待；
+- OSTD/CBusy准入等待；
+- REQ Ring等待和传输；
+- L3 ingress和lookup；
+- MSHR/fill等待；
+- MC buffer等待；
+- MC服务；
+- RSP/DAT Ring等待和传输；
+- 控制导致的阻塞。
 
-资源组件负责机制，策略对象负责可替换算法。
+---
 
-示例：
+## 6. CPU与激励模型
+
+### CPU-001：参考结构
 
 ```text
-L3组件：
-    负责set/tag/way、lookup、MSHR、fill和事件时序
-
-ReplacementPolicy：
-    负责LRU或PLRU victim顺序
-
-CacheAllocationControl：
-    负责CPBM、CMIN、CMAX合法性判断
+8个物理核
+每核2个硬件线程
+16个独立线程激励
 ```
 
-```text
-MC组件：
-    负责buffer、服务时序和DAT返回
+每个线程有独立源队列和激励，两个线程共享核级OSTD池。
 
-McReadinessPolicy：
-    负责Hard BMAX和同地址顺序mask
-
-McScheduler：
-    负责3-bit QoS、轮询和service-deficit
-```
-
-新增策略不得要求复制整个L3、MC或仿真主循环。
-
-### REV-IMPL-004：显式状态和事件契约
-
-模块间不得通过临时字段、动态属性或隐式全局变量交换控制状态。
-
-所有跨模块信息必须通过类型化对象：
-
-```text
-Transaction
-Flit
-MonitorSample
-ControlDecision
-ControlAction
-Completion
-ValidationEvent
-```
-
-每个对象必须具有稳定ID和时间字段。PARTID、PMG、source、destination、
-request class、line address和父子事务关系必须显式保存。
-
-### REV-IMPL-005：组件注册和能力声明
-
-可替换算法通过工厂或注册表选择：
-
-```yaml
-l3:
-  replacement_policy: lru
-
-mc:
-  scheduler: mpam_qos
-  readiness_policy: basic_ordering
-
-monitor:
-  filter: weighted_history
-```
-
-每个组件必须声明：
-
-- 配置schema；
-- 输入和输出接口；
-- 支持的能力；
-- 需要的监控源；
-- 产生的控制动作；
-- 验证钩子；
-- 不支持的组合。
-
-配置加载时先完成能力匹配，禁止运行中发现接口不兼容。
-
-### REV-IMPL-006：监控与UI不反向耦合数据面
-
-资源组件只能发布类型化监控样本和事件，不能直接构造UI表格或图表。
-
-UI通过统一的查询和投影视图读取：
-
-```text
-raw samples
-filtered samples
-control events
-resource state summaries
-```
-
-后续新增监控指标时，应通过注册metric schema和视图映射完成，不修改资源调度
-主流程。
-
-### REV-IMPL-007：原位迁移顺序
-
-现有模块按以下顺序原位替换：
-
-1. 建立新的类型化`Transaction`、事件和监控契约；
-2. 扩展统一配置schema和组件工厂；
-3. 替换CPU requester和激励；
-4. 替换NoC为三条双向bufferless ring；
-5. 替换L3为真实set/tag/way、MSHR和fill；
-6. 替换MC共享buffer、readiness和QoS scheduler；
-7. 接入BMIN/BMAX、CBusy和RN OSTD闭环；
-8. 替换监控collector和Web工作区；
-9. 删除被取代的概率命中、priority heap、token bucket和旧视图逻辑。
-
-每一步合入后必须：
-
-- 主分支可运行；
-- 已迁移功能使用新接口；
-- 未迁移模块通过临时适配器接入同一契约；
-- 不引入第二套完整模型；
-- OpenSpec严格校验和自动化测试通过。
-
-### REV-IMPL-008：扩展约束
-
-后续新增功能应满足：
-
-- 新请求属性通过扩展`Transaction` schema；
-- 新替换算法实现`ReplacementPolicy`；
-- 新MC调度算法实现`McScheduler`；
-- 新控制逻辑实现`ControlPolicy`并声明硬件状态；
-- 新监控实现`MonitorSource`或注册metric；
-- 新资源节点通过`EndpointPort`接入Ring；
-- 新验证通过`ValidationHook`接入。
-
-如果新增特性必须修改多个无关模块的内部实现，说明现有接口不足，必须先提出
-OpenSpec接口变更，不能直接在主流程中添加特例。
-
-### REV-IMPL-009：禁止的框架退化
-
-禁止以下实现方式：
-
-- 在仿真主循环中按功能名写大型`if/elif`；
-- 为每种控制组合复制一套L3或MC类；
-- UI直接读取组件私有字段；
-- 控制器读取未声明的真实状态；
-- 使用动态属性给请求临时挂载QoS或控制信息；
-- 将配置解析、硬件状态更新和图表生成写在同一模块；
-- 为通过测试保留不可达的旧算法分支。
-
-### REV-ARCH-001: Data, monitor, and control planes
-
-The revised model SHALL separate:
-
-| Plane | Role |
-| --- | --- |
-| Data plane | Full modeled request, cache-set/way, queue, arbitration, and service state |
-| Monitor plane | MPAM-visible sampled and filtered values |
-| Control plane | Decisions and enforcement based on MPAM monitor values |
-
-Control algorithms SHALL consume MPAM monitor-plane values. They SHALL NOT
-read complete data-plane state unless a specific control is explicitly
-defined as having a direct hardware signal.
-
-The UI MAY expose complete data-plane state for verification and diagnosis,
-but SHALL label it separately from MPAM-visible monitoring.
-
-### REV-MON-001: Per-resource monitor clocks
-
-L3 and MC monitoring SHALL have independent clock configuration:
-
-```yaml
-l3_clock_mhz: <positive number>
-mc_clock_mhz: <positive number>
-l3_monitor_period_cycles: 256
-mc_monitor_period_cycles: 256
-```
-
-The default monitor period is 256 local resource-clock cycles. The event
-kernel SHALL convert each resource's cycle period to simulation time.
-
-### REV-MON-002: Configurable recursive filter
-
-L3 and MC monitors SHALL update once per monitor period using a configurable
-history/current weighted filter:
-
-```text
-filtered[k] =
-    history_weight * filtered[k-1]
-  + current_weight * raw[k]
-```
-
-The user interface SHALL expose `history_weight` and `current_weight`.
-Configuration validation SHALL define one normalization rule. The preferred
-hardware-oriented representation is:
-
-```text
-history_weight + current_weight = 256
-
-filtered[k] =
-    (history_weight * filtered[k-1]
-   + current_weight * raw[k]) / 256
-```
-
-The startup value and integer rounding rule remain to be decided before
-implementation.
-
-### REV-L3-MON-001: One-set-per-eight-set occupancy sampling
-
-Every consecutive eight L3 sets form one monitor group:
-
-```text
-group_index = floor(set_index / 8)
-sample_set_index = group_index * 8
-```
-
-At each L3 monitor update, the monitor SHALL inspect every way in the first
-set of each eight-set group. For every PARTID:
-
-```text
-sampled_lines[partid] =
-    count(sampled ways whose owner PARTID equals partid)
-
-raw_sampled_occupancy_share[partid] =
-    sampled_lines[partid] /
-    (monitor_group_count * ways_per_set)
-```
-
-The other seven sets are not read by the MPAM occupancy monitor. Their way
-owners may differ because of address-to-set interleaving and replacement.
-
-### REV-L3-MON-002: Actual versus monitored occupancy
-
-The revised L3 data plane SHALL maintain modeled tag, owner PARTID, and
-replacement state for all sets and ways, while the MPAM monitor plane SHALL
-continue sampling only one set per eight-set group.
-
-The following values SHALL remain separate:
-
-| Value | Meaning | Controller visibility |
-| --- | --- | --- |
-| Actual occupancy | Ownership across all modeled sets and ways | No |
-| Raw sampled occupancy | Current one-in-eight-set sample | Yes |
-| Filtered occupancy | Recursive filtered MPAM monitor value | Yes |
-
-The difference between actual and monitored occupancy is expected model
-behavior, not automatically an error.
-
-### REV-MC-MON-001: Per-PARTID bandwidth monitoring
-
-Every MC SHALL record serviced bytes for all PARTIDs during each local
-256-cycle monitor period:
-
-```text
-raw_bandwidth_gbps[partid] =
-    serviced_bytes[partid] * 8 / monitor_period_ns
-```
-
-The MC SHALL update a filtered bandwidth value using `REV-MON-002`. MC
-bandwidth controls that are defined as monitor-driven SHALL use this filtered
-MPAM value.
-
-Each MC instance SHALL monitor and control independently. UI aggregation
-across MCs is a presentation function and SHALL NOT silently become a control
-input.
-
-### REV-MAP-001: Configurable address interleaving
-
-Address mapping SHALL be deterministic and user configurable. At minimum, the
-model SHALL support:
-
-```yaml
-mapping_mode: linear | xor
-line_size_bytes: <positive power of two>
-mc_interleave_bytes: <positive multiple of line size>
-xor_shift: <non-negative integer>
-```
-
-The base line address is:
-
-```text
-line_address = floor(address / line_size_bytes)
-```
-
-Linear mapping:
-
-```text
-l3_set = line_address mod l3_set_count
-mc_id = floor(address / mc_interleave_bytes) mod mc_count
-```
-
-XOR mapping:
-
-```text
-mapped_line = line_address XOR (line_address >> xor_shift)
-l3_set = mapped_line mod l3_set_count
-mc_id =
-    floor(mapped_line / (mc_interleave_bytes / line_size_bytes))
-    mod mc_count
-```
-
-The exact ordering of L3-set and MC selection transforms, as well as any
-future slice/channel/bank mapping, SHALL be explicit rather than hidden in
-traffic-generation code.
-
-### REV-UI-001: PARTID-selectable time-series evidence
-
-Every resource time-series view SHALL allow:
-
-- selecting one PARTID;
-- selecting multiple PARTIDs;
-- hiding all unselected PARTIDs consistently;
-- selecting an individual L3 or MC instance;
-- switching to an explicitly labeled aggregate view;
-- using a shared time cursor;
-- zooming to a time range;
-- locating control events.
-
-Every plot SHALL include a clear legend. Line style and color SHALL
-distinguish:
-
-- configured target;
-- effective target after enable/clamp/policy processing;
-- actual data-plane value;
-- raw MPAM sample;
-- filtered MPAM monitor value;
-- control action or state transition.
-
-Disabled and unavailable signals SHALL be shown as such; they SHALL NOT be
-rendered as numeric zero.
-
-### REV-UI-002: Monitor-error visibility
-
-For L3 occupancy and MC bandwidth, the UI SHALL make sampling/filtering error
-visible:
-
-```text
-monitor_error = filtered_MPAM_value - actual_data_plane_value
-```
-
-At minimum, users SHALL be able to plot actual, raw sampled, and filtered
-values together. The UI SHOULD also provide absolute error and relative error,
-with relative error suppressed or specially labeled when the actual value is
-zero.
-
-### REV-MON-003: Monitor/control update order
-
-At each resource monitor boundary, the update order SHALL be deterministic:
-
-```text
-1. close current-period access/service counters
-2. read the resource's raw monitor sample
-3. calculate the new filtered monitor value
-4. publish monitor state
-5. evaluate monitor-driven control logic
-6. publish and apply the resulting control action
-7. clear only the current-period counters
-8. retain the filtered value as next period's history
-```
-
-The trace SHALL preserve the monitor sample time, decision time, and action
-effective time so that feedback delay is visible.
-
-### REV-CPU-001: Eight-core, sixteen-thread requester hierarchy
-
-The reference topology SHALL use:
-
-```text
-8 physical cores
-2 hardware threads per core
-16 independently configurable thread stimuli
-```
-
-Each thread SHALL retain an independently configurable workload and raw
-PARTID/PMG assignment mode. The two hardware threads of one core SHALL share
-a core-level outstanding-request resource.
-
-The revised requester hierarchy SHALL contain:
-
-- a per-thread source queue;
-- a per-thread outstanding limit;
-- a per-core shared OSTD pool;
-- a per-PARTID effective OSTD limit;
-- core arbitration between the two hardware threads;
-- CBusy-derived OSTD clamps;
-- completion-driven release of the core and thread OSTD allocation.
-
-A request SHALL retain its OSTD allocation until its terminal response or
-read-data completion returns to the originating hardware thread.
-
-The allocation policy for multiple PARTIDs competing for one core OSTD pool
-remains a separate decision. The implementation SHALL NOT treat the core pool
-capacity as an independent full-capacity allowance for every PARTID.
-
-### REV-CPU-002: CPU traffic-model boundary
-
-The CPU model SHALL be complete enough to represent memory-level parallelism,
-shared core OSTD contention, dependency-limited traffic, downstream
-backpressure, and terminal completion. It SHALL NOT attempt to model a full
-instruction pipeline, reorder buffer, branch predictor, or instruction
-retirement.
-
-The default traffic entry point SHALL be:
+### CPU-002：默认激励入口
 
 ```yaml
 traffic_entry_point: l3_facing
 ```
 
-In this mode, a generated request represents a transaction that has already
-passed any private L1/L2 filtering and is ready to access the shared L3.
+请求表示已经越过私有L1/L2、准备访问共享L3的事务。
+`cpu_memory_access`作为未来近似模式预留。
 
-An optional future mode MAY use:
+### CPU-003：OSTD层次
 
-```yaml
-traffic_entry_point: cpu_memory_access
+至少包含：
+
+- Core OSTD；
+- Thread OSTD；
+- Core/PARTID OSTD；
+- Core/PARTID/Destination-MC OSTD；
+- CBusy动态上限。
+
+新事务准入条件：
+
+```text
+事务跟踪表有空项
+AND core_count < core_limit
+AND thread_count < thread_limit
+AND partid_mc_count < effective_partid_mc_limit
+AND REQ Ring接受注入
 ```
 
-That mode requires an explicitly labeled approximation for private-cache and
-TLB filtering. It SHALL NOT silently reuse L3-facing request rates as raw CPU
-load/store rates.
+### CPU-004：OSTD硬件动作
 
-### REV-CPU-003: Shared OSTD policy options
+OSTD控制作用于RN事务表分配：
 
-Public information does not establish one universal physical-core OSTD
-allocation algorithm for commercial SMT cores. The simulator SHALL therefore
-provide explicit selectable policies:
+- 允许时分配TxnID并增加计数；
+- 不允许时请求留在CPU源队列；
+- 已发事务不撤回；
+- 收到终止RSP或最后DAT后释放计数。
+
+CBusy降低上限时，如果当前OSTD高于新上限，仅停止新准入，等待自然回落。
+
+### CPU-005：OSTD策略
 
 ```yaml
-core_ostd_entries: <positive integer>
 core_ostd_policy: shared | static_partition | reserve_borrow
 ```
 
-Policy meanings:
-
-| Policy | Behavior |
-| --- | --- |
-| `shared` | Both threads compete for the full core pool under the configured thread scheduler |
-| `static_partition` | Each thread has a fixed non-borrowable allocation |
-| `reserve_borrow` | Each active thread has a configured reserve and may borrow otherwise unused entries up to its maximum |
-
-The default SHALL be:
+默认：
 
 ```yaml
 core_ostd_policy: shared
 thread_scheduler: round_robin
 ```
 
-This default is a neutral system-level modeling choice, not a claim about a
-specific Arm CPU implementation.
+其他策略用于研究，不声称对应某款商业CPU。
 
-For every new request, admission SHALL require:
-
-```text
-core OSTD has capacity
-AND thread OSTD is below its maximum
-AND core/PARTID OSTD is below its effective limit
-AND destination-MC CBusy permits admission
-AND the selected REQ ring accepts injection
-```
-
-CBusy SHALL restrict only new request admission. It SHALL NOT cancel or recall
-requests already in flight.
-
-### REV-CPU-004: Destination-specific PARTID/CBusy limit
-
-When the destination MC can be determined from the request address before
-issue:
+### CPU-006：目标MC相关限制
 
 ```text
-effective_ostd[core, partid, destination_mc] =
-    min(
-        configured_partid_ostd,
-        software_partid_ostd,
-        cbusy_ostd_cap[destination_mc, partid]
-    )
+effective_ostd[core, partid, mc] =
+min(
+    configured_partid_ostd,
+    software_partid_ostd,
+    cbusy_ostd_cap[mc, partid]
+)
 ```
 
-Congestion at one MC SHALL NOT automatically clamp traffic of the same PARTID
-to another MC. A global maximum-CBusy aggregation MAY remain available as an
-explicit simplified mode, but SHALL not be the default revised behavior.
+MC0拥塞不得默认限制同一PARTID发往MC1的请求。
 
-### REV-CPU-005: CPU issue rate and source queue
-
-The CPU model SHALL expose:
-
-```yaml
-cpu_clock_mhz: <positive number>
-core_issue_width: <positive integer>
-thread_source_queue_depth: <positive integer>
-thread_ostd_max: <positive integer>
-thread_scheduler: round_robin | weighted_round_robin | oldest_first
-issue_selection: fifo | eligible_scan
-eligible_scan_depth: <positive integer>
-```
-
-These limits have distinct meanings:
-
-| Limit | Meaning |
-| --- | --- |
-| Core issue width | Maximum new requests submitted by one core per CPU cycle |
-| Core OSTD | Total core transactions awaiting terminal completion |
-| Thread source queue | Generated but not yet admitted requests |
-| REQ ring admission | Availability of an injectable ring slot |
-| L3 MSHR | L3 miss-tracking capacity |
-
-The default scheduler SHALL be round-robin and work-conserving. Other
-schedulers are research options.
-
-### REV-TRAFFIC-001: Orthogonal stimulus dimensions
-
-Stimulus configuration SHALL separate address behavior, operation type,
-dependency, arrival timing, and issue selection:
+### TRAFFIC-001：正交激励参数
 
 ```yaml
 address_pattern: sequential | random | pointer_chase
 operation_pattern: read | write | mixed
-read_ratio: <0.0 through 1.0>
+read_ratio:
 dependency_mode: independent | chained
-independent_chains: <positive integer>
+independent_chains:
 arrival_mode: fixed | poisson | burst
-burst_length: <positive integer>
+burst_length:
 issue_selection: fifo | eligible_scan
-eligible_scan_depth: <positive integer>
-working_set_bytes: <positive integer>
+eligible_scan_depth:
+working_set_bytes:
 ```
 
-Legacy names SHALL map to these independent fields:
+### TRAFFIC-002：Pointer chase
 
-| Legacy label | Revised meaning |
-| --- | --- |
-| `stream` | Sequential address pattern with independent requests |
-| `random_read` | Random address pattern with read operation |
-| `mixed` | An operation mix; it does not define address behavior |
-| `pointer_chase` | Pointer-derived addresses with chained dependency |
-| `bursty_dma` | Burst arrival with explicitly configured burst length and concurrency |
-
-### REV-TRAFFIC-002: Pointer-chase dependency
-
-For one pointer chain:
+同一链的下一个地址由前一个DAT返回后产生：
 
 ```text
-issue address A
--> receive DAT containing next address B
--> generate and issue B
+读取A
+-> 返回next=B
+-> 才生成B
 ```
 
-The next request in a chain SHALL not exist in the source queue before the
-preceding request returns its modeled data. Therefore one chain has at most
-one outstanding dependent request.
+一条链最多一个依赖请求；`independent_chains`决定链间并行度。
 
-`independent_chains` creates multiple independent pointer chains. The maximum
-dependency-derived concurrency is the number of chains, further bounded by
-CPU OSTD and downstream flow control.
+### TRAFFIC-003：Eligible scan
 
-### REV-TRAFFIC-003: Eligible-scan issue selection
+它是发射策略，不是激励类型。可以在前N个已生成、彼此独立的请求中，
+选择第一个满足准入条件的请求，但不得越过依赖和顺序约束。
 
-`eligible_scan` is an issue-queue policy, not a workload type. It MAY inspect
-the first `eligible_scan_depth` already-generated independent requests and
-issue the oldest request that passes all admission conditions.
+### CPU-007：监控
 
-Example:
+必须按core、thread、PARTID和目标MC记录：
 
-```text
-A -> MC0, blocked by MC0 CBusy
-B -> MC1, eligible
-C -> L3, eligible
-```
+- 源队列；
+- generated/admitted/completed；
+- 当前和峰值OSTD；
+- 配置、软件、CBusy和最终有效上限；
+- issue rate；
+- OSTD lifetime；
+- 各类stall原因。
 
-FIFO waits behind A. Eligible scan may issue B while retaining A.
+---
 
-Eligible scan SHALL NOT violate dependency:
+## 7. NoC与CHI形态通道
 
-- a not-yet-generated pointer-chase successor cannot be selected;
-- ordering-constrained operations cannot be bypassed;
-- different independent pointer chains may be selected independently.
+### NOC-001：通道边界
 
-### REV-CPU-006: CPU observability
+使用CHI形态的：
 
-For every core, thread, PARTID, and destination MC, monitoring SHALL expose:
+- REQ；
+- RSP；
+- DAT；
+- SNP预留但关闭。
 
-- source-queue depth;
-- generated, admitted, and completed requests;
-- actual and peak OSTD;
-- core capacity and thread maximum;
-- configured, software, CBusy, and final effective PARTID limits;
-- requests issued per CPU cycle or monitor period;
-- OSTD lifetime;
-- terminal completion count;
-- borrowed or reserved entries when the selected policy uses them.
+这不是完整CHI协议实现。
 
-Stall time and events SHALL be separated into:
+### NOC-002：三条独立Ring
 
-```text
-core_ostd_full
-thread_ostd_max
-static_partition_limit
-reserve_protection
-partid_ostd_limit
-cbusy_limit
-req_ring_backpressure
-source_queue_full
-scheduler_wait
-dependency_wait
-```
-
-Verification SHALL prove capacity, admission, arbitration, dependency, and
-release rules. It SHALL NOT require a configured throughput or latency target
-to be reached.
-
-### REV-UI-003: Configuration help and complexity levels
-
-Every user-configurable field, option, workload dimension, scheduler, and
-control mode SHALL have a pointer-triggered explanation. The explanation
-SHALL state:
-
-- what the field represents;
-- its unit and valid range;
-- where it acts in the request path;
-- whether it is a model assumption or an architected/public behavior;
-- its expected effect;
-- interactions with related limits;
-- one short configuration example where useful.
-
-For stimulus types, the help popover SHALL include the request-generation and
-dependency sequence, including pointer-chase and eligible-scan examples.
-
-The CPU configuration UI SHALL separate:
-
-```text
-Basic:
-  clock, issue width, core OSTD, thread OSTD,
-  address pattern, operation mix, dependency, rate
-
-Advanced:
-  OSTD allocation policy, scheduler, issue scan depth,
-  source-queue depth, pointer-chain count, burst timing
-```
-
-Advanced fields SHALL remain user configurable but SHALL not obscure the
-common configuration path.
-
-### REV-L3-PIPE-001: Configurable hit, miss, and fill latency
-
-The revised L3 SHALL expose separate local-clock latency parameters:
+REQ、RSP、DAT使用三条独立、双向、bufferless ring。
 
 ```yaml
-l3_hit_latency_cycles: <positive integer>
-l3_miss_detect_latency_cycles: <positive integer>
-l3_fill_latency_cycles: <non-negative integer>
+noc_clock_mhz:
+ring_node_order:
+flit_bytes:
+link_slots_per_direction:
+hop_latency_cycles:
+tie_direction:
 ```
 
-An L3 hit SHALL return data only after the configured hit latency and DAT
-channel transport.
+### NOC-003：路由
 
-An L3 miss SHALL:
+- 选择最短方向；
+- 距离相同时使用固定方向；
+- 结果必须确定。
+
+### NOC-004：无buffer移动
+
+Ring内部flit不能停止：
 
 ```text
-1. consume an L3 lookup resource until miss detection
-2. allocate a miss-status/MSHR entry and a line-fill reservation
-3. issue a downstream memory request
-4. retain the miss entry while memory and return-network service proceed
-5. receive returned data
-6. perform victim selection and fill the L3
-7. wait for configured fill latency
-8. return data to the requester through the DAT channel
-9. release the requester's OSTD only after terminal completion
+目的节点可接收 -> 下Ring
+目的节点不可接收 -> 继续绕行，下次再尝试
 ```
 
-The miss SHALL occupy a bounded L3 miss resource until fill completion. It
-SHALL NOT implicitly hold the entire L3 lookup pipeline for the full memory
-latency. A future explicit `hold_lookup_on_miss` research option MAY model
-that behavior, but it is not the default because real caches normally track
-outstanding misses with MSHR/fill structures.
+节点侧允许有endpoint queue和资源状态，但它们不属于Ring buffer。
 
-The revised configuration SHALL add at least:
+### NOC-005：上Ring反压
 
-```yaml
-l3_mshr_entries: <positive integer>
-l3_fill_buffer_entries: <positive integer>
-merge_same_line_misses: true | false
-```
+节点仅在注入点经过可用空槽时注入。没有空槽时，NoC向节点反压。
+REQ/RSP/DAT不配置credit。
 
-MSHR-full and fill-buffer-full stalls SHALL be separately observable.
+### NOC-006：无NoC QoS
 
-### REV-L3-DATA-001: Cache-line definition
+Ring不按PARTID或QoS控制上Ring、下Ring和传输。
+MC的3-bit QoS只在MC内部生效。
 
-`line_size_bytes` is the amount of data represented by one L3 tag/way entry
-and transferred by one L3 line fill. A typical default is 64 bytes, but the
-value SHALL be configurable and SHALL be a positive power of two.
+### NOC-007：DAT多flit
 
-```yaml
-line_size_bytes: 64
-```
-
-For an address:
+DAT flit独立注入，携带：
 
 ```text
-byte_offset = address mod line_size_bytes
-line_address = floor(address / line_size_bytes)
-mapped_line = configured_interleave(line_address)
+transaction_id
+flit_index
+flit_count
+```
+
+目的节点按事务重组。单个flit下不去时仅该flit继续绕行。
+
+### NOC-008：监控
+
+按Ring、方向、链路、节点和PARTID记录：
+
+- offered/injected/ejected flits；
+- 槽位占用；
+- 注入反压；
+- 首次下Ring和失败次数；
+- 绕行次数和完整环周；
+- hop数；
+- 正常延迟和绕行附加延迟；
+- 仿真结束时在途flit。
+
+---
+
+## 8. L3数据面
+
+### L3-001：Cache line
+
+`line_size_bytes`是tag、分配、替换、fill和占用统计的最小粒度，
+默认建议64B，必须为2的幂。
+
+```text
+byte_offset = address mod line_size
+line_address = floor(address / line_size)
+mapped_line = interleave(line_address)
 set_index = mapped_line mod set_count
 tag = floor(mapped_line / set_count)
 ```
 
-Example for a 64-byte line:
+跨line请求拆成line对齐子事务。
 
-```text
-address 0x1000 through 0x103f -> one cache line
-address 0x1040               -> the next cache line
-```
+### L3-002：真实set/tag/way
 
-The line size affects:
-
-- address offset, set, and tag extraction;
-- L3 capacity in lines;
-- cache allocation and replacement granularity;
-- MSHR matching and same-line miss merging;
-- memory fill size;
-- DAT flit count;
-- occupancy-monitor conversion from lines to bytes.
-
-A request that crosses a line boundary SHALL be split into line-aligned child
-transactions. Each child participates independently in L3 lookup, MSHR,
-memory fill, and DAT transfer. The parent operation completes only after all
-children complete. In the default L3-facing CPU mode, each child consumes one
-CPU transaction/OSTD entry.
-
-### REV-L3-DATA-002: Real set/tag/way state
-
-The revised L3 SHALL replace probabilistic hit generation with explicit
-cache state for every set and way:
+每个way保存：
 
 ```text
 valid
@@ -2996,140 +627,168 @@ owner_pmg
 replacement_state
 ```
 
-A lookup is a hit only when an eligible valid way in the indexed set has the
-matching tag. Otherwise it is a miss.
+命中必须由真实tag比较决定，取消概率命中模型。
 
-The replacement policy SHALL be configurable:
+### L3-003：替换策略
 
 ```yaml
 replacement_policy: lru | plru
 ```
 
-`lru` SHALL implement exact least-recently-used ordering for each set.
-`plru` SHALL implement a documented deterministic approximation, such as
-tree-PLRU for a supported power-of-two associativity. The UI help SHALL
-explain that PLRU may choose a different victim from exact LRU.
+LRU为精确set内最近最少使用；PLRU必须明确具体算法和支持的way数。
 
-The full set/tag/way state is data-plane truth. MPAM occupancy monitoring
-still samples only the first set in each eight-set group.
-
-### REV-L3-CTRL-001: Direct and monitor-driven controls
-
-CPBM is a direct allocation constraint and SHALL be evaluated for every fill:
-
-```text
-eligible_ways = ways whose CPBM bit is one
-```
-
-CMIN and CMAX are monitor-driven controls. For monitor interval `k`, all
-replacement and allocation decisions SHALL use the last published filtered
-MPAM occupancy value:
-
-```text
-control_input_occupancy[k] = filtered_occupancy[k - 1]
-```
-
-At the end of interval `k`, the L3 computes and publishes
-`filtered_occupancy[k]`, which becomes the control input for interval
-`k + 1`.
-
-The controller SHALL NOT use actual all-set occupancy or the unfinished raw
-sample from the current interval.
-
-### REV-L3-CTRL-002: CMIN replacement protection
-
-When evaluating a candidate victim:
-
-```text
-if victim_owner_filtered_occupancy <= victim_owner_effective_cmin:
-    victim is protected from replacement
-```
-
-CMIN is demand-driven protection. It does not prefill cache lines and does
-not guarantee that either actual or filtered occupancy reaches CMIN.
-
-Because the control input is sampled and filtered, actual occupancy may
-temporarily fall below CMIN before the next control update. The UI SHALL show
-the monitor and control delay rather than treating every instantaneous
-crossing as an implementation error.
-
-### REV-L3-CTRL-003: CMAX growth restriction
-
-When the requesting PARTID's last published filtered occupancy is at or above
-effective CMAX:
-
-- an existing matching line may still hit;
-- the requester may replace one of its own eligible lines in the indexed set;
-- it may not consume an empty way to increase occupancy;
-- it may not evict another PARTID to increase occupancy.
-
-If no requester-owned eligible victim exists, the fill SHALL bypass L3 and
-the data SHALL still return to the requester.
-
-CMAX does not actively invalidate existing lines. Actual and filtered
-occupancy may remain above CMAX while lines age out or replace themselves.
-
-### REV-L3-CTRL-004: No legal victim
-
-If CPBM eligibility, CMIN protection, and CMAX restriction leave no legal
-victim:
-
-```text
-do not allocate the returned line in L3
-record allocation_bypass
-return data to the requester
-```
-
-The monitor plane SHALL separately report:
-
-- CPBM-ineligible ways considered;
-- CMIN-protected victim candidates;
-- CMAX growth blocks;
-- no-legal-victim bypasses;
-- self-replacement under CMAX.
-
-These events demonstrate that controls activated even when a target was not
-achieved.
-
-### REV-MC-CTRL-001: BMIN/BMAX consume filtered MPAM bandwidth
-
-BMIN and BMAX SHALL follow the same monitor-driven timing principle as
-CMIN/CMAX. For MC monitor interval `k`:
-
-```text
-control_input_bandwidth[k] = filtered_bandwidth[k - 1]
-```
-
-At the end of interval `k`, the MC publishes `filtered_bandwidth[k]`; the
-result may alter scheduling or limiting behavior for interval `k + 1`.
-
-The MC controller SHALL NOT secretly use all-service instantaneous bandwidth
-when a function is specified as MPAM-monitor driven.
-
-Consequences that SHALL be visible:
-
-- at least one monitor-period observation/action delay;
-- overshoot or undershoot caused by sampling;
-- additional lag caused by `history_weight`;
-- target non-attainment under conflicting demand or resource limits;
-- control oscillation or saturation if the algorithm is poorly tuned.
-
-The exact BMIN promotion and BMAX soft/hard action for the next interval
-remains to be defined in the MC chapter. This requirement fixes the control
-input and update timing, not yet the complete enforcement algorithm.
-
-### REV-MC-QUEUE-001: Shared request buffer
-
-Each MC SHALL have one shared physical request buffer:
+### L3-004：延迟和资源
 
 ```yaml
-mc_request_buffer_depth: <positive integer>
+l3_hit_latency_cycles:
+l3_miss_detect_latency_cycles:
+l3_fill_latency_cycles:
+l3_lookup_parallelism:
+l3_ingress_depth:
+l3_mshr_entries:
+l3_fill_buffer_entries:
+merge_same_line_misses:
 ```
 
-Every simulator buffer entry SHALL retain at least:
+miss仅占用lookup到miss识别，之后由MSHR和fill资源跟踪，
+不默认占住整个lookup流水线直到内存返回。
+
+### L3-005：同line miss
+
+默认合并同line read miss：
+
+- 第一请求建立MSHR和内存读；
+- 后续请求加入waiter；
+- 每个waiter保留自己的PARTID/PMG和CPU OSTD；
+- fill完成后分别返回。
+
+第一miss的PARTID/PMG是line分配owner。其他PARTID命中或合并不会重新标记。
+
+### L3-006：未合并重复fill
+
+关闭合并时允许重复内存读。后返回fill发现line已存在时：
+
+- 不创建重复tag；
+- 不修改owner；
+- 记录`redundant_memory_fetch`；
+- 完成等待请求。
+
+---
+
+## 9. L3 MPAM监控与控制
+
+### L3-MON-001：独立时钟
+
+```yaml
+l3_clock_mhz:
+l3_monitor_period_cycles: 256
+```
+
+### L3-MON-002：1/8 set采样
+
+每连续8个set为一组，只读取组内第一个set的所有way：
 
 ```text
-valid
+group = floor(set_index / 8)
+sample_set = group * 8
+```
+
+每个PARTID同时保留：
+
+- 全set实际占用；
+- 1/8 set原始采样占用；
+- 滤波MPAM占用。
+
+实际值仅供验证和UI，不允许CMIN/CMAX读取。
+
+### MON-001：滤波公式
+
+```text
+history_weight + current_weight = 256
+
+filtered[k] =
+(
+  history_weight * filtered[k-1]
+  + current_weight * raw[k]
+) / 256
+```
+
+权重由用户配置。启动值和整数舍入规则必须在实现前固定并测试。
+
+### L3-CTRL-001：CPBM
+
+CPBM是每次fill直接使用的way资格mask：
+
+```text
+eligible_ways = CPBM中置1的way
+```
+
+它是分配约束，不是访问权限。
+
+### L3-CTRL-002：控制时序
+
+周期`k`内的CMIN/CMAX使用：
+
+```text
+control_input[k] = filtered_occupancy[k-1]
+```
+
+周期末发布`filtered[k]`，供下一个周期使用。
+
+### L3-CTRL-003：CMIN
+
+如果候选victim owner的上次滤波占用不高于有效CMIN，该victim受保护。
+CMIN不预分配、不预填充，也不保证目标达到。
+
+### L3-CTRL-004：CMAX
+
+请求者上次滤波占用达到CMAX时：
+
+- hit仍允许；
+- 可以替换自己在当前set中的line；
+- 不可占用空way继续增长；
+- 不可驱逐其他PARTID继续增长。
+
+没有自己的合法victim时，fill绕过L3。
+
+### L3-CTRL-005：无合法victim
+
+CPBM、CMIN和CMAX组合后无合法victim时：
+
+```text
+不分配L3
+记录allocation_bypass
+数据仍返回请求者
+```
+
+### L3-MON-003：证据
+
+必须记录：
+
+- CMIN保护候选；
+- CMAX增长阻止；
+- CPBM排除；
+- 自替换；
+- 无合法victim绕过；
+- raw/filtered/actual占用误差；
+- hit/miss/fill/eviction；
+- MSHR和fill压力。
+
+---
+
+## 10. MC数据面与调度
+
+### MC-001：共享buffer
+
+每个MC有一个共享请求buffer：
+
+```yaml
+mc_request_buffer_depth:
+```
+
+仿真entry至少记录：
+
+```text
 transaction_id
 partid
 pmg
@@ -3142,769 +801,332 @@ enqueue_sequence
 ready
 ```
 
-`enqueue_mc_cycle` is captured when the complete REQ transaction successfully
-ejects from the REQ ring and allocates a valid MC-buffer entry:
+精确入队时间仅用于观测，不参与默认硬件调度。
 
-```text
-enqueue_mc_cycle = current_mc_cycle
-```
+### MC-002：入队点
 
-MC queue age is:
+完整REQ成功下Ring并分配MC entry时记录入队周期。
+下Ring前的绕行属于NoC延迟，不属于MC排队延迟。
 
-```text
-queue_age_cycles =
-    current_mc_cycle - enqueue_mc_cycle
-```
+buffer满时，REQ不能下Ring并继续绕行。
 
-REQ-ring transport and recirculation before successful ejection are NoC
-latency, not MC queue latency.
+### MC-003：Candidate集合
 
-`enqueue_sequence` is a monotonically increasing MC-local value used for
-deterministic trace reconstruction. The simulator MAY also report the
-equivalent nanosecond timestamp, but cycle count is the normative observed MC
-residence time.
-
-Exact `enqueue_mc_cycle` and `enqueue_sequence` are simulator-observation
-state. They SHALL NOT be assumed to exist in the default hardware scheduler
-or affect default QoS selection.
-
-Hardware-PPA studies MAY expose a quantized/saturating age representation:
-
-```yaml
-aging_quantum_cycles: <positive integer>
-aging_counter_bits: <positive integer>
-```
-
-This allows the model to study optional per-entry age tracking without
-claiming that hardware stores a full software timestamp.
-
-### REV-MC-QUEUE-002: Admission and ring interaction
-
-If the shared MC request buffer has no free entry, the destination SN SHALL
-not eject the incoming REQ flit or packet. The transaction SHALL continue to
-circulate on the REQ ring until an entry becomes available.
-
-The monitor SHALL separate:
-
-- REQ-ring recirculation before MC admission;
-- MC-buffer residence time after admission;
-- DAT return-ring delay after service.
-
-### REV-MC-SCHED-001: Full-buffer QoS candidate set
-
-All valid and service-ready entries in the configured MC buffer depth SHALL
-participate in each QoS scheduling decision.
+buffer中所有valid且ready的entry参与QoS调度，不仅是每PARTID队首。
 
 ```text
 candidate =
-    valid
-    AND ready
-    AND not hard-blocked by the entry's PARTID
-    AND not blocked by an explicit ordering rule
+valid
+AND ready
+AND not hard_blocked
+AND not ordering_blocked
 ```
 
-The revised model SHALL NOT reduce the candidate set to one FIFO head per
-PARTID.
+### MC-004：同line顺序
 
-Because detailed DRAM bank/row timing is initially outside scope, every valid
-entry is normally service-ready. A later DRAM timing model MAY first mask out
-entries that are not command-ready, then apply the same QoS selection to all
-remaining candidates.
+| 较老 | 较新同line | 较新是否ready |
+| --- | --- | --- |
+| Read | Read | 可以 |
+| Read | Write | 等待 |
+| Write | Read | 等待 |
+| Write | Write | 等待 |
 
-Scanning and comparing the whole buffer is a hardware-PPA cost. The UI and
-report SHALL identify:
+包含write的同line事务保持顺序。MC不合并请求。
 
-- buffer depth;
-- number of candidates examined per decision;
-- QoS comparator width;
-- configured aging implementation and metadata width.
+### MC-005：基础QoS
 
-These are implementation-cost indicators, not an area/power number unless
-calibrated against RTL or synthesis evidence.
-
-### REV-MC-CTRL-002: Configurable hysteresis
-
-Hysteresis SHALL use different assert and release thresholds so filtered
-bandwidth noise near a target does not toggle control state every monitor
-period.
-
-For BMAX with hysteresis fraction `h`:
+每PARTID配置3-bit MC QoS：
 
 ```text
-assert OVER_BMAX when:
-    filtered_bw > BMAX
-
-release OVER_BMAX when:
-    filtered_bw <= BMAX * (1 - h)
+0..7，7最高
 ```
 
-Example:
+只影响MC调度。
 
-```text
-BMAX = 40 GB/s
-h = 5%
-assert above 40 GB/s
-release at or below 38 GB/s
-```
+### MC-006：同QoS仲裁
 
-For BMIN:
+默认使用`rotating_buffer_scan`：
 
-```text
-assert UNDER_BMIN when:
-    filtered_bw < BMIN
+- 保存一个buffer slot轮询指针；
+- 从上次授权位置之后开始扫描；
+- 在最高QoS候选中选择第一个；
+- 不需要每entry年龄比较。
 
-release UNDER_BMIN when:
-    filtered_bw >= BMIN * (1 + h)
-```
+---
 
-Example:
+## 11. MC带宽监控与控制
 
-```text
-BMIN = 20 GB/s
-h = 5%
-assert below 20 GB/s
-release at or above 21 GB/s
-```
-
-Configuration:
+### MC-MON-001：带宽采样
 
 ```yaml
-bandwidth_hysteresis_percent: <0 through less than 100>
+mc_clock_mhz:
+mc_monitor_period_cycles: 256
 ```
 
-Zero disables hysteresis. The recommended default is 5%. The UI SHALL display
-the derived assert and release thresholds.
-
-Hysteresis adds one state bit per control state and threshold comparisons.
-Threshold values SHOULD be precomputed from configuration so the modeled
-hardware decision does not require a runtime floating-point multiply.
-
-Hysteresis reduces state chatter but can increase overshoot, undershoot, and
-recovery time. Its effect SHALL be visible in the time-series view.
-
-### REV-MC-CTRL-003: Contention definition
-
-The MC is contended for BMIN and soft-BMAX purposes only when at least two
-different PARTIDs have pending service-ready candidates:
+每周期统计每PARTID已服务字节：
 
 ```text
-contended =
-    count(distinct PARTIDs among service-ready candidates) >= 2
+raw_bw = serviced_bytes * 8 / monitor_period_ns
 ```
 
-Multiple requests from only one PARTID do not constitute inter-PARTID
-contention.
+使用与L3相同的可配历史滤波。
 
-### REV-MC-CTRL-004: BMIN action
+### MC-CTRL-001：上一周期输入
 
-At each monitor boundary, update `UNDER_BMIN` from the previous published
-filtered bandwidth and the hysteresis rule.
+BMIN/BMAX在周期`k`使用：
 
-BMIN QoS promotion applies only when:
+```text
+filtered_bw[k-1]
+```
+
+不允许暗中使用当前瞬时带宽。
+
+### MC-CTRL-002：滞回
+
+BMAX：
+
+```text
+filtered > BMAX             -> assert OVER_BMAX
+filtered <= BMAX * (1-h)    -> release
+```
+
+BMIN：
+
+```text
+filtered < BMIN             -> assert UNDER_BMIN
+filtered >= BMIN * (1+h)    -> release
+```
+
+默认建议`h=5%`，0表示关闭。阈值在配置阶段预计算。
+
+### MC-CTRL-003：竞争
+
+只有至少两个不同PARTID有ready candidate时，才算PARTID间竞争。
+
+### MC-CTRL-004：BMIN
+
+满足以下条件时提升QoS：
 
 ```text
 BMIN enabled
-AND UNDER_BMIN is asserted
-AND the PARTID has pending candidates
-AND the MC is contended
+AND UNDER_BMIN
+AND 有pending candidate
+AND contended
 ```
 
-For every candidate of that PARTID:
+BMIN是调度偏好，不预留空闲带宽，不保证达到目标。
 
-```text
-bmin_adjustment = configured_bmin_qos_promote
-```
+### MC-CTRL-005：Soft BMAX
 
-BMIN is a scheduling preference. It does not pre-reserve idle bandwidth and
-does not guarantee target attainment.
-
-An aggregate configured BMIN above physical MC capacity SHALL produce a
-warning and a visible infeasible-target status, but the simulation SHALL
-remain runnable.
-
-### REV-MC-CTRL-005: Soft BMAX action
-
-At each monitor boundary, update `OVER_BMAX` from the previous published
-filtered bandwidth and hysteresis.
-
-Soft-BMAX demotion applies only when:
+满足以下条件时降低QoS：
 
 ```text
 BMAX enabled
-AND mode == softlimit
-AND OVER_BMAX is asserted
-AND the MC is contended
+AND softlimit
+AND OVER_BMAX
+AND contended
 ```
 
-For every candidate of that PARTID:
+请求仍然eligible。QoS降到0仍超限表示控制饱和。
+无竞争时保持work-conserving。
+
+### MC-CTRL-006：Hard BMAX
+
+Hard BMAX使用整监控周期服务门控：
 
 ```text
-soft_bmax_adjustment = configured_soft_bmax_qos_demote
+OVER_BMAX -> 下一个控制周期内该PARTID所有entry不可服务
 ```
 
-Soft-limit requests remain eligible. If effective QoS reaches zero and the
-PARTID still exceeds BMAX, the controller is saturated; this is a valid result.
+请求保留在buffer中。滤波值降到释放阈值后解除。
+过冲、锯齿、buffer增长和恢复延迟是预期PPA折中。
 
-Without inter-PARTID contention, soft-BMAX is work-conserving and does not
-prevent use of otherwise idle memory bandwidth.
-
-### REV-MC-CTRL-006: Hard BMAX interval gate
-
-Hard BMAX SHALL use coarse monitor-period service gating rather than a hidden
-per-request token bucket.
-
-```text
-if BMAX enabled
-AND mode == hardlimit
-AND OVER_BMAX is asserted:
-    mark every request of the PARTID ineligible for MC service
-```
-
-The hard-block state remains fixed until the next MC monitor update. Requests
-remain in the MC buffer and retain their enqueue age.
-
-When filtered bandwidth falls to the BMAX release threshold, the block is
-removed for the next interval. This can produce:
-
-```text
-service burst
--> delayed over-limit observation
--> full-interval block
--> filtered decay
--> release
--> another service burst
-```
-
-The resulting overshoot, sawtooth bandwidth, buffer growth, and recovery time
-are expected low-PPA implementation behavior.
-
-### REV-MC-SCHED-002: 3-bit QoS selection
-
-For every candidate entry:
+### MC-CTRL-007：有效QoS
 
 ```text
 effective_qos = clamp(
-    base_mc_qos[partid]
-  + bmin_qos_promote_if_active
-  - soft_bmax_qos_demote_if_active
-  + aging_qos_promote[partid],
+    base_qos
+  + bmin_promote
+  - soft_bmax_demote
+  + service_deficit_promote,
     0,
     7
 )
 ```
 
-The scheduler SHALL:
+### MC-CTRL-008：可选service deficit
 
-1. form the full-buffer service-ready candidate set;
-2. remove hard-BMAX-blocked entries;
-3. calculate effective QoS for every remaining entry;
-4. select the highest effective QoS;
-5. break equal-QoS ties using the configured hardware-feasible tie policy.
-
-The default tie policy SHALL be:
-
-```yaml
-equal_qos_tie_policy: rotating_buffer_scan
-```
-
-The MC stores one rotating buffer-slot pointer. Among entries with the highest
-effective QoS, it scans valid slots from the slot after the previous grant,
-wraps once, and selects the first matching candidate. After grant, the pointer
-moves to the selected slot.
-
-This requires a rotating pointer and selection logic, but no enqueue timestamp
-or all-entry age comparison. It provides neutral service opportunities among
-equal-QoS buffer entries but is not strict oldest-first.
-
-### REV-MC-SCHED-003: Hardware-feasible optional aging
-
-The default revised scheduler SHALL use:
+默认：
 
 ```yaml
 aging_mode: none
 ```
 
-This exposes possible starvation under strict 3-bit QoS and avoids hiding the
-cost of starvation prevention.
-
-The preferred low-PPA optional mode SHALL be:
+低PPA可选：
 
 ```yaml
 aging_mode: per_partid_service_deficit
-aging_quantum_cycles: <positive integer>
-aging_counter_bits: <positive integer>
-aging_max_qos_steps: <0 through 7>
+aging_quantum_cycles:
+aging_counter_bits:
+aging_max_qos_steps:
 ```
 
-The counter is a PARTID-class service-deficit counter. It does not count
-requests and does not represent the age of an individual request.
+每PARTID保存饱和计数器和`grant_seen`：
 
-Required state per PARTID:
+- 无ready请求或Hard BMAX时清零；
+- 一个量子内无授权则加1；
+- 有授权则减1；
+- 每个量子最多更新一次；
+- 不按请求数量计数。
+
+### MC-MON-002：证据
+
+必须显示：
+
+- BMIN/BMAX目标及assert/release阈值；
+- raw/filtered/actual带宽；
+- UNDER_BMIN、OVER_BMAX、HARD_BLOCK；
+- base和effective QoS；
+- candidate数量和授权；
+- QoS饱和；
+- buffer深度；
+- 过冲面积和恢复周期；
+- 目标可行、达到、未达或饱和状态。
+
+---
+
+## 12. CBusy与RN OSTD闭环
+
+### CBUSY-001：职责
+
+BMAX控制MC服务分配；CBusy快速限制源端压力和MC buffer增长。
+
+### CBUSY-002：每PARTID硬件状态
 
 ```text
-service_deficit_counter[partid] : aging_counter_bits
-grant_seen[partid]              : 1 bit
+partid_buffer_count
+filtered_bandwidth
+cbusy_level: 2 bits
+release_hold_counter
+hard_block
 ```
 
-`grant_seen` is set when any request of the PARTID is granted during the
-current aging quantum. Multiple grants do not require a count in the low-PPA
-mode.
+`partid_buffer_count`统计MC buffer中该PARTID的全部valid entry。
 
-At the end of every aging quantum:
+### CBUSY-003：阈值
 
-```text
-if PARTID has no service-ready candidate:
-    service_deficit_counter = 0
+队列阈值直接配置为entry数；带宽比例在配置阶段转换成固定阈值。
+硬件路径只做整数或定点比较。
 
-else if PARTID is intentionally HARD_BLOCKED:
-    service_deficit_counter = 0
+### CBUSY-004：双时间尺度
 
-else if grant_seen == 0:
-    service_deficit_counter =
-        saturating_increment(service_deficit_counter)
-
-else:
-    service_deficit_counter =
-        saturating_decrement(service_deficit_counter)
-
-grant_seen = 0
-```
-
-QoS promotion is:
-
-```text
-aging_qos_promote[partid] =
-    min(aging_max_qos_steps, service_deficit_counter[partid])
-```
-
-For a PARTID with one or many pending requests, the counter updates at most
-once per aging quantum. It represents whether the PARTID class is receiving
-service opportunities, not whether every request is making progress.
-
-Saturating decrement on a grant is preferred to immediate reset. One
-occasional grant therefore does not erase a long accumulated service deficit.
-
-This provides coarse inter-PARTID starvation relief with approximately:
-
-```text
-number_of_partids * (aging_counter_bits + 1)
-```
-
-bits for counters plus `grant_seen`, in addition to pending-PARTID detection
-already needed by the scheduler. It requires increment/decrement/reset logic
-only at the aging-quantum boundary. It does not preserve oldest-first order
-among entries of the same PARTID.
-
-A `per_entry_epoch` research mode MAY be added later. It SHALL be labeled as
-a higher-PPA option and SHALL not be the default.
-
-When aging is disabled, strict QoS starvation is a possible observable result
-rather than something silently prevented by the model.
-
-### REV-MC-MON-002: MC control evidence
-
-For every PARTID and monitor interval, the UI and trace SHALL expose:
-
-- BMIN and BMAX configured targets;
-- BMIN/BMAX assert and release thresholds;
-- raw and filtered monitored bandwidth;
-- actual serviced bandwidth;
-- `UNDER_BMIN`, `OVER_BMAX`, and `HARD_BLOCK` state;
-- base, BMIN, soft-BMAX, aging, and final effective QoS;
-- number of candidate entries;
-- selected request and its enqueue age;
-- QoS saturation at zero or seven;
-- queue depth and oldest age;
-- hard-block cycles;
-- BMAX overshoot area;
-- response and recovery intervals;
-- feasible, achieved, not achieved, and saturated target status.
-
-Automated verification SHALL prove state transitions, candidate eligibility,
-QoS calculation, tie-breaking, and hard gating. It SHALL NOT require BMIN or
-BMAX targets to be achieved under every workload.
-
-### REV-L3-SAME-001: Same-line MSHR merge
-
-Requests address the same cache line when:
-
-```text
-floor(address_a / line_size_bytes)
-==
-floor(address_b / line_size_bytes)
-```
-
-With `merge_same_line_misses: true`, the first read miss allocates one MSHR
-identified by the line address and issues one downstream memory read.
-Subsequent read misses to the same line join the MSHR waiter list and do not
-issue duplicate memory reads.
-
-Every waiter SHALL retain:
-
-- source core/thread;
-- request PARTID/PMG;
-- CPU OSTD allocation;
-- transaction ID;
-- arrival order.
-
-All waiters complete after the fill returns, and each releases its own CPU
-OSTD independently.
-
-### REV-L3-SAME-002: Allocation owner and access attribution
-
-The PARTID/PMG of the first request that allocated the MSHR SHALL be the fill
-allocation identity:
-
-```text
-allocation_partid = first_miss.partid
-allocation_pmg = first_miss.pmg
-```
-
-If the fill is admitted to L3, the cache line stores that allocation identity.
-Later hits or merged waiters from another PARTID SHALL NOT relabel the line.
-
-Therefore:
-
-- access counters are attributed to the accessing request's PARTID/PMG;
-- occupancy is attributed to the stored allocation owner;
-- CMIN/CMAX/CPBM allocation decisions use the allocation PARTID;
-- a different PARTID may hit a line allocated by another PARTID;
-- CPBM is an allocation constraint, not an access-permission check.
-
-If the allocation identity is blocked by CMAX, CPBM, or no-legal-victim
-conditions, the fill bypasses L3 for all waiters. The implementation SHALL not
-silently choose a different merged waiter as the owner.
-
-### REV-L3-SAME-003: Duplicate fill without merging
-
-With `merge_same_line_misses: false`, multiple misses to the same line may
-issue multiple memory reads.
-
-When a returned fill finds that the line is already valid in L3:
-
-```text
-do not allocate a duplicate tag
-do not change the existing line owner
-record redundant_memory_fetch
-complete the waiting requester
-```
-
-This mode exists to study bandwidth and MSHR inefficiency. The default SHALL
-enable same-line read-miss merging.
-
-### REV-MC-SAME-001: Minimum same-line ordering
-
-The MC SHALL not merge same-address requests. Every admitted request remains
-a distinct buffer entry and participates in QoS scheduling when ready.
-
-Before QoS comparison, apply a minimum line-order readiness rule:
-
-| Older request | Younger same-line request | Younger readiness |
-| --- | --- | --- |
-| Read | Read | May be ready and reordered |
-| Read | Write | Block until older read is issued |
-| Write | Read | Block until older write is issued |
-| Write | Write | Block until older write is issued |
-
-Thus any same-line pair containing a write preserves arrival order. Different
-lines remain reorderable.
-
-This rule prevents contradictory read/write results but is not a complete
-coherence, memory-ordering, atomic, or barrier model.
-
-The UI SHALL report:
-
-- MSHR merge count and waiter count;
-- cross-PARTID same-line merges;
-- redundant memory reads when merging is disabled;
-- same-line ordering blocks in MC;
-- allocation owner versus accessing PARTID.
-
-### REV-HW-CTRL-001: Hardware-realization checklist
-
-Every control algorithm added to the simulator SHALL document its proposed
-bottom-level hardware realization before it is considered specified.
-
-Required items:
-
-| Item | Required definition |
-| --- | --- |
-| Input source | Which counter, signal, queue state, or monitor register is read |
-| Input timing | Event-driven, every resource cycle, or every N-cycle monitor window |
-| Stored state | State bits, counters, pointers, tables, and scope: global/per-MSC/per-PARTID/per-entry |
-| Combinational logic | Comparators, adders, masks, priority encoders, scans, or reductions |
-| Action point | Admission, queue eligibility, arbitration score, replacement, or source OSTD |
-| Update ordering | Exact relation between sampling, decision, action, and counter reset |
-| Saturation | Numeric clamps and behavior when control authority is exhausted |
-| Recovery | Release threshold, hold time, step size, and stale-state behavior |
-| Interaction priority | Ordering relative to other enabled controls |
-| Forward progress | Conditions under which requests are guaranteed or allowed to progress |
-| PPA scaling | What grows with PARTID count, queue depth, associativity, or frequency |
-| Observability | State and events required to prove the action occurred |
-
-The simulator MAY retain richer state for measurement, such as exact
-timestamps, provided that state is explicitly excluded from the proposed
-hardware decision path.
-
-No control SHALL be described only by an ideal mathematical target. The spec
-must identify the finite counters, sampled signals, delays, saturation, and
-recovery that make target non-attainment possible.
-
-### REV-CBUSY-001: Hardware state and detector inputs
-
-CBusy SHALL be a fast per-MC, per-PARTID source-throttling loop. It is
-separate from BMIN/BMAX bandwidth allocation.
-
-Required state for every supported PARTID at each MC:
-
-```text
-partid_buffer_count       : ceil(log2(mc_request_buffer_depth + 1)) bits
-filtered_bandwidth        : existing MPAM monitor state
-cbusy_level               : 2 bits
-release_hold_counter      : configurable small saturating counter
-hard_block                : existing BMAX hard-block state
-```
-
-`partid_buffer_count` increments when a request of the PARTID allocates an MC
-buffer entry and decrements when that entry leaves the request buffer for
-service. It counts all valid entries, including entries currently ineligible
-because of Hard BMAX or same-line ordering.
-
-The fast input is the current integer `partid_buffer_count`. The slow input is
-the last published 256-MC-cycle filtered MPAM bandwidth. CBusy SHALL NOT read
-an unfiltered instantaneous byte rate.
-
-### REV-CBUSY-002: Precomputed integer thresholds
-
-Queue thresholds SHALL be configured directly as buffer-entry counts:
-
-```yaml
-cbusy_queue_entries_l1: <integer>
-cbusy_queue_entries_l2: <integer>
-cbusy_queue_entries_l3: <integer>
-```
-
-They SHALL satisfy:
-
-```text
-0 <= L1 <= L2 <= L3 <= mc_request_buffer_depth
-```
-
-Bandwidth thresholds MAY be entered as ratios of BMAX:
-
-```yaml
-cbusy_bw_ratio_l1: 1.00
-cbusy_bw_ratio_l2: 1.10
-cbusy_bw_ratio_l3: 1.25
-```
-
-Configuration logic SHALL convert them into fixed threshold values before the
-run. The modeled hardware path performs integer/fixed-point comparisons, not
-runtime floating-point division.
-
-### REV-CBUSY-003: Dual-timescale level calculation
-
-Every MC cycle, calculate the queue-derived level:
-
-```text
-queue_level =
-    3 if partid_buffer_count >= queue_threshold_l3
-    2 if partid_buffer_count >= queue_threshold_l2
-    1 if partid_buffer_count >= queue_threshold_l1
-    0 otherwise
-```
-
-At every 256-cycle MC monitor boundary, update the bandwidth-derived level
-from the newly published filtered MPAM bandwidth:
-
-```text
-bandwidth_level =
-    3 if filtered_bandwidth >= bw_threshold_l3
-    2 if filtered_bandwidth >= bw_threshold_l2
-    1 if filtered_bandwidth >= bw_threshold_l1
-    0 otherwise
-```
-
-Hard BMAX may force a minimum level:
-
-```yaml
-cbusy_hard_block_min_level: 2
-```
-
-The detected level is:
+每MC周期计算queue level；每256拍更新bandwidth level：
 
 ```text
 detected_level =
-    max(queue_level, bandwidth_level, hard_block_min_level_if_active)
+max(queue_level, bandwidth_level, hard_block_min_level)
 ```
 
-This combines fast queue protection with slower MPAM bandwidth evidence.
+### CBUSY-005：状态机
 
-### REV-CBUSY-004: Assertion and release state machine
+- 更高等级立即断言；
+- 低等级需要release hold；
+- 每次最多下降一级；
+- CBusy每PARTID独立。
 
-If `detected_level > cbusy_level`, the CBusy level SHALL rise immediately to
-the detected level and clear the release counter.
+### CBUSY-006：反馈
 
-If `detected_level >= cbusy_level`, the release counter SHALL clear.
-
-If `detected_level < cbusy_level`, the release counter SHALL increment once
-per configured release sample:
-
-```yaml
-cbusy_release_sample_cycles: <positive integer>
-cbusy_release_hold_samples: <positive integer>
-```
-
-After the hold count is reached:
-
-```text
-cbusy_level = cbusy_level - 1
-release_hold_counter = 0
-```
-
-Release is one level at a time. This state machine requires only level
-comparators, a 2-bit state register, and one small counter per PARTID.
-
-### REV-CBUSY-005: Low-PPA feedback transport
-
-The default feedback mode SHALL be:
-
-```yaml
-cbusy_feedback_mode: response_piggyback
-```
-
-Every RSP or DAT terminal return from an MC path SHALL carry:
+默认把2-bit CBusy作为RSP/DAT旁带返回：
 
 ```text
 source_mc_id
-request_partid
-cbusy_level[request_partid]
+partid
+cbusy_level
 ```
 
-The CBusy level is a 2-bit sideband value in the abstract model. It follows
-the normal RSP or DAT ring path and can therefore be delayed by:
+不同RN可能因返回流量和Ring拥塞暂时看到不同等级，这是低PPA反馈代价。
 
-- memory service;
-- endpoint readiness;
-- ring injection wait;
-- ring traversal;
-- failed ejection and recirculation.
+### CBUSY-007：RN动作
 
-No dedicated CBusy broadcast network is assumed. If several RNs issue the
-same PARTID, each RN learns the level opportunistically on its own returning
-traffic. This can create different temporary views at different RNs and is an
-intentional low-PPA feedback tradeoff.
+RN保存每个`(MC, PARTID)`的最近等级，并只限制匹配目标MC的新事务准入。
 
-A future `transition_message` mode MAY send dedicated RSP control messages on
-level transitions. It SHALL be labeled as a higher-traffic/higher-state
-option and is not the default.
+CBusy不得：
 
-### REV-CBUSY-006: RN state and OSTD action
+- 撤回在途请求；
+- 阻塞RSP/DAT；
+- 修改Ring仲裁；
+- 直接修改MC QoS。
 
-Every RN SHALL retain the last received level for each active
-`(destination_mc, PARTID)` pair:
+最低OSTD必须至少为1。
+
+### CBUSY-008：证据
+
+必须显示：
+
+- MC buffer count；
+- queue/bandwidth/hard-block level；
+- MC产生等级；
+- RN收到等级；
+- 反馈延迟；
+- effective OSTD；
+- source stall；
+- 与BMAX叠加后的过度限流或振荡。
+
+---
+
+## 13. 软件配置接口
+
+### SW-001：两种标签模式
+
+| 模式 | 用途 |
+| --- | --- |
+| 原始线程模式 | 线程直接配置PARTID/PMG，适合硬件调试 |
+| 软件资源组模式 | 使用类似Linux resctrl的控制组和监控组 |
+
+### SW-002：软件组映射
 
 ```text
-rn_cbusy_level[mc_id][partid] : 2 bits
+CTRL_MON group -> 内部分配PARTID
+MON group      -> 内部分配PMG
 ```
 
-The corresponding configured OSTD caps SHALL satisfy:
+监控身份为`(PARTID, PMG)`，PMG不单独全局唯一。
+
+### SW-003：任务和CPU优先级
 
 ```text
-normal_ostd >= l1_ostd >= l2_ostd >= l3_ostd >= 1
+1. 任务显式所属控制组
+2. 否则使用逻辑CPU的非默认组
+3. 否则使用root组
 ```
 
-For a new request whose address maps to MC `m`:
+任务迁移时标签随任务移动；root任务可以继承CPU默认组。
+
+### SW-004：用户接口
+
+应支持：
 
 ```text
-effective_ostd[core, partid, m] =
-    min(
-        configured_partid_ostd,
-        software_partid_ostd,
-        cbusy_ostd_cap[rn_cbusy_level[m][partid]]
-    )
+create_control_group
+set_group_schema
+assign_tasks
+assign_cpus
+create_monitor_group
+assign_monitor_tasks
+read_monitor
 ```
 
-CBusy limits only new source admission. It does not:
+UI显示软件组名称及只读的内部PARTID/PMG映射。
 
-- cancel in-flight requests;
-- block RSP or DAT returns;
-- alter NoC ring arbitration;
-- change MC QoS directly.
+---
 
-The minimum cap of one preserves a path for new traffic and future feedback.
+## 14. 监控数据契约
 
-### REV-CBUSY-007: Interaction with BMIN/BMAX
+### MON-001：全量保存
 
-The control ordering SHALL be:
+仿真始终保存全部16个PARTID历史，UI选择只影响显示。
 
-```text
-MC monitor:
-    publish filtered bandwidth every 256 MC cycles
-
-BMIN/BMAX:
-    update slow QoS or Hard-BMAX service eligibility for the next interval
-
-CBusy detector:
-    combine current queue count, last filtered bandwidth,
-    and current Hard-BMAX state
-
-RN:
-    apply the most recently received CBusy cap to new OSTD admission
-```
-
-BMAX controls MC service allocation. CBusy controls source pressure and queue
-growth. Both may be active simultaneously.
-
-The UI SHALL expose when stacked controls cause:
-
-- Hard BMAX service blocking;
-- MC buffer growth;
-- higher CBusy;
-- lower RN OSTD;
-- source stalls;
-- delayed bandwidth recovery.
-
-This interaction may over-throttle or oscillate. Such behavior is a valid
-control result, not something the simulator SHALL automatically correct.
-
-### REV-CBUSY-008: Hardware scaling and verification
-
-For `P` PARTIDs, MC buffer depth `D`, and `R` RNs, the default state scales
-approximately as:
-
-```text
-MC:
-    P * (
-        ceil(log2(D + 1))
-      + 2
-      + release_counter_bits
-    )
-
-RN:
-    active_or_dense_storage_for R * P * 2-bit levels per destination MC
-```
-
-The implementation MAY use dense tables or an active-entry structure. The
-choice SHALL be explicit because it changes PPA and stale-entry behavior.
-
-Automated verification SHALL prove:
-
-- per-PARTID buffer counts update correctly;
-- queue-level comparison reacts at MC-cycle granularity;
-- bandwidth level changes only at monitor boundaries;
-- assertion is immediate and release is held and stepwise;
-- feedback experiences modeled RSP/DAT delay;
-- the RN applies the level only to the matching MC and PARTID;
-- existing requests and all responses continue to make progress;
-- control activation is visible even when the bandwidth target is not met.
-
-### REV-MON-DATA-001: Full-history collection
-
-The simulator SHALL collect history for all 16 PARTIDs regardless of the
-current UI selection. Selecting PARTIDs affects rendering only.
-
-Every periodic sample SHALL include:
+周期样本至少包含：
 
 ```text
 time_ns
@@ -3920,7 +1142,7 @@ semantic
 sample_id
 ```
 
-`semantic` SHALL identify:
+`semantic`：
 
 ```text
 actual
@@ -3931,15 +1153,9 @@ effective_target
 control_state
 ```
 
-L3 and MC sample on their independent 256-local-cycle boundaries. CPU and NoC
-diagnostic sampling periods SHALL be separately configurable while all values
-remain displayable on one nanosecond time axis.
+### MON-002：样本与事件分离
 
-### REV-MON-DATA-002: Periodic samples and control events
-
-Periodic state and discrete control events SHALL use separate records.
-
-An event SHALL include:
+控制事件至少包含：
 
 ```text
 event_time_ns
@@ -3956,43 +1172,104 @@ action_effective_time_ns
 details
 ```
 
-The IDs SHALL connect:
+必须能连接：
 
 ```text
-monitor observation
--> control decision
--> effective hardware action
--> later resource result
+监控样本 -> 决策 -> 动作 -> 后续结果
 ```
 
-Examples include CMIN victim protection, CMAX growth blocking, L3 bypass,
-BMIN promotion, soft-BMAX demotion, Hard-BMAX transitions, CBusy transitions,
-RN feedback receipt, and effective OSTD changes.
+### MON-003：更新顺序
 
-### REV-UI-004: Unified plot encoding
+每个资源监控边界：
 
-PARTID selection SHALL support one or multiple PARTIDs. Color SHALL identify
-PARTID, while line or marker style SHALL identify semantic:
+1. 关闭当前周期计数；
+2. 读取raw样本；
+3. 计算filtered值；
+4. 发布监控状态；
+5. 执行监控驱动控制；
+6. 发布并应用动作；
+7. 清空当前周期计数；
+8. 保留filtered历史。
 
-| Semantic | Default visual encoding |
+---
+
+## 15. 监控与配置界面
+
+### UI-001：配置说明
+
+每个字段、选项、控制和指标必须具有指向说明，内容包括：
+
+- 含义；
+- 单位和范围；
+- 请求路径中的位置；
+- 架构行为或模型假设；
+- 预期影响；
+- 相关参数；
+- 必要时给出示例。
+
+### UI-002：单工作区
+
+不使用大量同级监控页签。监控工作区分三层：
+
+1. 结果概览；
+2. 控制效果时间线；
+3. 硬件诊断下钻。
+
+### UI-003：结果概览
+
+首屏回答：
+
+- 配置了什么；
+- 哪些控制触发；
+- 实际结果如何；
+- 为什么目标未达。
+
+优先显示：
+
+1. 目标未达或不可行；
+2. 控制饱和；
+3. 控制活跃；
+4. 目标内；
+5. 未触发。
+
+### UI-004：时间线
+
+颜色表示PARTID；线型表示语义：
+
+| 语义 | 样式 |
 | --- | --- |
-| Configured target | Dotted line |
-| Effective target | Stepped dashed line |
-| Actual data-plane value | Thin solid line |
-| Raw MPAM monitor | Marker line |
-| Filtered MPAM monitor | Thick solid line |
-| Control event | Vertical event marker |
+| 配置目标 | 点线 |
+| 有效目标 | 阶梯虚线 |
+| 实际值 | 细实线 |
+| 原始监控 | 带点线 |
+| 滤波监控 | 粗实线 |
+| 控制事件 | 垂直标记 |
 
-Every graph SHALL have a complete legend for visible series. Disabled or
-unavailable values SHALL be labeled rather than plotted as zero.
+支持单个或多个PARTID、实例或聚合视图、统一游标和缩放。
 
-Single-PARTID mode SHALL expose all available semantics. Multi-PARTID mode MAY
-let users hide raw or actual series to reduce clutter, without deleting the
-underlying data.
+### UI-005：自适应图表
 
-### REV-UI-005: Control-result state vocabulary
+根据启用控制自动选择3到5张重点图：
 
-Control state SHALL not be reduced to success/failure. The UI SHALL support:
+- CMIN/CMAX：目标、raw、filtered、actual和控制事件；
+- BMIN/BMAX：目标、raw、filtered、actual、QoS和状态；
+- CBusy：MC buffer、MC等级、RN等级、OSTD和stall；
+- 无控制：吞吐、延迟和瓶颈。
+
+未启用控制不占据首屏空间。
+
+### UI-006：下钻
+
+按需查看：
+
+- CPU OSTD和stall；
+- Ring槽位和绕行；
+- L3 set/way、MSHR和victim；
+- MC buffer、candidate和QoS；
+- 滤波算术；
+- CBusy比较器和反馈路径。
+
+### UI-007：状态词汇
 
 ```text
 Disabled
@@ -4006,536 +1283,295 @@ No demand
 No contention
 ```
 
-States MAY be combined. For example:
+控制状态与目标结果可以组合。
+
+---
+
+## 16. 验证体系
+
+### VERIFY-001：验证目标
+
+自动化验证证明：
 
 ```text
-Soft BMAX active
-+ effective QoS saturated at zero
-+ filtered bandwidth above BMAX
-= Active + Saturated + Target unmet
+触发条件
+-> 监控更新
+-> 控制决策
+-> 硬件动作
+-> 可观察资源效果
 ```
 
-The state describes both control activation and target outcome.
+不要求目标必然达到。
 
-### REV-UI-006: Configuration-driven monitoring workspace
+### VERIFY-002：结果分级
 
-The monitoring UI SHALL not expose every counter as an equal-weight tab or
-table. It SHALL derive the primary result view from:
-
-- enabled workloads and active PARTIDs;
-- enabled L3 and MC controls;
-- selected resource instances;
-- configured targets;
-- controls that triggered;
-- targets that were unmet, saturated, or infeasible.
-
-Controls that are disabled SHALL not occupy primary chart space. Their data
-remains available in the diagnostic drill-down.
-
-The monitor SHALL use one workspace with three information levels:
-
-```text
-Level 1: Result overview
-Level 2: Control-effect timeline
-Level 3: Hardware diagnostic drill-down
-```
-
-These are view levels, not a collection of many independent top-level tabs.
-
-### REV-UI-007: Level 1 result overview
-
-The first monitor screen SHALL answer:
-
-```text
-What was configured?
-Which controls activated?
-What result was obtained?
-Why was a target not reached?
-```
-
-For every selected or relevant PARTID, show one compact result row:
-
-| Area | Primary result |
+| 类型 | 处理 |
 | --- | --- |
-| CPU | Effective OSTD, actual OSTD, source stall |
-| L3 | CMIN/CMAX target, filtered occupancy, actual occupancy |
-| MC | BMIN/BMAX target, filtered bandwidth, actual bandwidth |
-| Control | Active actions, saturation, achieved/unmet state |
+| `CONFIG_ERROR` | 拒绝启动 |
+| `MODEL_ERROR` | 立即停止并保存现场 |
+| `CONTROL_OUTCOME` | 继续运行并记录 |
 
-The overview SHALL prioritize:
+### VERIFY-003：MODEL_ERROR
 
-1. target-unmet or infeasible controls;
-2. saturated controls;
-3. active controls;
-4. controls currently within target;
-5. untriggered controls.
+包括：
 
-The page SHALL show a short evidence reason, for example:
+- 计数器越界；
+- 重复tag；
+- Ring槽位重复占用；
+- flit无原因丢失、复制或停止；
+- 资源超深度；
+- 重复完成或重复释放；
+- MC授权非法candidate；
+- 控制器读取禁止状态；
+- 未定义状态跳转。
 
-```text
-BMAX target unmet:
-soft demotion active, effective QoS reached 0,
-remaining bandwidth was otherwise idle.
-```
+停止时保存最近事件、需求ID、PARTID、资源和事务ID。
 
-It SHALL not require the user to infer the reason from several unrelated
-tables.
+### VERIFY-004：必须继续的控制结果
 
-### REV-UI-008: Level 2 control-effect timeline
+以下不得中止：
 
-The timeline is the main analysis view. It SHALL use a shared time cursor and
-show only signals relevant to enabled controls.
+- 目标未达；
+- 过冲；
+- 振荡；
+- 控制饱和；
+- 过度限流；
+- 饥饿；
+- 不可行目标；
+- 控制造成的长期无进展；
+- 吞吐和延迟恶化。
 
-Examples:
+### VERIFY-005：Watchdog
 
-```text
-CMIN/CMAX enabled:
-    target, raw sample, filtered occupancy, actual occupancy,
-    protection/block events
+watchdog只记录无进展证据，不自动修复控制。
+只有丢失唤醒、Ring停止或释放资源后永不重试等内部错误才升级为MODEL_ERROR。
 
-BMIN/BMAX enabled:
-    target, raw bandwidth, filtered bandwidth, actual bandwidth,
-    QoS adjustment or Hard-BMAX state
-
-CBusy enabled:
-    MC PARTID buffer count, MC CBusy level,
-    RN received level, effective OSTD, source stall
-```
-
-The user SHALL be able to select one or multiple PARTIDs. The default
-selection SHOULD include PARTIDs with active controls or unmet targets rather
-than all 16.
-
-Hovering or clicking a control event SHALL reveal:
-
-- triggering monitor sample;
-- threshold and comparison result;
-- old/new state;
-- hardware action;
-- effective time;
-- observed downstream response.
-
-### REV-UI-009: Level 3 hardware diagnostic drill-down
-
-Detailed hardware state SHALL be available on demand through resource and
-event drill-down rather than permanent top-level tabs.
-
-Examples include:
-
-- CPU thread/core OSTD counters and stall reasons;
-- REQ/RSP/DAT ring slots, recirculation, and per-link traffic;
-- L3 set/way ownership, MSHRs, fills, and victim decisions;
-- MC buffer entries, candidate masks, effective QoS, and grants;
-- monitor filter arithmetic and history/current contribution;
-- CBusy threshold comparisons and feedback transport.
-
-Drill-down SHALL open in a side panel or dedicated analysis view without
-removing the shared time context.
-
-### REV-UI-010: Adaptive default charts
-
-The UI SHALL construct default charts from the configuration:
-
-| Enabled function | Default chart |
-| --- | --- |
-| CPBM | Eligible-way mask and actual allocation violations |
-| CMIN/CMAX | Target versus raw/filtered/actual occupancy |
-| BMIN/BMAX | Target versus raw/filtered/actual bandwidth |
-| MC QoS | Base/effective QoS and grant share |
-| CBusy | MC buffer, CBusy, RN level, effective OSTD |
-| No MPAM control | Workload, throughput, latency, and bottleneck overview |
-
-Unrelated series SHALL remain hidden until explicitly requested.
-
-Users MAY save a custom view preset, but a saved preset SHALL not remove
-underlying monitor collection or alter the simulation.
-
-### REV-UI-011: Complexity budget
-
-The primary monitoring workspace SHOULD contain no more than:
-
-- one PARTID/resource selector band;
-- one compact result summary;
-- three to five default charts;
-- one shared event timeline;
-- one diagnostic entry point.
-
-Large raw counter tables, all-PARTID matrices, and per-MSC implementation
-fields SHALL not appear by default. They belong in drill-down or export.
-
-Every visible chart and control state SHALL retain pointer-triggered help that
-explains its source, update period, units, and interpretation.
-
-### REV-CHI-001: CHI-shaped logical channels
-
-The interconnect model SHALL be organized around the four AMBA CHI channel
-classes:
-
-| Channel | Revised simulator role |
-| --- | --- |
-| REQ | Read, write, memory, and control request transport |
-| RSP | Completion, acknowledgement, and protocol-control response transport |
-| DAT | Read-return, write-data, and cache-fill payload transport |
-| SNP | Reserved snoop transport interface |
-
-REQ, RSP, and DAT SHALL be independently configurable for:
-
-- flit width and ring throughput;
-- fixed router/link latency;
-- ring topology and node order;
-- endpoint injection and ejection behavior;
-- per-PARTID monitoring;
-- backpressure.
-
-REQ, RSP, and DAT SHALL NOT expose configurable protocol credit counts. The
-NoC shall directly report whether each attached node can inject into or eject
-from the ring.
-
-The initial revised model SHALL set:
+### VERIFY-006：验证等级
 
 ```yaml
-coherency_mode: none
-snp_enable: false
+validation_level: basic | full
 ```
 
-In this mode the model has no private cache copies and no coherent line state,
-so no snoop traffic is required. The SNP interface remains visible and
-disabled for future extension.
+`basic`检查不变量、监控公式、控制动作和资源释放。
+`full`额外记录victim、candidate、flit、比较器和完整因果链，
+但不得改变调度和结果。
 
-Using CHI channel names and flow-control structure SHALL be described as a
-`CHI-shaped abstraction`, not as a CHI-compliant protocol implementation.
-Full CHI transaction legality, ordering, retry, DVM, snoop response, cache
-state, and data-transfer rules remain outside scope unless coherency is
-explicitly enabled in a future change.
+### VERIFY-007：确定性微测试
 
-### REV-CHI-002: Revised request flows
+微测试直接构造硬件状态，验证：
 
-The minimum read flows SHALL be:
+- 监控采样和滤波；
+- CPBM/CMIN/CMAX；
+- BMIN/Soft BMAX/Hard BMAX；
+- QoS和轮询；
+- CBusy和OSTD；
+- 同line合并和顺序；
+- Ring注入、绕行和排空。
 
-```text
-L3 hit:
-thread -> core OSTD -> REQ -> L3 lookup
-       -> DAT -> thread completion -> OSTD release
+通过条件是状态和动作符合规格，不是性能目标达到。
 
-L3 miss:
-thread -> core OSTD -> REQ -> L3 lookup/MSHR
-       -> REQ -> MC -> memory service
-       -> DAT -> L3 fill
-       -> DAT -> thread completion -> OSTD release
-```
+---
 
-RSP messages MAY accompany or precede DAT according to the selected abstract
-transaction template. Every template SHALL define its terminal event so OSTD,
-ring transactions, MSHRs, and fill buffers are released deterministically.
+## 17. 当前实现状态
 
-Write flows, write acknowledgement, dirty eviction, and writeback-channel
-behavior remain to be specified before implementation.
+当前代码仍是原型，尚未实现本文全部目标。
 
-### REV-NOC-001: Abstract bufferless ring
+### 17.1 可保留基础
 
-The revised NoC SHALL use abstract RN, HN, and SN attachment nodes connected
-by a bufferless ring.
+- 确定性离散事件内核；
+- 配置加载和类型化框架；
+- 后台job和轮询API；
+- 结果导出基础设施；
+- 每MSC独立settings table思想；
+- 现有测试框架。
 
-```text
-RN: CPU/request node
-HN: L3/home node
-SN: memory-controller/subordinate node
-```
+### 17.2 必须替换
 
-The ring SHALL have no router input buffers, virtual channels, or
-source/destination credit protocol. Transport capacity SHALL be represented
-by fixed pipeline slots on each ring link.
+| 模块 | 当前原型 | 目标 |
+| --- | --- | --- |
+| CPU | 独立requester，简单OSTD | 8核16线程共享OSTD和目标MC限制 |
+| 激励 | type混合多个维度 | 地址、操作、依赖、到达正交配置 |
+| NoC | 单FIFO/序列化链路 | 三条双向bufferless ring |
+| L3 | 概率命中和采样way状态 | 全set/tag/way、MSHR和fill |
+| MC | 每PARTID FIFO头、token bucket | 共享buffer全候选QoS和周期门控 |
+| CBusy | 直接延迟事件 | 双时间尺度、RSP/DAT旁带反馈 |
+| 监控 | interval聚合 | actual/raw/filtered和因果事件 |
+| UI | 多页签和大表 | 配置驱动单工作区 |
 
-Minimum configuration:
+### 17.3 已被目标规格取代
 
-```yaml
-noc_clock_mhz: <positive number>
-ring_direction: clockwise | counterclockwise | bidirectional
-ring_node_order: [<node ids in physical traversal order>]
-flit_bytes: <positive integer>
-link_slots_per_direction: <positive integer>
-hop_latency_cycles: <positive integer>
-```
+- 概率L3命中；
+- NoC priority heap；
+- NoC QoS预留；
+- BMIN/BMAX token bucket默认算法；
+- 同QoS oldest timestamp硬件调度；
+- 固定四场景对照作为主要验证方式；
+- 只看最终平均值判断控制效果。
 
-The meaning of `link_slots_per_direction` is the number of in-flight flit
-positions available on one directed link segment. It is not a queue depth.
+---
 
-### REV-NOC-002: Bufferless movement
+## 18. 模块化实现架构
 
-Every occupied ring slot advances to the next ring position according to the
-configured hop latency. A flit SHALL NOT stop in a router.
+### IMPL-001：原位替换
 
-At its destination:
+直接替换现有模块，不维护`legacy/mpam_v2`双数据通路。
+允许短期适配器，但每次合入后主分支只有一个权威实现。
 
-```text
-if destination endpoint accepts the flit:
-    eject the flit
-    free the ring slot
-else:
-    keep the flit on the ring
-    continue to the next hop
-    attempt ejection again on the next visit
-```
+### IMPL-002：接口族
 
-Failure to eject therefore creates recirculation rather than an in-network
-queue.
+至少定义：
 
-Endpoint request queues, L3 ingress/MSHR state, MC ingress state, and response
-reassembly state remain permitted. They belong to attached nodes, not to the
-bufferless ring.
+- `Transaction`；
+- `EndpointPort`；
+- `RingTransport`；
+- `CacheLookupPipeline`；
+- `ReplacementPolicy`；
+- `MshrTable`；
+- `McReadinessPolicy`；
+- `McScheduler`；
+- `MonitorSource`；
+- `ControlPolicy`；
+- `ValidationHook`。
 
-### REV-NOC-003: Injection and node backpressure
+### IMPL-003：机制与策略解耦
 
-A node MAY inject a flit only when an injectable empty ring slot passes its
-injection point.
+L3组件管理set/tag/way和时序，替换策略决定victim顺序，
+分配控制决定CPBM/CMIN/CMAX合法性。
 
-```text
-if an empty injectable slot is available:
-    inject
-else:
-    assert NoC backpressure to the attached node
-```
+MC组件管理buffer和服务，readiness策略生成candidate mask，
+scheduler完成QoS和授权。
 
-Backpressure SHALL stop new injection from that node. It SHALL NOT stop or
-recall flits already circulating on the ring.
+### IMPL-004：组件注册和能力声明
 
-The model SHALL distinguish:
+组件必须声明：
 
-- source waiting for an empty ring slot;
-- source waiting for its local injection turn;
-- destination unable to accept/eject;
-- flit recirculation;
-- endpoint queue or resource backpressure.
+- schema；
+- 输入输出；
+- 能力；
+- 所需监控；
+- 动作；
+- 验证钩子；
+- 不支持组合。
 
-There is no configurable REQ, RSP, or DAT credit count.
+不兼容组合在配置阶段失败。
 
-### REV-NOC-004: No NoC QoS control
+### IMPL-005：UI解耦
 
-The bufferless ring SHALL not provide PARTID-based or QoS-based priority for
-joining or leaving the ring.
+资源组件仅发布类型化样本和事件，不直接生成图表或访问UI。
 
-Injection and ejection SHALL use neutral deterministic rules. MC 3-bit QoS
-SHALL remain local to MC arbitration and SHALL NOT alter:
+### IMPL-006：禁止退化
 
-- ring injection;
-- ring slot ownership;
-- ring traversal;
-- destination ejection.
+禁止：
 
-The request `priority` or `qos_class` metadata MAY remain visible for tracing,
-but the ring SHALL ignore it.
+- 主循环大型功能`if/elif`；
+- 为控制组合复制L3或MC；
+- UI读取组件私有字段；
+- 控制器读取未声明状态；
+- 动态属性传递QoS；
+- 配置、状态更新和绘图写在同一模块。
 
-If multiple local sources request the same injection opportunity, the node
-SHALL use a neutral work-conserving arbitration policy such as round-robin.
-This is a fairness rule, not a NoC QoS feature.
+---
 
-### REV-NOC-005: Bufferless-ring monitoring
+## 19. 原位迁移顺序
 
-For every ring, logical channel, node, link, and PARTID, the monitor plane
-SHALL expose:
+1. 类型化事务、flit、事件、监控和完成契约；
+2. 统一schema、三级诊断和resolved config；
+3. CPU requester、共享OSTD和激励；
+4. REQ/RSP/DAT三条Ring；
+5. 真实L3、MSHR和fill；
+6. MC共享buffer、readiness和QoS；
+7. BMIN/BMAX、CBusy和RN闭环；
+8. 监控collector、验证和Web工作区；
+9. 删除旧概率命中、priority heap、token bucket和旧视图逻辑。
 
-- offered flits;
-- injected flits;
-- ejected flits;
-- current and average occupied ring slots;
-- injection backpressure cycles;
-- injection arbitration wait;
-- first-pass ejections;
-- failed ejection attempts;
-- recirculation count;
-- full-ring traversals;
-- minimum, average, and maximum hop count;
-- nominal transport latency;
-- recirculation-added latency;
-- endpoint-blocked latency;
-- incomplete in-flight packets at simulation end.
+每一步必须：
 
-The UI SHALL display the ring occupancy and circulating flits over time.
-Users SHALL be able to select one or multiple PARTIDs and distinguish normal
-first-pass delivery from recirculated traffic.
+- 主分支可运行；
+- 已迁移功能使用新契约；
+- OpenSpec严格校验通过；
+- 自动化测试通过；
+- 不引入第二套完整模型。
 
-### REV-NOC-006: Required forward-progress evidence
+---
 
-Bufferless recirculation prevents a flit from occupying a stopped router, but
-does not by itself guarantee bounded completion when:
+## 20. 硬件实现审查清单
 
-- the destination never becomes ready;
-- injection continuously consumes every newly freed slot;
-- multi-flit packet reassembly has no capacity;
-- one circulation pattern repeatedly loses a neutral arbitration.
+每个控制必须说明：
 
-Automated verification SHALL therefore prove:
-
-- an in-flight flit continues moving every ring step;
-- a temporarily blocked destination eventually accepts after becoming ready;
-- injection backpressure prevents ring over-allocation;
-- no QoS metadata changes ring admission or ejection;
-- recirculation counters and added latency are accurate;
-- finite offered traffic drains when all destinations eventually accept.
-
-The verification target is correct ring behavior and observable forward
-progress under valid readiness assumptions, not a guarantee that arbitrary
-overload reaches a latency or throughput target.
-
-### REV-NOC-007: Superseded NoC assumptions and open mapping decisions
-
-The bufferless-ring requirements supersede revision proposals that assumed:
-
-- router queues;
-- configurable virtual channels;
-- REQ/RSP/DAT credit counts;
-- PARTID-aware NoC QoS;
-- MC QoS propagation into the NoC.
-
-The following physical mapping decisions are agreed:
-
-1. REQ, RSP, and DAT SHALL use three independent physical/logical rings.
-2. Every ring SHALL be bidirectional.
-3. A flit SHALL choose the direction with the shorter hop distance.
-4. Equal-distance ties SHALL use a fixed configurable tie direction so runs
-   remain deterministic.
-5. DAT flits SHALL inject independently and reassemble by transaction ID,
-   flit index, and flit count.
-
-Each ring MAY have independent flit width, slot count, and hop latency. The
-basic UI SHOULD provide linked defaults so users do not need to tune NoC
-microarchitecture before running an MPAM experiment.
-
-### REV-NOC-008: MPAM-focused fidelity boundary
-
-The three-ring model SHALL implement enough transport behavior to preserve:
-
-- request and response causality;
-- finite ring capacity;
-- endpoint injection backpressure;
-- ejection failure and recirculation;
-- multi-flit DAT completion;
-- terminal-event OSTD/MSHR release;
-- per-PARTID traffic and delay monitoring.
-
-The NoC SHALL remain a neutral shared transport. The project SHALL not add
-NoC QoS, adaptive routing, speculative routing, virtual channels, or complex
-router microarchitecture unless a later MPAM or flow-control experiment
-requires them.
-
-NoC verification SHALL focus on basic behavior correctness and on preventing
-the transport model from hiding or fabricating MPAM control effects.
-
-### REV-SW-001: Resctrl-like software configuration mode
-
-The simulator SHALL support two labeling modes:
-
-| Mode | Purpose |
+| 项目 | 内容 |
 | --- | --- |
-| Raw hardware-thread mode | Direct per-thread PARTID/PMG assignment for hardware/debug experiments |
-| Software resource-group mode | Task/CPU assignment through resctrl-like control and monitor groups |
+| 输入源 | 计数器、信号、队列或监控寄存器 |
+| 输入时序 | 每周期、事件驱动或N周期窗口 |
+| 保存状态 | 全局、每MSC、每PARTID或每entry |
+| 组合逻辑 | 比较器、加法器、mask、扫描和归约 |
+| 动作点 | 准入、candidate、QoS、替换或OSTD |
+| 更新顺序 | 采样、决策、动作和清零关系 |
+| 饱和 | 数值钳位和控制能力耗尽 |
+| 恢复 | 阈值、hold和步长 |
+| 交互优先级 | 与其他控制的先后 |
+| 前向进展 | 请求何时能够继续 |
+| PPA增长 | 随PARTID、buffer、way和频率的变化 |
+| 可观测性 | 证明动作发生所需状态 |
 
-The software mode SHALL expose named control/monitor groups rather than
-requiring application users to choose hardware PARTID/PMG values directly.
+没有上述内容的控制算法不得进入实现。
 
-Proposed software objects:
+---
 
-```text
-CTRL_MON group
-  -> one control-group ID
-  -> internally allocated PARTID
-  -> resource-domain controls
-  -> assigned tasks and/or logical CPUs
+## 21. 仍待明确的问题
 
-MON group
-  -> parent CTRL_MON group
-  -> one monitor-group ID
-  -> internally allocated PMG
-  -> assigned subset of parent tasks and/or CPUs
-```
+以下内容在实现对应模块前必须通过中文OpenSpec补充：
 
-The simulator SHALL use `(PARTID, PMG)` as the monitor identity. PMG alone is
-not globally unique.
+1. 滤波启动值和整数舍入规则；
+2. 写请求的终止响应和OSTD释放点；
+3. dirty eviction和writeback流程；
+4. Ring每链路槽位的精确定义；
+5. PLRU支持的way数和算法；
+6. 软件慢闭环策略的目标、周期和稳定性；
+7. 是否加入DRAM readiness和bank/row模型；
+8. 关键流量是否使用OSTD reserve或绕过规则。
 
-Resource-assignment precedence SHALL follow the resctrl model:
+---
 
-```text
-1. explicit non-default task control group
-2. otherwise the current logical CPU's non-default control group
-3. otherwise the default/root group
-```
+## 22. 外部证据
 
-The corresponding monitoring group SHALL be selected independently within
-the chosen control group.
+外部技术依据仅使用官方文档、官方源码、论文和专利。
 
-The first implementation SHOULD omit code/data prioritization. Without CDP:
+- Arm MPAM Architecture Specification：
+  <https://developer.arm.com/documentation/ihi0099/bb/>
+- Arm MPAM System Guidance，CBusy：
+  <https://developer.arm.com/documentation/109252/0101/MPAM-System-Guidance-for-Infrastructure/Use-of-CBusy>
+- Arm CHI接口通道：
+  <https://developer.arm.com/documentation/100180/0103/signal-descriptions/chi-interface-signals>
+- Linux arm64 MPAM：
+  <https://docs.kernel.org/arch/arm64/mpam.html>
+- Linux resctrl：
+  <https://docs.kernel.org/filesystems/resctrl.html>
+- Linux MPAM/resctrl映射源码：
+  <https://github.com/torvalds/linux/blob/master/drivers/resctrl/mpam_resctrl.c>
+- Linux任务切换MPAM标签源码：
+  <https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/mpam.h>
+- Libvirt资源组接口：
+  <https://libvirt.org/formatdomain.html>
 
-```text
-control_group_id -> PARTID_D = PARTID_I
-monitor_group_id -> PMG_D = PMG_I
-```
+外部资料证明架构接口和公开行为；本文中的MC调度、CBusy阈值、
+OSTD映射和低PPA状态机属于本项目明确提出的实现模型，不声称是Arm唯一实现。
 
-Task labels SHALL follow a software task across hardware-thread scheduling or
-migration. CPU-group defaults apply only when the task remains in the root
-task group.
+---
 
-### REV-SW-002: Public-software-shaped API
+## 23. 需求追踪
 
-The UI and Python API SHOULD expose operations analogous to resctrl and
-libvirt resource grouping:
-
-```text
-create_control_group(name)
-delete_control_group(name)
-set_group_schema(name, resource, domain, controls)
-assign_tasks(name, task_ids)
-assign_cpus(name, logical_cpu_ids)
-create_monitor_group(parent, name)
-assign_monitor_tasks(parent, name, task_ids)
-read_monitor(group, resource, domain, event)
-```
-
-A configuration representation MAY use:
-
-```yaml
-software_groups:
-  latency_critical:
-    tasks: [task_rt0, task_rt1]
-    cpus: []
-    resources:
-      l3_0:
-        cpbm: 0x00ff
-        cmin_percent: 25
-        cmax_percent: 50
-      mc_0:
-        bmin_gbps: 20
-        bmax_gbps: 40
-        limit_mode: softlimit
-        qos: 7
-    monitor_groups:
-      rt0:
-        tasks: [task_rt0]
-      rt1:
-        tasks: [task_rt1]
-```
-
-The UI SHALL show the internally allocated PARTID and PMG as read-only
-hardware mappings so users can correlate software groups with per-PARTID
-waveforms.
-
-### REV-EVIDENCE-001: Public interface evidence
-
-The above software-interface direction is based on primary public sources:
-
-- Linux arm64 MPAM documentation states that traffic is labeled according to
-  the current task's resctrl control or monitor group, while policy and
-  monitor values are accessed through resctrl:
-  `https://docs.kernel.org/arch/arm64/mpam.html`
-- Linux resctrl defines CTRL_MON and MON directories, task/CPU assignment,
-  schemata, monitoring data, and task-versus-CPU precedence:
-  `https://docs.kernel.org/filesystems/resctrl.html`
-- Current Linux arm64 source maps resctrl CLOSID/RMID values to Arm
-  PARTID/PMG and loads task labels on context switch:
-  `https://github.com/torvalds/linux/blob/master/drivers/resctrl/mpam_resctrl.c`
-  and
-  `https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/mpam.h`
-- Libvirt exposes cache and memory-bandwidth allocations as groups of vCPUs
-  through `cachetune` and `memorytune`, providing a public VM-oriented example:
-  `https://libvirt.org/formatdomain.html`
-- Arm documents CHI as using REQ, RSP, SNP, and DAT channel classes:
-  `https://developer.arm.com/documentation/100180/0103/signal-descriptions/chi-interface-signals`
+| 需求族 | 目标模块 |
+| --- | --- |
+| `SIM-*` | `src/sim/` |
+| `CFG-*` | `src/config/`、`src/web/config_builder.py` |
+| `REQ-*` | `src/traffic/request.py` |
+| `CPU-*`、`TRAFFIC-*` | `src/traffic/` |
+| `NOC-*` | `src/noc/` |
+| `L3-*` | `src/cache/` |
+| `MC-*` | `src/ddr/` |
+| `CBUSY-*` | `src/ddr/`、`src/traffic/` |
+| `MON-*` | `src/monitor/` |
+| `SW-*` | `src/mpam/`、`src/web/` |
+| `UI-*` | `src/web/` |
+| `VERIFY-*` | `src/validation/`、`tests/` |
+| `IMPL-*` | 全部组件接口和factory |
