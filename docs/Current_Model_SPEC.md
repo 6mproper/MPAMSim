@@ -1875,3 +1875,265 @@ The archived OpenSpec change that introduced proportional L3 controls,
 openspec/changes/archive/
   2026-06-20-add-qos-proportional-cache-and-effect-view/
 ```
+
+---
+
+## 23. Agreed Revision Decisions
+
+Status of this section:
+
+```text
+AGREED SPECIFICATION DIRECTION
+NOT YET IMPLEMENTED UNLESS ALSO STATED IN SECTIONS 1-22
+```
+
+This section records decisions made during the chapter-by-chapter model
+review. It must not be interpreted as a claim that the current code already
+implements the behavior.
+
+### REV-VERIFY-001: Control activation is not target achievement
+
+Automated verification SHALL prove that a configured control is active and
+that its defined causal path executes:
+
+```text
+trigger condition
+-> monitor update
+-> control decision
+-> enforcement action
+-> observable effect at the controlled resource
+```
+
+Automated verification SHALL NOT require every control target to be achieved.
+A target may legitimately remain unmet because of:
+
+- insufficient demand;
+- insufficient physical resource;
+- conflicting controls;
+- sampling or filtering error;
+- control saturation;
+- response latency;
+- an implementation-defined work-conserving policy;
+- an intentionally limited control algorithm.
+
+Tests SHALL distinguish:
+
+- control disabled;
+- control enabled but not triggered;
+- control triggered and action applied;
+- control saturated;
+- target achieved;
+- target not achieved.
+
+### REV-ARCH-001: Data, monitor, and control planes
+
+The revised model SHALL separate:
+
+| Plane | Role |
+| --- | --- |
+| Data plane | Full modeled request, cache-set/way, queue, arbitration, and service state |
+| Monitor plane | MPAM-visible sampled and filtered values |
+| Control plane | Decisions and enforcement based on MPAM monitor values |
+
+Control algorithms SHALL consume MPAM monitor-plane values. They SHALL NOT
+read complete data-plane state unless a specific control is explicitly
+defined as having a direct hardware signal.
+
+The UI MAY expose complete data-plane state for verification and diagnosis,
+but SHALL label it separately from MPAM-visible monitoring.
+
+### REV-MON-001: Per-resource monitor clocks
+
+L3 and MC monitoring SHALL have independent clock configuration:
+
+```yaml
+l3_clock_mhz: <positive number>
+mc_clock_mhz: <positive number>
+l3_monitor_period_cycles: 256
+mc_monitor_period_cycles: 256
+```
+
+The default monitor period is 256 local resource-clock cycles. The event
+kernel SHALL convert each resource's cycle period to simulation time.
+
+### REV-MON-002: Configurable recursive filter
+
+L3 and MC monitors SHALL update once per monitor period using a configurable
+history/current weighted filter:
+
+```text
+filtered[k] =
+    history_weight * filtered[k-1]
+  + current_weight * raw[k]
+```
+
+The user interface SHALL expose `history_weight` and `current_weight`.
+Configuration validation SHALL define one normalization rule. The preferred
+hardware-oriented representation is:
+
+```text
+history_weight + current_weight = 256
+
+filtered[k] =
+    (history_weight * filtered[k-1]
+   + current_weight * raw[k]) / 256
+```
+
+The startup value and integer rounding rule remain to be decided before
+implementation.
+
+### REV-L3-MON-001: One-set-per-eight-set occupancy sampling
+
+Every consecutive eight L3 sets form one monitor group:
+
+```text
+group_index = floor(set_index / 8)
+sample_set_index = group_index * 8
+```
+
+At each L3 monitor update, the monitor SHALL inspect every way in the first
+set of each eight-set group. For every PARTID:
+
+```text
+sampled_lines[partid] =
+    count(sampled ways whose owner PARTID equals partid)
+
+raw_sampled_occupancy_share[partid] =
+    sampled_lines[partid] /
+    (monitor_group_count * ways_per_set)
+```
+
+The other seven sets are not read by the MPAM occupancy monitor. Their way
+owners may differ because of address-to-set interleaving and replacement.
+
+### REV-L3-MON-002: Actual versus monitored occupancy
+
+The revised L3 data plane SHALL maintain modeled tag, owner PARTID, and
+replacement state for all sets and ways, while the MPAM monitor plane SHALL
+continue sampling only one set per eight-set group.
+
+The following values SHALL remain separate:
+
+| Value | Meaning | Controller visibility |
+| --- | --- | --- |
+| Actual occupancy | Ownership across all modeled sets and ways | No |
+| Raw sampled occupancy | Current one-in-eight-set sample | Yes |
+| Filtered occupancy | Recursive filtered MPAM monitor value | Yes |
+
+The difference between actual and monitored occupancy is expected model
+behavior, not automatically an error.
+
+### REV-MC-MON-001: Per-PARTID bandwidth monitoring
+
+Every MC SHALL record serviced bytes for all PARTIDs during each local
+256-cycle monitor period:
+
+```text
+raw_bandwidth_gbps[partid] =
+    serviced_bytes[partid] * 8 / monitor_period_ns
+```
+
+The MC SHALL update a filtered bandwidth value using `REV-MON-002`. MC
+bandwidth controls that are defined as monitor-driven SHALL use this filtered
+MPAM value.
+
+Each MC instance SHALL monitor and control independently. UI aggregation
+across MCs is a presentation function and SHALL NOT silently become a control
+input.
+
+### REV-MAP-001: Configurable address interleaving
+
+Address mapping SHALL be deterministic and user configurable. At minimum, the
+model SHALL support:
+
+```yaml
+mapping_mode: linear | xor
+line_size_bytes: <positive power of two>
+mc_interleave_bytes: <positive multiple of line size>
+xor_shift: <non-negative integer>
+```
+
+The base line address is:
+
+```text
+line_address = floor(address / line_size_bytes)
+```
+
+Linear mapping:
+
+```text
+l3_set = line_address mod l3_set_count
+mc_id = floor(address / mc_interleave_bytes) mod mc_count
+```
+
+XOR mapping:
+
+```text
+mapped_line = line_address XOR (line_address >> xor_shift)
+l3_set = mapped_line mod l3_set_count
+mc_id =
+    floor(mapped_line / (mc_interleave_bytes / line_size_bytes))
+    mod mc_count
+```
+
+The exact ordering of L3-set and MC selection transforms, as well as any
+future slice/channel/bank mapping, SHALL be explicit rather than hidden in
+traffic-generation code.
+
+### REV-UI-001: PARTID-selectable time-series evidence
+
+Every resource time-series view SHALL allow:
+
+- selecting one PARTID;
+- selecting multiple PARTIDs;
+- hiding all unselected PARTIDs consistently;
+- selecting an individual L3 or MC instance;
+- switching to an explicitly labeled aggregate view;
+- using a shared time cursor;
+- zooming to a time range;
+- locating control events.
+
+Every plot SHALL include a clear legend. Line style and color SHALL
+distinguish:
+
+- configured target;
+- effective target after enable/clamp/policy processing;
+- actual data-plane value;
+- raw MPAM sample;
+- filtered MPAM monitor value;
+- control action or state transition.
+
+Disabled and unavailable signals SHALL be shown as such; they SHALL NOT be
+rendered as numeric zero.
+
+### REV-UI-002: Monitor-error visibility
+
+For L3 occupancy and MC bandwidth, the UI SHALL make sampling/filtering error
+visible:
+
+```text
+monitor_error = filtered_MPAM_value - actual_data_plane_value
+```
+
+At minimum, users SHALL be able to plot actual, raw sampled, and filtered
+values together. The UI SHOULD also provide absolute error and relative error,
+with relative error suppressed or specially labeled when the actual value is
+zero.
+
+### REV-MON-003: Monitor/control update order
+
+At each resource monitor boundary, the update order SHALL be deterministic:
+
+```text
+1. close current-period access/service counters
+2. read the resource's raw monitor sample
+3. calculate the new filtered monitor value
+4. publish monitor state
+5. evaluate monitor-driven control logic
+6. publish and apply the resulting control action
+7. clear only the current-period counters
+8. retain the filtered value as next period's history
+```
+
+The trace SHALL preserve the monitor sample time, decision time, and action
+effective time so that feedback delay is visible.
