@@ -26,6 +26,9 @@ const state = {
   partidConfigs: [],
   stimulusConfigs: [],
   resourceView: "cpu",
+  overviewPartid: 0,
+  showRawMonitor: false,
+  advancedEvidenceView: "resource-monitor",
   causalPartid: 0,
   experimentPartid: 0,
   effectPartid: 0,
@@ -1567,6 +1570,7 @@ function renderResourceMonitor() {
 function renderAll() {
   renderKpis();
   renderCharts();
+  renderControlOverview();
   renderResourceMonitor();
   renderControlEffect();
   renderExperiment();
@@ -2111,6 +2115,10 @@ function drawLineChart(canvas, series, options = {}) {
     ),
   }));
   const points = normalizedSeries.flatMap((entry) => entry.points);
+  const bandValues = (options.bands || []).flatMap((band) => [
+    Number(band.from),
+    Number(band.to),
+  ]).filter(Number.isFinite);
   if (!points.length) {
     ctx.fillStyle = "#7b8790";
     ctx.font = "12px sans-serif";
@@ -2119,9 +2127,24 @@ function drawLineChart(canvas, series, options = {}) {
   }
   const maxX = Math.max(1, ...points.map((point) => point.x));
   const maxY = Number(options.yMax)
-    || Math.max(1, ...points.map((point) => point.y)) * 1.08;
+    || Math.max(1, ...points.map((point) => point.y), ...bandValues) * 1.08;
   const x = (value) => pad.left + (value / maxX) * (width - pad.left - pad.right);
   const y = (value) => height - pad.bottom - (value / maxY) * (height - pad.top - pad.bottom);
+
+  (options.bands || []).forEach((band) => {
+    const from = Number(band.from);
+    const to = Number(band.to);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+    const low = Math.max(0, Math.min(from, to));
+    const high = Math.min(maxY, Math.max(from, to));
+    if (high < low) return;
+    ctx.save();
+    ctx.fillStyle = band.color || "rgba(45, 122, 76, 0.12)";
+    const top = y(high);
+    const bottom = y(low);
+    ctx.fillRect(pad.left, top, width - pad.left - pad.right, Math.max(1, bottom - top));
+    ctx.restore();
+  });
 
   ctx.strokeStyle = colors.grid;
   ctx.lineWidth = 1;
@@ -2259,6 +2282,7 @@ function legendItem({ color, label, kind = "solid" }) {
     raw: "legend-line points",
     filtered: "legend-line thick",
     event: "legend-line dashed",
+    band: "legend-band",
     solid: "legend-line",
   };
   return `<span><i class="${classes[kind] || classes.solid}" style="--legend-color:${escapeHtml(color)}"></i>${escapeHtml(label)}</span>`;
@@ -2664,6 +2688,199 @@ function renderControlEffect() {
         ).join("") : '<span class="muted">无更新</span>'}</td>
       </tr>`).join("")
     : '<tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr>';
+}
+
+function formatTargetRange(minValue, maxValue, unit = "") {
+  const minText = minValue == null ? "-" : `${formatNumber(minValue, 1)}${unit}`;
+  const maxText = maxValue == null ? "-" : `${formatNumber(maxValue, 1)}${unit}`;
+  if (minValue == null && maxValue == null) return "未启用";
+  return `${minText} ~ ${maxText}`;
+}
+
+function overviewMetric(label, value, detail = "") {
+  return `
+    <div class="overview-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value}</strong>
+      ${detail ? `<small>${detail}</small>` : ""}
+    </div>`;
+}
+
+function overviewStatus(label, detail = "", kind = "neutral") {
+  return `
+    <span class="overview-status ${kind}">
+      <b>${escapeHtml(label)}</b>
+      ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
+    </span>`;
+}
+
+function overviewStateKind(value) {
+  if (["未达标", "需检查", "受限"].includes(value)) return "warn";
+  if (["达标", "符合模型", "生效"].includes(value)) return "good";
+  if (["借用", "观察", "运行"].includes(value)) return "observe";
+  return "neutral";
+}
+
+function latestEffectRow(partid) {
+  const rows = buildEffectRows(partid);
+  return rows[rows.length - 1] || null;
+}
+
+function overviewTargetBand(minValue, maxValue, fallbackMax, color) {
+  if (minValue == null && maxValue == null) return [];
+  return [{
+    from: minValue == null ? 0 : Number(minValue),
+    to: maxValue == null ? fallbackMax : Number(maxValue),
+    color,
+  }];
+}
+
+function renderControlOverview() {
+  syncPartidSelect("#overviewPartid", state.overviewPartid);
+  const pid = Number(state.overviewPartid);
+  const target = effectTarget(pid);
+  const rows = buildEffectRows(pid);
+  const latest = rows[rows.length - 1] || null;
+  const effect = effectState(latest, target);
+  const cpu = aggregateCpuResources()[pid] || {};
+  const l3 = aggregateL3Resources()[pid] || {};
+  const mc = aggregateMcResources()[pid] || {};
+  const selectedColor = partidColor(pid);
+  const cpuLimited = Number(cpu.cbusyLevel || 0) > 0
+    || Number(cpu.effectiveMaxOutstanding || 0) < Number(cpu.maxOutstanding || 0);
+  const destinationText = [...(cpu.destinations || new Map()).entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([mcId, values]) => `${mcId}: L${formatNumber(values.cbusy, 0)} cap ${formatNumber(values.limit, 0)}`)
+    .join(" / ");
+
+  $("#overviewCpuCard").innerHTML = `
+    <div class="overview-status-row">
+      ${overviewStatus(cpuLimited ? "源头受限" : "源头放行", destinationText || "无目标MC反馈", cpuLimited ? "warn" : "good")}
+    </div>
+    <div class="overview-metric-grid">
+      ${overviewMetric("Configured OSTD", formatNumber(cpu.maxOutstanding || 0, 0))}
+      ${overviewMetric("Effective Cap", formatNumber(cpu.effectiveMaxOutstanding || 0, 0), `CBusy L${formatNumber(cpu.cbusyLevel || 0, 0)}`)}
+      ${overviewMetric("Current / Peak", `${formatNumber(cpu.outstanding || 0, 0)} / ${formatNumber(cpu.peakOutstanding || 0, 0)}`)}
+      ${overviewMetric("Source Stall", `${formatNumber(cpu.cbusyStallNs || 0, 2)} ns`, `BP ${formatNumber(cpu.backpressureNs || 0, 2)} ns`)}
+      ${overviewMetric("Issued / Done", `${formatNumber(cpu.issued || 0, 0)} / ${formatNumber(cpu.completed || 0, 0)}`)}
+      ${overviewMetric("Requesters", escapeHtml([...(cpu.requesters || new Set())].join(", ") || "-"))}
+    </div>`;
+
+  $("#overviewL3Card").innerHTML = `
+    <div class="overview-status-row">
+      ${overviewStatus(effect.l3, latest?.l3Contended ? "存在替换压力" : "无替换压力", overviewStateKind(effect.l3))}
+    </div>
+    <div class="overview-metric-grid">
+      ${overviewMetric("CMIN / CMAX", formatTargetRange(target.cmin, target.cmax, "%"))}
+      ${overviewMetric("Filtered Monitor", latest ? `${formatNumber(latest.l3FilteredShare, 2)}%` : "--", "控制读取值")}
+      ${overviewMetric("Physical Actual", latest ? `${formatNumber(latest.l3ActualShare, 2)}%` : "--", "验证误差")}
+      ${overviewMetric("Allocation Denial", formatNumber(l3.allocationDenials || 0, 0))}
+      ${overviewMetric("Hit Rate", `${((l3.hitRate || 0) * 100).toFixed(2)}%`)}
+      ${overviewMetric("Queue", `${formatNumber(l3.queueOccupancy || 0, 2)} / ${formatNumber(l3.queueDepth || 0, 0)}`)}
+    </div>`;
+
+  $("#overviewMcCard").innerHTML = `
+    <div class="overview-status-row">
+      ${overviewStatus(effect.bw, mc.hardBlock ? "hard block" : mc.overBmax ? "over BMAX" : mc.underBmin ? "under BMIN" : "当前区间", overviewStateKind(effect.bw))}
+    </div>
+    <div class="overview-metric-grid">
+      ${overviewMetric("BMIN / BMAX", formatTargetRange(target.bmin, target.bmax, " Gbps"), escapeHtml(target.mode || "disabled"))}
+      ${overviewMetric("Filtered Monitor", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "控制读取值")}
+      ${overviewMetric("Service Actual", latest ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps` : "--", "实际服务")}
+      ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
+      ${overviewMetric("QoS Base / Eff", `${escapeHtml(mc.qos ?? "-")} / ${formatNumber(mc.effectiveQos || 0, 2)}`)}
+      ${overviewMetric("CBusy", `L${formatNumber(Math.max(mc.cbusyLevel || 0, latest?.cbusy || 0), 0)}`, `${formatNumber(mc.cbusyTransitions || 0, 0)} transitions`)}
+    </div>`;
+
+  const pointSeries = (key) => rows.map(
+    (row) => ({ x: row.timeNs, y: Number(row[key] || 0) }),
+  );
+  const eventXs = rows.filter((row) => row.events.length).map((row) => row.timeNs);
+  const l3Series = [
+    { color: "#697680", width: 1.2, marker: "none", points: pointSeries("l3ActualShare") },
+    { color: selectedColor, width: 3, points: pointSeries("l3FilteredShare") },
+  ];
+  if (state.showRawMonitor) {
+    l3Series.splice(1, 0, {
+      color: "#a66a00",
+      width: 1.1,
+      dash: [1, 4],
+      marker: "points",
+      points: pointSeries("l3RawShare"),
+    });
+  }
+  renderLegend("#overviewL3Legend", [
+    { color: "#2d7a4c", label: "目标带", kind: "band" },
+    { color: selectedColor, label: "filtered监控", kind: "filtered" },
+    { color: "#697680", label: "actual", kind: "actual" },
+    ...(state.showRawMonitor ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
+    { color: colors.amber, label: "控制事件", kind: "event" },
+  ]);
+  drawLineChart($("#overviewL3Chart"), l3Series, {
+    yMax: 100,
+    eventXs,
+    bands: overviewTargetBand(target.cmin, target.cmax, 100, "rgba(45, 122, 76, 0.14)"),
+  });
+
+  const mcValues = rows.flatMap((row) => [
+    Number(row.mcActualBandwidth || 0),
+    Number(row.mcFilteredBandwidth || 0),
+    Number(row.mcRawBandwidth || 0),
+  ]);
+  const mcYMax = Math.max(
+    1,
+    ...mcValues,
+    Number(target.bmin || 0),
+    Number(target.bmax || 0),
+  ) * 1.15;
+  const mcSeries = [
+    { color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcActualBandwidth") },
+    { color: selectedColor, width: 3, points: pointSeries("mcFilteredBandwidth") },
+  ];
+  if (state.showRawMonitor) {
+    mcSeries.splice(1, 0, {
+      color: "#a66a00",
+      width: 1.1,
+      dash: [1, 4],
+      marker: "points",
+      points: pointSeries("mcRawBandwidth"),
+    });
+  }
+  renderLegend("#overviewMcLegend", [
+    { color: "#2d7a4c", label: "目标带", kind: "band" },
+    { color: selectedColor, label: "filtered监控", kind: "filtered" },
+    { color: "#697680", label: "actual", kind: "actual" },
+    ...(state.showRawMonitor ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
+    { color: colors.amber, label: "控制事件", kind: "event" },
+  ]);
+  drawLineChart($("#overviewMcChart"), mcSeries, {
+    yMax: mcYMax,
+    eventXs,
+    bands: overviewTargetBand(target.bmin, target.bmax, mcYMax, "rgba(45, 122, 76, 0.14)"),
+  });
+
+  const cpuRows = aggregateCpuResources();
+  const l3Rows = aggregateL3Resources();
+  const mcRows = aggregateMcResources();
+  $("#overviewPartidMatrix").innerHTML = Array.from({ length: 16 }, (_, partid) => {
+    const row = latestEffectRow(partid);
+    const rowTarget = effectTarget(partid);
+    const rowState = effectState(row, rowTarget);
+    const cpuRow = cpuRows[partid] || {};
+    const l3Row = l3Rows[partid] || {};
+    const mcRow = mcRows[partid] || {};
+    const cpuLabel = Number(cpuRow.cbusyLevel || 0) > 0
+      ? `L${formatNumber(cpuRow.cbusyLevel, 0)}`
+      : Number(cpuRow.outstanding || 0) > 0 ? "运行" : "空闲";
+    return `
+      <button type="button" class="overview-partid ${partid === pid ? "active" : ""}" data-overview-partid="${partid}" style="--partid-color:${partidColor(partid)}">
+        <b>P${partid}</b>
+        <span class="${overviewStateKind(cpuLabel)}">CPU ${escapeHtml(cpuLabel)}</span>
+        <span class="${overviewStateKind(rowState.l3)}">L3 ${escapeHtml(rowState.l3)}</span>
+        <span class="${overviewStateKind(rowState.bw)}">MC ${escapeHtml(rowState.bw)}</span>
+        <small>${formatNumber(l3Row.allocationDenials || 0, 0)} deny · ${formatNumber(mcRow.hardBlocks || 0, 0)} hard</small>
+      </button>`;
+  }).join("");
 }
 
 function renderPartidTable() {
@@ -3146,9 +3363,53 @@ function stopPlayback() {
   $("#playButton").textContent = "▶";
 }
 
+const advancedEvidenceViews = [
+  "resource-monitor",
+  "control-effect",
+  "monitor-group",
+  "mpam-monitor",
+  "partid",
+  "msc",
+  "controls",
+  "experiment",
+  "verification",
+];
+
+function setupAdvancedEvidence() {
+  const body = $("#advancedEvidenceBody");
+  if (!body) return;
+  advancedEvidenceViews.forEach((name) => {
+    const view = document.querySelector(`[data-result-view="${name}"]`);
+    if (!view || view.classList.contains("advanced-panel")) return;
+    view.classList.remove("result-view", "active");
+    view.classList.add("advanced-panel");
+    view.dataset.advancedPanel = name;
+    body.appendChild(view);
+  });
+  activateAdvancedEvidence(state.advancedEvidenceView);
+}
+
+function activateAdvancedEvidence(name) {
+  state.advancedEvidenceView = name;
+  $$(".advanced-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.advancedTarget === name);
+  });
+  $$(".advanced-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.advancedPanel === name);
+  });
+  if (name === "resource-monitor") renderResourceMonitor();
+  if (name === "control-effect") {
+    renderControlEffect();
+    requestAnimationFrame(renderControlEffect);
+  }
+  if (name === "experiment") renderExperiment();
+  if (name === "verification") renderControlVerification();
+}
+
 function bindEvents() {
   bindHelpEvents();
   bindAlgorithmEvents();
+  setupAdvancedEvidence();
   $$(".tab-button").forEach((button) => button.addEventListener("click", () => {
     $$(".tab-button").forEach((node) => node.classList.toggle("active", node === button));
     $$(".config-section").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
@@ -3159,12 +3420,15 @@ function bindEvents() {
     );
   }));
   $$(".result-tab").forEach((button) => button.addEventListener("click", () => {
-    $$(".result-tab").forEach((node) => node.classList.toggle("active", node === button));
-    $$(".result-view").forEach((view) => view.classList.toggle("active", view.dataset.resultView === button.dataset.resultTab));
-    if (button.dataset.resultTab === "control-effect") {
-      renderControlEffect();
-      requestAnimationFrame(renderControlEffect);
+    activateResultTab(button.dataset.resultTab);
+    if (button.dataset.resultTab === "control-overview") renderControlOverview();
+    if (button.dataset.resultTab === "causal") renderCausalTimeline();
+    if (button.dataset.resultTab === "advanced-evidence") {
+      activateAdvancedEvidence(state.advancedEvidenceView);
     }
+  }));
+  $$(".advanced-tab").forEach((button) => button.addEventListener("click", () => {
+    activateAdvancedEvidence(button.dataset.advancedTarget);
   }));
   $$(".resource-tab").forEach((button) => button.addEventListener("click", () => {
     state.resourceView = button.dataset.resourceView;
@@ -3205,6 +3469,20 @@ function bindEvents() {
   $("#effectPartid").addEventListener("change", (event) => {
     state.effectPartid = Number(event.target.value);
     renderControlEffect();
+  });
+  $("#overviewPartid").addEventListener("change", (event) => {
+    state.overviewPartid = Number(event.target.value);
+    renderControlOverview();
+  });
+  $("#showRawMonitor").addEventListener("change", (event) => {
+    state.showRawMonitor = event.target.checked;
+    renderControlOverview();
+  });
+  $("#overviewPartidMatrix").addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-overview-partid]");
+    if (!button) return;
+    state.overviewPartid = Number(button.dataset.overviewPartid);
+    renderControlOverview();
   });
   $("#resetButton").addEventListener("click", () => {
     fillForm(state.defaults);
@@ -3251,7 +3529,14 @@ function bindEvents() {
     renderCharts();
     if (
       document.querySelector('.result-view.active')?.dataset.resultView
-      === "control-effect"
+      === "control-overview"
+    ) {
+      renderControlOverview();
+    }
+    if (
+      document.querySelector('.result-view.active')?.dataset.resultView
+      === "advanced-evidence"
+      && state.advancedEvidenceView === "control-effect"
     ) {
       renderControlEffect();
     }

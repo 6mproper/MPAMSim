@@ -52,3 +52,33 @@ def test_every_static_parameter_control_has_metadata() -> None:
         re.findall(r'data-param="([^"]+)"', index_html)
     )
     assert parameter_names <= set(PARAMETER_METADATA)
+
+
+def test_results_default_to_control_evidence_workspace() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    top_level_tabs = re.findall(r'data-result-tab="([^"]+)"', index_html)
+    assert top_level_tabs == [
+        "control-overview",
+        "causal",
+        "advanced-evidence",
+    ]
+    for element_id in (
+        "overviewCpuCard",
+        "overviewL3Card",
+        "overviewMcCard",
+        "overviewL3Chart",
+        "overviewMcChart",
+        "overviewPartidMatrix",
+        "advancedEvidenceBody",
+    ):
+        assert f'id="{element_id}"' in index_html
+    for advanced_target in (
+        "resource-monitor",
+        "control-effect",
+        "monitor-group",
+        "mpam-monitor",
+        "controls",
+    ):
+        assert f'data-advanced-target="{advanced_target}"' in index_html

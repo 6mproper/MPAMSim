@@ -288,16 +288,72 @@
 
       <section class="data-section">
         <div class="result-tabs">
-          <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
-          <button class="result-tab" data-result-tab="control-effect">控制效果</button>
-          <button class="result-tab" data-result-tab="experiment">对照实验</button>
-          <button class="result-tab" data-result-tab="verification">算法验证</button>
-          <button class="result-tab" data-result-tab="causal">因果时间线</button>
-          <button class="result-tab" data-result-tab="partid">PARTID</button>
-          <button class="result-tab" data-result-tab="monitor-group">监控组</button>
-          <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
-          <button class="result-tab" data-result-tab="msc">MSC</button>
-          <button class="result-tab" data-result-tab="controls">控制记录</button>
+          <button class="result-tab active" data-result-tab="control-overview">控制总览</button>
+          <button class="result-tab" data-result-tab="causal">因果链</button>
+          <button class="result-tab" data-result-tab="advanced-evidence">高级证据</button>
+        </div>
+        <div class="result-view active" data-result-view="control-overview">
+          <div class="evidence-toolbar overview-toolbar">
+            <div>
+              <strong data-algorithm="effect-view">控制验证总览</strong>
+              <span>默认只看CPU OSTD、L3/MC监控与控制状态；高级内部证据折叠到后续页签。</span>
+            </div>
+            <div class="overview-actions">
+              <label>PARTID
+                <select id="overviewPartid"></select>
+              </label>
+              <label class="inline-toggle" data-help="默认隐藏raw MPAM采样，避免和控制输入、实际值混成一团；打开后用点状线显示raw采样误差。">
+                <input id="showRawMonitor" type="checkbox">
+                <span>显示raw采样误差</span>
+              </label>
+            </div>
+          </div>
+          <div class="overview-grid">
+            <article class="overview-card">
+              <div class="overview-card-title">
+                <h3>CPU OSTD 源头控制</h3>
+                <span>configured / effective / current</span>
+              </div>
+              <div id="overviewCpuCard" class="overview-card-body"></div>
+            </article>
+            <article class="overview-card">
+              <div class="overview-card-title">
+                <h3 data-algorithm="l3-cmin">L3 MSC 监控与控制</h3>
+                <span>CMIN/CMAX vs filtered/actual</span>
+              </div>
+              <div id="overviewL3Card" class="overview-card-body"></div>
+            </article>
+            <article class="overview-card">
+              <div class="overview-card-title">
+                <h3 data-algorithm="mc-bmax">MC MSC 监控与控制</h3>
+                <span>BMIN/BMAX / QoS / CBusy</span>
+              </div>
+              <div id="overviewMcCard" class="overview-card-body"></div>
+            </article>
+          </div>
+          <div class="overview-chart-grid">
+            <article class="chart-panel">
+              <div class="effect-chart-title">
+                <h3 data-algorithm="l3-cmin">L3 目标带 / 监控 / 实际</h3>
+                <div id="overviewL3Legend" class="legend semantic-legend"></div>
+              </div>
+              <canvas id="overviewL3Chart"></canvas>
+            </article>
+            <article class="chart-panel">
+              <div class="effect-chart-title">
+                <h3 data-algorithm="mc-bmax">MC 目标带 / 监控 / 实际</h3>
+                <div id="overviewMcLegend" class="legend semantic-legend"></div>
+              </div>
+              <canvas id="overviewMcChart"></canvas>
+            </article>
+          </div>
+          <div class="overview-matrix-section">
+            <div class="monitor-group-heading">
+              <strong>16 PARTID 控制状态矩阵</strong>
+              <span>多PARTID默认比较状态，不混画多信号曲线</span>
+            </div>
+            <div id="overviewPartidMatrix" class="overview-partid-matrix"></div>
+          </div>
         </div>
         <div class="result-view" data-result-view="control-effect">
           <div class="evidence-toolbar">
@@ -355,7 +411,7 @@
             </table>
           </div>
         </div>
-        <div class="result-view active" data-result-view="resource-monitor">
+        <div class="result-view" data-result-view="resource-monitor">
           <div class="resource-monitor-toolbar">
             <div class="resource-tabs" role="tablist" aria-label="监控资源">
               <button class="resource-tab active" data-resource-view="cpu" data-help="查看每个 PARTID 的 Thread OSTD、共享 Core 池、按目标 MC 分开的 OSTD/CBusy、完成和源端背压。">CPU</button>
@@ -537,6 +593,28 @@
             <thead><tr><th>时间 ns</th><th>目标</th><th>PARTID</th><th>字段</th><th>旧值</th><th>新值</th><th>原因</th></tr></thead>
             <tbody id="controlTable"><tr><td colspan="7" class="empty-cell">暂无控制更新</td></tr></tbody>
           </table>
+        </div>
+        <div class="result-view" data-result-view="advanced-evidence">
+          <div class="evidence-toolbar">
+            <div>
+              <strong>高级证据</strong>
+              <span>保留raw monitor、MSHR/fill、NoC ring、candidate/grant、验证和完整日志，但默认不干扰控制判断。</span>
+            </div>
+          </div>
+          <div class="advanced-evidence-shell">
+            <div id="advancedEvidenceTabs" class="advanced-tabs" role="tablist" aria-label="高级证据分类">
+              <button class="advanced-tab active" type="button" data-advanced-target="resource-monitor">资源明细</button>
+              <button class="advanced-tab" type="button" data-advanced-target="control-effect">控制曲线</button>
+              <button class="advanced-tab" type="button" data-advanced-target="monitor-group">监控组</button>
+              <button class="advanced-tab" type="button" data-advanced-target="mpam-monitor">MPAM表</button>
+              <button class="advanced-tab" type="button" data-advanced-target="partid">PARTID表</button>
+              <button class="advanced-tab" type="button" data-advanced-target="msc">MSC表</button>
+              <button class="advanced-tab" type="button" data-advanced-target="controls">控制日志</button>
+              <button class="advanced-tab" type="button" data-advanced-target="experiment">对照实验</button>
+              <button class="advanced-tab" type="button" data-advanced-target="verification">算法验证</button>
+            </div>
+            <div id="advancedEvidenceBody" class="advanced-evidence-body"></div>
+          </div>
         </div>
       </section>
     </main>
