@@ -423,22 +423,16 @@ class Simulation:
         )
 
     def _memory_service_complete(self, request: Request) -> None:
+        cache = self.caches[request.cache_id]
         self._transmit_with_retry(
             request,
             self._response_channel(request),
             source_node=request.memory_controller_id,
             destination_node=request.cache_id,
-            downstream=CallbackEndpoint(self._cache_return),
-        )
-
-    def _cache_return(self, request: Request) -> None:
-        requester = self.config.requester_by_id[request.requester_id]
-        self._transmit_with_retry(
-            request,
-            self._response_channel(request),
-            source_node=request.cache_id,
-            destination_node=requester.attach_node,
-            downstream=CallbackEndpoint(self._complete),
+            downstream=CallbackEndpoint(
+                cache.accept_fill,
+                readiness=cache.can_accept_fill,
+            ),
         )
 
     def _transmit_with_retry(

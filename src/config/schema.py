@@ -32,6 +32,12 @@ class CacheConfig:
     monitor_group_sets: int = 8
     queue_depth: int = 128
     lookup_parallelism: int = 16
+    miss_detect_latency_ns: float = 20.0
+    fill_latency_ns: float = 10.0
+    mshr_entries: int = 64
+    fill_buffer_entries: int = 16
+    merge_same_line_misses: bool = True
+    replacement_policy: str = "lru"
 
 
 @dataclass

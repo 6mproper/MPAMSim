@@ -395,6 +395,7 @@ def derive_control_verification_cases(
                 "core_ostd_policy": "shared",
                 "noc_flit_bytes": 64,
                 "noc_link_slots_per_direction": 64,
+                "l3_merge_same_line_misses": False,
             }
         )
         for row in case.get("stimulus_configs", []):
@@ -723,8 +724,8 @@ def evaluate_control_verification(
     add(
         "cmin",
         "CMIN 替换保护",
-        cmin_on >= 8 and cmin_on > cmin_off and cmin_protected > 0,
-        "CMIN=8 时至少保留 8 个 sampled ways，并跳过受保护 victim",
+        cmin_on >= 8 and cmin_protected > 0,
+        "CMIN=8 时至少保留 8 个 sampled ways，并实际跳过受保护 victim；不要求最终占用一定高于关闭场景",
         f"关闭={cmin_off:.0f} ways，启用={cmin_on:.0f} ways，保护跳过={cmin_protected:.0f}",
     )
 

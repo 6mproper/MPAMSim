@@ -79,6 +79,11 @@ const headerHelp = {
   "PARTID / PMG": "软件可见监控 key。PARTID 选择控制策略，PMG 细分同一控制分区内的监控归因。",
   "L3 Sample BW": "该监控组在 L3 抽样 set 上观察到并按 8 倍估算的访问带宽。",
   "L3 Est. Occupancy": "该监控组在抽样 way 中的所有权按 8-set 分组放大的估算字节数。",
+  "L3 Est / Actual": "1/8抽样set放大后的估算占用，与扫描全部真实valid line得到的实际占用。",
+  "Monitor Error": "抽样估算占用减去实际占用；地址交织和有限抽样可使该值为正或负。",
+  "MSHR": "全部L3实例当前/峰值/配置MSHR，以及等待分配MSHR的miss数量。",
+  "Fill Buffer": "全部L3实例当前/峰值/配置fill entry；满时返回flit不能下Ring。",
+  "Merge / Bypass": "同line read合并次数与因CPBM/CMIN/CMAX无合法victim而不写入L3的fill次数。",
   "L3 Occupancy %": "估算占用字节除以该 PARTID 当前允许的 L3 容量；这是近似 CSU，不是精确 tag-array 统计。",
   "MC BW": "该监控组在所有内存控制器上实际完成服务的带宽之和。",
   "MC BW Util %": "监控组 MC 带宽除以参与统计的 MC 总建模带宽。",
@@ -265,6 +270,7 @@ function fillForm(values) {
     const key = input.dataset.param;
     if (!(key in values)) return;
     if (input.type === "radio") input.checked = input.value === String(values[key]);
+    else if (input.type === "checkbox") input.checked = Boolean(values[key]);
     else input.value = values[key];
   });
   clampDependentInputs();
@@ -276,6 +282,7 @@ function collectParameters() {
     if (input.type === "radio" && !input.checked) return;
     let value = input.value;
     if (input.type === "number") value = Number(value);
+    if (input.type === "checkbox") value = input.checked;
     parameters[input.dataset.param] = value;
   });
   parameters.partid_configs = collectPartidConfigs();
@@ -924,6 +931,8 @@ function aggregateL3Resources() {
     ...row,
     bandwidth: 0,
     occupancy: 0,
+    actualOccupancy: 0,
+    monitorError: 0,
     capacity: 0,
     allowedCapacity: 0,
     requests: 0,
@@ -937,6 +946,16 @@ function aggregateL3Resources() {
     queuePeak: 0,
     queueDepth: 0,
     lookupParallelism: 0,
+    mshrOccupancy: 0,
+    mshrPeak: 0,
+    mshrEntries: 0,
+    mshrWaiting: 0,
+    fillOccupancy: 0,
+    fillPeak: 0,
+    fillEntries: 0,
+    mergedMisses: 0,
+    allocationBypass: 0,
+    redundantFetches: 0,
     cminByMsc: new Map(),
     cmaxByMsc: new Map(),
     cpbmByMsc: new Map(),
@@ -955,6 +974,17 @@ function aggregateL3Resources() {
         target.queuePeak += Number(row.queue_peak || 0);
         target.queueDepth += Number(row.queue_depth || 0);
         target.lookupParallelism += Number(row.lookup_parallelism || 0);
+        target.mshrOccupancy += Number(row.mshr_occupancy || 0);
+        target.mshrPeak += Number(row.mshr_peak || 0);
+        target.mshrEntries += Number(row.mshr_entries || 0);
+        target.mshrWaiting += Number(row.mshr_waiting || 0);
+        target.fillOccupancy += Number(
+          row.fill_buffer_occupancy || 0,
+        );
+        target.fillPeak += Number(row.fill_buffer_peak || 0);
+        target.fillEntries += Number(
+          row.fill_buffer_entries || 0,
+        );
       });
       Object.entries(row.per_partid || {}).forEach(([pidText, values]) => {
         const partid = Number(pidText);
@@ -962,6 +992,10 @@ function aggregateL3Resources() {
         const target = result[partid];
         target.bandwidth += Number(values.estimated_bandwidth_gbps || 0);
         target.occupancy += Number(values.estimated_occupancy_bytes || 0);
+        target.actualOccupancy += Number(
+          values.actual_occupancy_bytes || 0,
+        );
+        target.monitorError += Number(values.monitor_error_bytes || 0);
         target.capacity += Number(values.cache_capacity_bytes || 0);
         target.allowedCapacity += Number(values.allowed_capacity_bytes || 0);
         target.requests += Number(values.requests || 0);
@@ -969,6 +1003,13 @@ function aggregateL3Resources() {
         target.misses += Number(values.misses || 0);
         target.allocationDenials += Number(values.allocation_denials || 0);
         target.queueDelayNs += Number(values.queue_delay_ns || 0);
+        target.mergedMisses += Number(values.merged_misses || 0);
+        target.allocationBypass += Number(
+          values.allocation_bypass || 0,
+        );
+        target.redundantFetches += Number(
+          values.redundant_memory_fetches || 0,
+        );
         target.admissionBackpressureNs += Number(
           values.admission_backpressure_ns || 0,
         );
@@ -1365,20 +1406,25 @@ function renderResourceMonitor() {
       </tr>`);
   } else if (state.resourceView === "l3") {
     headers = [
-      "PARTID", "Control State", "L3 Occupancy", "L3 Util %",
-      "L3 Sample BW", "Hit Rate", "L3 Queue", "Queue Delay / Full",
-      "Alloc Denials", "CMIN %", "CMAX %", "CPBM",
+      "PARTID", "Control State", "L3 Est / Actual", "Monitor Error",
+      "L3 Util %", "L3 Sample BW", "Hit Rate", "L3 Queue",
+      "MSHR", "Fill Buffer", "Queue Delay / Full",
+      "Merge / Bypass", "Alloc Denials", "CMIN %", "CMAX %", "CPBM",
     ];
     rows = visible(aggregateL3Resources()).map((row) => `
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
         <td>${controlStateCell(row.partid)}</td>
-        <td>${formatNumber(row.occupancy, 0)} B <small>physical ${formatNumber(row.capacity, 0)} B · allowed ${formatNumber(row.allowedCapacity, 0)} B</small></td>
+        <td>${formatNumber(row.occupancy, 0)} / ${formatNumber(row.actualOccupancy, 0)} B <small>physical ${formatNumber(row.capacity, 0)} B · allowed ${formatNumber(row.allowedCapacity, 0)} B</small></td>
+        <td>${formatNumber(row.monitorError, 0)} B</td>
         <td>${utilizationCell(row.occupancyUtilization, "#2d7a4c")}</td>
         <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
         <td>${(row.hitRate * 100).toFixed(2)}%</td>
         <td>${formatNumber(row.queueOccupancy, 2)} / ${formatNumber(row.queueDepth, 0)} <small>peak ${formatNumber(row.queuePeak, 0)} · slots ${formatNumber(row.lookupParallelism, 0)}</small></td>
+        <td>${formatNumber(row.mshrOccupancy, 0)} / ${formatNumber(row.mshrPeak, 0)} / ${formatNumber(row.mshrEntries, 0)} <small>${formatNumber(row.mshrWaiting, 0)} waiting</small></td>
+        <td>${formatNumber(row.fillOccupancy, 0)} / ${formatNumber(row.fillPeak, 0)} / ${formatNumber(row.fillEntries, 0)}</td>
         <td>${formatNumber(row.queueDelayNs, 2)} ns <small>${formatNumber(row.queueFullEvents, 0)} full · ${formatNumber(row.admissionBackpressureNs, 2)} ns retry</small></td>
+        <td>${formatNumber(row.mergedMisses, 0)} / ${formatNumber(row.allocationBypass, 0)} <small>${formatNumber(row.redundantFetches, 0)} redundant</small></td>
         <td>${formatNumber(row.allocationDenials, 0)}</td>
         <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => `${formatNumber(value, 1)}%`)}</td>
         <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => `${formatNumber(value, 1)}%`)}</td>

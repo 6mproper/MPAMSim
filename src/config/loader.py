@@ -150,6 +150,25 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             monitor_group_sets=int(item.get("monitor_group_sets", 8)),
             queue_depth=int(item.get("queue_depth", 128)),
             lookup_parallelism=int(item.get("lookup_parallelism", 16)),
+            miss_detect_latency_ns=float(
+                item.get(
+                    "miss_detect_latency_ns",
+                    item.get("hit_latency_ns", 20.0),
+                )
+            ),
+            fill_latency_ns=float(
+                item.get("fill_latency_ns", 10.0)
+            ),
+            mshr_entries=int(item.get("mshr_entries", 64)),
+            fill_buffer_entries=int(
+                item.get("fill_buffer_entries", 16)
+            ),
+            merge_same_line_misses=bool(
+                item.get("merge_same_line_misses", True)
+            ),
+            replacement_policy=str(
+                item.get("replacement_policy", "lru")
+            ),
         )
         for item in soc.get("caches", [])
     ]

@@ -263,3 +263,13 @@ PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBu
 
 - **WHEN** 用户指向任一Ring配置或监控列
 - **THEN** 显示状态、时序、路由、动作、恢复、前向进展和证据定义
+
+### Requirement: L3数据面资源配置和证据
+
+控制台 MUST 配置replacement、miss detect、fill latency、MSHR、fill buffer和same-line merge，
+并显示actual occupancy、sampled estimate、误差、merge和fill压力。
+
+#### Scenario: 查看MSHR说明
+
+- **WHEN** 用户指向MSHR、fill或merge配置
+- **THEN** 显示分配、等待、合并、owner、完成、前向进展和监控证据

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import math
-import random
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, DefaultDict, Deque, Dict, List, Optional, Tuple
 
 from src.config.schema import CacheConfig
@@ -14,11 +13,27 @@ from src.traffic.request import Request
 
 
 @dataclass
-class SampleWay:
+class CacheLine:
+    valid: bool = False
+    tag: int = 0
     owner_partid: Optional[int] = None
     owner_pmg: Optional[int] = None
-    tag: Optional[int] = None
     last_touch: int = 0
+
+
+@dataclass
+class MshrWaiter:
+    request: Request
+    joined_time_ns: float
+    owner: bool = False
+
+
+@dataclass
+class MshrEntry:
+    transaction_id: int
+    line_address: int
+    owner_request: Request
+    waiters: List[MshrWaiter] = field(default_factory=list)
 
 
 def _cache_counters() -> Dict[str, float]:
@@ -31,7 +46,18 @@ def _cache_counters() -> Dict[str, float]:
         "sampled_requests": 0,
         "sampled_bytes": 0,
         "allocation_denials": 0,
+        "allocation_bypass": 0,
         "cmin_protected_evictions": 0,
+        "cmax_growth_blocks": 0,
+        "cpbm_excluded_ways": 0,
+        "evictions": 0,
+        "self_replacements": 0,
+        "merged_misses": 0,
+        "mshr_allocations": 0,
+        "mshr_full_events": 0,
+        "fill_completions": 0,
+        "fill_buffer_full_events": 0,
+        "redundant_memory_fetches": 0,
         "queue_delay_ns": 0.0,
         "admission_backpressure_ns": 0.0,
         "queue_full_events": 0,
@@ -41,31 +67,46 @@ def _cache_counters() -> Dict[str, float]:
 class CacheMSC(Component):
     capabilities = (
         "cache_lookup_pipeline",
+        "explicit_full_tag_array",
+        "lru_replacement",
+        "tree_plru_replacement",
+        "mshr_same_line_read_merge",
+        "fill_buffer",
         "sampled_owner_monitoring",
+        "actual_occupancy_monitoring",
         "cpbm_control",
         "cmin_control",
         "cmax_control",
     )
     required_monitors = (
+        "actual_occupancy",
         "sampled_occupancy",
         "queue_occupancy",
+        "mshr_occupancy",
+        "fill_buffer_occupancy",
         "hit_miss",
     )
     actions = (
         "admit",
-        "lookup",
+        "lookup_tag",
+        "merge_or_allocate_mshr",
+        "accept_fill",
         "select_victim",
-        "allocate_sampled_owner",
+        "allocate_line",
+        "complete_waiters",
     )
     validation_hooks = (
         "queue_capacity",
+        "mshr_capacity",
+        "fill_buffer_capacity",
+        "unique_tag_per_set",
         "cpbm_reachability",
         "cmin_cmax_order",
     )
-    incompatible_capabilities = ("explicit_full_tag_array",)
+    incompatible_capabilities = ("probabilistic_cache_hit",)
     approximations = (
-        "probabilistic hit decision",
-        "one sampled set per eight sets",
+        "sparse allocation of untouched all-invalid sets",
+        "CMIN/CMAX still use current sampled occupancy until filtered monitor migration",
     )
 
     def __init__(
@@ -82,7 +123,6 @@ class CacheMSC(Component):
         self.kernel = kernel
         self.config = config
         self.settings = settings
-        self.rng = random.Random(seed)
         self.on_hit = on_hit
         self.on_miss = on_miss
         self.enforce_controls = enforce_controls
@@ -94,30 +134,41 @@ class CacheMSC(Component):
         self._queue_peak = 0
         self._active_peak = 0
         self._touch_sequence = 0
-        self._sample_sets: Dict[int, List[SampleWay]] = {}
-        self._interval: DefaultDict[int, Dict[str, float]] = defaultdict(
-            _cache_counters
-        )
+        self._sets: Dict[int, List[CacheLine]] = {}
+        self._plru_bits: Dict[int, List[int]] = {}
+        self._mshrs: Dict[int, MshrEntry] = {}
+        self._mshr_by_line: DefaultDict[int, List[int]] = defaultdict(list)
+        self._mshr_wait_queue: Deque[Tuple[Request, float]] = deque()
+        self._mshr_peak = 0
+        self._fill_buffer_occupancy = 0
+        self._fill_buffer_peak = 0
+        self._interval: DefaultDict[
+            int, Dict[str, float]
+        ] = defaultdict(_cache_counters)
         self._interval_groups: DefaultDict[
             Tuple[int, int], Dict[str, float]
-        ] = defaultdict(
-            _cache_counters
-        )
+        ] = defaultdict(_cache_counters)
+
+    @property
+    def mshr_occupancy(self) -> int:
+        return len(self._mshrs)
+
+    @property
+    def fill_buffer_occupancy(self) -> int:
+        return self._fill_buffer_occupancy
 
     def receive(self, request: Request) -> None:
         request.cache_id = self.component_id
-        if len(self._queue) >= self.config.queue_depth:
+        if not self.can_accept(request):
             retry_ns = 2.0
             request.cache_queue_delay_ns += retry_ns
             request.cache_delay_ns += retry_ns
-            counters = self._interval[request.partid]
-            counters["admission_backpressure_ns"] += retry_ns
-            counters["queue_full_events"] += 1
-            group_counters = self._interval_groups[
-                (request.partid, request.pmg)
-            ]
-            group_counters["admission_backpressure_ns"] += retry_ns
-            group_counters["queue_full_events"] += 1
+            self._increment(
+                request,
+                "admission_backpressure_ns",
+                retry_ns,
+            )
+            self._increment(request, "queue_full_events")
             self.kernel.schedule(
                 retry_ns,
                 lambda: self.receive(request),
@@ -138,6 +189,38 @@ class CacheMSC(Component):
     def lookup(self, request: Request) -> None:
         self.receive(request)
 
+    def can_accept_fill(self, request: Request) -> bool:
+        ready = (
+            self._fill_buffer_occupancy
+            < self.config.fill_buffer_entries
+        )
+        if not ready:
+            self._increment(request, "fill_buffer_full_events")
+        return ready
+
+    def accept_fill(self, request: Request) -> None:
+        self._fill_buffer_occupancy += 1
+        self._fill_buffer_peak = max(
+            self._fill_buffer_peak,
+            self._fill_buffer_occupancy,
+        )
+        self.kernel.schedule(
+            self.config.fill_latency_ns,
+            lambda: self._finish_fill(request),
+            f"l3-fill:{self.component_id}",
+        )
+
+    def _increment(
+        self,
+        request: Request,
+        field: str,
+        amount: float = 1.0,
+    ) -> None:
+        self._interval[request.partid][field] += amount
+        self._interval_groups[
+            (request.partid, request.pmg)
+        ][field] += amount
+
     def _dispatch(self) -> None:
         while (
             self._queue
@@ -150,12 +233,7 @@ class CacheMSC(Component):
             )
             request.cache_queue_delay_ns += queue_delay
             request.cache_delay_ns += queue_delay
-            self._interval[request.partid][
-                "queue_delay_ns"
-            ] += queue_delay
-            self._interval_groups[
-                (request.partid, request.pmg)
-            ]["queue_delay_ns"] += queue_delay
+            self._increment(request, "queue_delay_ns", queue_delay)
             self._active_lookups += 1
             self._active_peak = max(
                 self._active_peak,
@@ -165,112 +243,217 @@ class CacheMSC(Component):
             self._start_lookup(request)
 
     def _start_lookup(self, request: Request) -> None:
-        allowed_capacity = self.allowed_capacity_bytes(request.partid)
-        hit_probability = self._hit_probability(request, allowed_capacity)
-        is_hit = self.rng.random() < hit_probability
-        request.cache_hit = is_hit
-        request.cache_delay_ns += self.config.hit_latency_ns
-
-        counters = self._interval[request.partid]
-        counters["requests"] += 1
-        counters["bytes"] += request.size_bytes
-        counters["delay_ns"] += self.config.hit_latency_ns
-        counters["hits" if is_hit else "misses"] += 1
-        group_counters = self._interval_groups[
-            (request.partid, request.pmg)
-        ]
-        group_counters["requests"] += 1
-        group_counters["bytes"] += request.size_bytes
-        group_counters["delay_ns"] += self.config.hit_latency_ns
-        group_counters["hits" if is_hit else "misses"] += 1
-
         set_index = self._set_index(request.addr)
-        if set_index % self.config.monitor_group_sets == 0:
-            counters["sampled_requests"] += 1
-            counters["sampled_bytes"] += request.size_bytes
-            group_counters["sampled_requests"] += 1
-            group_counters["sampled_bytes"] += request.size_bytes
-            self._sample_access(request, set_index, is_hit)
-
-        callback = self.on_hit if is_hit else self.on_miss
-        self._interval_lookup_busy_ns += self.config.hit_latency_ns
+        tag = self._tag(request.addr)
+        ways = self._set_ways(set_index)
+        hit_way = next(
+            (
+                index
+                for index, line in enumerate(ways)
+                if line.valid and line.tag == tag
+            ),
+            None,
+        )
+        is_hit = hit_way is not None
+        request.cache_hit = is_hit
+        latency = (
+            self.config.hit_latency_ns
+            if is_hit
+            else self.config.miss_detect_latency_ns
+        )
+        request.cache_delay_ns += latency
+        self._increment(request, "requests")
+        self._increment(request, "bytes", request.size_bytes)
+        self._increment(request, "delay_ns", latency)
+        self._increment(request, "hits" if is_hit else "misses")
+        if self._is_sample_set(set_index):
+            self._increment(request, "sampled_requests")
+            self._increment(
+                request,
+                "sampled_bytes",
+                request.size_bytes,
+            )
+        self._interval_lookup_busy_ns += latency
         self.kernel.schedule(
-            self.config.hit_latency_ns,
-            lambda: self._finish_lookup(request, callback),
+            latency,
+            lambda: self._finish_lookup(
+                request,
+                set_index,
+                hit_way,
+            ),
             "cache-result",
         )
 
     def _finish_lookup(
         self,
         request: Request,
-        callback: Callable[[Request], None],
+        set_index: int,
+        hit_way: Optional[int],
     ) -> None:
         self._active_lookups = max(0, self._active_lookups - 1)
-        callback(request)
+        if hit_way is not None:
+            self._touch(set_index, hit_way)
+            self.on_hit(request)
+        else:
+            self._handle_miss(request)
         self._sample_queue()
         self._dispatch()
 
-    def _sample_queue(self) -> None:
-        self._queue_sample_sum += len(self._queue)
-        self._queue_samples += 1
-        self._queue_peak = max(self._queue_peak, len(self._queue))
+    def _handle_miss(self, request: Request) -> None:
+        line_address = self._line_address(request.addr)
+        if (
+            self.config.merge_same_line_misses
+            and request.op == "read"
+        ):
+            for transaction_id in self._mshr_by_line[line_address]:
+                entry = self._mshrs.get(transaction_id)
+                if (
+                    entry is not None
+                    and entry.owner_request.op == "read"
+                ):
+                    entry.waiters.append(
+                        MshrWaiter(
+                            request=request,
+                            joined_time_ns=self.kernel.now_ns,
+                        )
+                    )
+                    self._increment(request, "merged_misses")
+                    return
+        if self.mshr_occupancy >= self.config.mshr_entries:
+            self._mshr_wait_queue.append(
+                (request, self.kernel.now_ns)
+            )
+            self._increment(request, "mshr_full_events")
+            return
+        self._allocate_mshr(request)
 
-    def _set_index(self, address: int) -> int:
-        return (address // self.config.line_size) % self.config.sets
-
-    def _tag(self, address: int) -> int:
-        return address // (self.config.line_size * self.config.sets)
-
-    def _sample_access(
-        self,
-        request: Request,
-        set_index: int,
-        probabilistic_hit: bool,
-    ) -> None:
-        group_index = set_index // self.config.monitor_group_sets
-        ways = self._sample_sets.setdefault(
-            group_index,
-            [SampleWay() for _ in range(self.config.ways)],
+    def _allocate_mshr(self, request: Request) -> None:
+        line_address = self._line_address(request.addr)
+        entry = MshrEntry(
+            transaction_id=request.transaction_id,
+            line_address=line_address,
+            owner_request=request,
+            waiters=[
+                MshrWaiter(
+                    request=request,
+                    joined_time_ns=self.kernel.now_ns,
+                    owner=True,
+                )
+            ],
         )
-        tag = self._tag(request.addr)
-        eligible = self._eligible_way_indexes(request.partid)
-        self._touch_sequence += 1
+        self._mshrs[entry.transaction_id] = entry
+        self._mshr_by_line[line_address].append(
+            entry.transaction_id
+        )
+        self._mshr_peak = max(
+            self._mshr_peak,
+            self.mshr_occupancy,
+        )
+        self._increment(request, "mshr_allocations")
+        self.on_miss(request)
 
+    def _finish_fill(self, request: Request) -> None:
+        self._fill_buffer_occupancy = max(
+            0,
+            self._fill_buffer_occupancy - 1,
+        )
+        entry = self._mshrs.pop(request.transaction_id, None)
+        if entry is None:
+            raise RuntimeError(
+                "L3 fill completed without matching MSHR: "
+                f"{request.transaction_id}"
+            )
+        transaction_ids = self._mshr_by_line[entry.line_address]
+        transaction_ids.remove(entry.transaction_id)
+        if not transaction_ids:
+            del self._mshr_by_line[entry.line_address]
+
+        self._allocate_fill(entry.owner_request)
+        self._increment(entry.owner_request, "fill_completions")
+        for waiter in entry.waiters:
+            if waiter.owner:
+                delay = self.config.fill_latency_ns
+            else:
+                delay = max(
+                    0.0,
+                    self.kernel.now_ns - waiter.joined_time_ns,
+                )
+            waiter.request.timing.mshr_fill_delay_ns += delay
+            waiter.request.cache_delay_ns += self.config.fill_latency_ns
+            self.on_hit(waiter.request)
+        self._drain_mshr_wait_queue()
+
+    def _drain_mshr_wait_queue(self) -> None:
+        while (
+            self._mshr_wait_queue
+            and self.mshr_occupancy < self.config.mshr_entries
+        ):
+            request, wait_start = self._mshr_wait_queue.popleft()
+            request.timing.mshr_fill_delay_ns += max(
+                0.0,
+                self.kernel.now_ns - wait_start,
+            )
+            self._handle_miss(request)
+
+    def _allocate_fill(self, request: Request) -> bool:
+        set_index = self._set_index(request.addr)
+        tag = self._tag(request.addr)
+        ways = self._set_ways(set_index)
         matching = next(
             (
                 index
-                for index in eligible
-                if ways[index].owner_partid == request.partid
-                and ways[index].tag == tag
+                for index, line in enumerate(ways)
+                if line.valid and line.tag == tag
             ),
             None,
         )
         if matching is not None:
-            ways[matching].last_touch = self._touch_sequence
-            return
-        if probabilistic_hit:
-            return
+            self._increment(request, "redundant_memory_fetches")
+            self._touch(set_index, matching)
+            return False
 
-        victim = self._choose_victim(ways, request.partid, eligible)
+        eligible = self._eligible_way_indexes(request.partid)
+        self._increment(
+            request,
+            "cpbm_excluded_ways",
+            self.config.ways - len(eligible),
+        )
+        victim = self._choose_victim(
+            set_index,
+            ways,
+            request.partid,
+            eligible,
+        )
         if victim is None:
-            self._interval[request.partid]["allocation_denials"] += 1
-            self._interval_groups[
-                (request.partid, request.pmg)
-            ]["allocation_denials"] += 1
-            return
-        ways[victim] = SampleWay(
+            self._increment(request, "allocation_denials")
+            self._increment(request, "allocation_bypass")
+            return False
+
+        old_line = ways[victim]
+        if old_line.valid:
+            self._increment(request, "evictions")
+            if old_line.owner_partid == request.partid:
+                self._increment(request, "self_replacements")
+        self._touch_sequence += 1
+        ways[victim] = CacheLine(
+            valid=True,
+            tag=tag,
             owner_partid=request.partid,
             owner_pmg=request.pmg,
-            tag=tag,
             last_touch=self._touch_sequence,
         )
+        self._update_plru(set_index, victim)
+        return True
 
     def _choose_victim(
         self,
-        ways: List[SampleWay],
+        set_index: int,
+        ways: List[CacheLine],
         partid: int,
         eligible: List[int],
     ) -> Optional[int]:
+        if not eligible:
+            return None
         setting = self.settings.lookup(partid)
         owner_counts = self._sampled_owner_counts()
         current_count = owner_counts.get(partid, 0)
@@ -278,23 +461,28 @@ class CacheMSC(Component):
             self._effective_max_percent(setting),
             round_up=False,
         )
-
         if current_count >= cmax:
             own = [
                 index
                 for index in eligible
-                if ways[index].owner_partid == partid
+                if (
+                    ways[index].valid
+                    and ways[index].owner_partid == partid
+                )
             ]
-            return (
-                min(own, key=lambda index: ways[index].last_touch)
-                if own
-                else None
+            if not own:
+                self._interval[partid]["cmax_growth_blocks"] += 1
+                return None
+            return self._replacement_candidate(
+                set_index,
+                ways,
+                own,
             )
 
         empty = [
             index
             for index in eligible
-            if ways[index].owner_partid is None
+            if not ways[index].valid
         ]
         if empty:
             return empty[0]
@@ -310,13 +498,128 @@ class CacheMSC(Component):
                 self._effective_min_percent(owner_setting),
                 round_up=True,
             )
-            if owner_counts[owner] > owner_cmin:
+            if owner_counts.get(owner, 0) > owner_cmin:
                 candidates.append(index)
             else:
-                self._interval[partid]["cmin_protected_evictions"] += 1
+                self._interval[partid][
+                    "cmin_protected_evictions"
+                ] += 1
         if not candidates:
             return None
-        return min(candidates, key=lambda index: ways[index].last_touch)
+        return self._replacement_candidate(
+            set_index,
+            ways,
+            candidates,
+        )
+
+    def _replacement_candidate(
+        self,
+        set_index: int,
+        ways: List[CacheLine],
+        candidates: List[int],
+    ) -> int:
+        if self.config.replacement_policy == "plru":
+            return self._plru_candidate(
+                set_index,
+                set(candidates),
+            )
+        return min(
+            candidates,
+            key=lambda index: ways[index].last_touch,
+        )
+
+    def _plru_candidate(
+        self,
+        set_index: int,
+        candidates: set,
+    ) -> int:
+        bits = self._plru_bits.setdefault(
+            set_index,
+            [0] * max(0, self.config.ways - 1),
+        )
+
+        def choose(node: int, start: int, size: int) -> Optional[int]:
+            if size == 1:
+                return start if start in candidates else None
+            half = size // 2
+            preferred_right = bool(bits[node])
+            branches = (
+                (
+                    node * 2 + 2,
+                    start + half,
+                    preferred_right,
+                ),
+                (node * 2 + 1, start, not preferred_right),
+            )
+            for child, child_start, selected in branches:
+                if not selected:
+                    continue
+                result = choose(child, child_start, half)
+                if result is not None:
+                    return result
+            for child, child_start, selected in branches:
+                if selected:
+                    continue
+                result = choose(child, child_start, half)
+                if result is not None:
+                    return result
+            return None
+
+        selected = choose(0, 0, self.config.ways)
+        if selected is None:
+            raise RuntimeError("PLRU could not select eligible victim")
+        return selected
+
+    def _update_plru(self, set_index: int, way_index: int) -> None:
+        if self.config.replacement_policy != "plru":
+            return
+        bits = self._plru_bits.setdefault(
+            set_index,
+            [0] * max(0, self.config.ways - 1),
+        )
+        node = 0
+        start = 0
+        size = self.config.ways
+        while size > 1:
+            half = size // 2
+            went_right = way_index >= start + half
+            bits[node] = 0 if went_right else 1
+            if went_right:
+                start += half
+                node = node * 2 + 2
+            else:
+                node = node * 2 + 1
+            size = half
+
+    def _touch(self, set_index: int, way_index: int) -> None:
+        self._touch_sequence += 1
+        self._set_ways(set_index)[way_index].last_touch = (
+            self._touch_sequence
+        )
+        self._update_plru(set_index, way_index)
+
+    def _sample_queue(self) -> None:
+        self._queue_sample_sum += len(self._queue)
+        self._queue_samples += 1
+        self._queue_peak = max(self._queue_peak, len(self._queue))
+
+    def _set_ways(self, set_index: int) -> List[CacheLine]:
+        return self._sets.setdefault(
+            set_index,
+            [CacheLine() for _ in range(self.config.ways)],
+        )
+
+    def _line_address(self, address: int) -> int:
+        return address // self.config.line_size
+
+    def _set_index(self, address: int) -> int:
+        return self._line_address(address) % self.config.sets
+
+    def _tag(self, address: int) -> int:
+        return self._line_address(address) // self.config.sets
+
+    def _is_sample_set(self, set_index: int) -> bool:
+        return set_index % self.config.monitor_group_sets == 0
 
     def _eligible_way_indexes(self, partid: int) -> List[int]:
         if not self.enforce_controls:
@@ -349,9 +652,7 @@ class CacheMSC(Component):
         )
 
     def _effective_min_percent(self, setting: MPAMSetting) -> float:
-        if not self.enforce_controls:
-            return 0.0
-        if not setting.cmin_enable:
+        if not self.enforce_controls or not setting.cmin_enable:
             return 0.0
         return max(
             0.0,
@@ -391,105 +692,121 @@ class CacheMSC(Component):
         percent = self._effective_max_percent(
             self.settings.lookup(partid)
         )
-        return int(
-            self.config.size_bytes * percent / 100.0
-        )
+        return int(self.config.size_bytes * percent / 100.0)
 
-    def _hit_probability(
+    def _owner_counts(
         self,
-        request: Request,
-        allowed_capacity: int,
-    ) -> float:
-        if allowed_capacity <= 0:
-            return 0.0
-        fit = min(
-            1.0,
-            allowed_capacity
-            / max(1.0, float(request.working_set_bytes)),
-        )
-        locality_weight = {
-            "low": 0.45,
-            "medium": 0.75,
-            "high": 0.95,
-        }.get(request.locality, 0.65)
-        if request.workload_type == "stream":
-            locality_weight *= 0.35
-        elif request.workload_type == "pointer_chase":
-            locality_weight *= 0.65
-        return min(0.98, 0.01 + locality_weight * fit)
+        sampled_only: bool,
+    ) -> Dict[int, int]:
+        counts: DefaultDict[int, int] = defaultdict(int)
+        for set_index, ways in self._sets.items():
+            if sampled_only and not self._is_sample_set(set_index):
+                continue
+            for line in ways:
+                if line.valid and line.owner_partid is not None:
+                    counts[line.owner_partid] += 1
+        return dict(counts)
 
     def _sampled_owner_counts(self) -> Dict[int, int]:
-        counts: DefaultDict[int, int] = defaultdict(int)
-        for ways in self._sample_sets.values():
-            for way in ways:
-                if way.owner_partid is not None:
-                    counts[way.owner_partid] += 1
-        return dict(counts)
+        return self._owner_counts(sampled_only=True)
+
+    def _actual_owner_counts(self) -> Dict[int, int]:
+        return self._owner_counts(sampled_only=False)
 
     def _sampled_group_owner_counts(
         self,
     ) -> Dict[Tuple[int, int], int]:
         counts: DefaultDict[Tuple[int, int], int] = defaultdict(int)
-        for ways in self._sample_sets.values():
-            for way in ways:
+        for set_index, ways in self._sets.items():
+            if not self._is_sample_set(set_index):
+                continue
+            for line in ways:
                 if (
-                    way.owner_partid is not None
-                    and way.owner_pmg is not None
+                    line.valid
+                    and line.owner_partid is not None
+                    and line.owner_pmg is not None
                 ):
                     counts[
-                        (way.owner_partid, way.owner_pmg)
+                        (line.owner_partid, line.owner_pmg)
                     ] += 1
         return dict(counts)
 
     def monitor_snapshot(self, interval_ns: float):
         total_requests = sum(
-            int(values["requests"]) for values in self._interval.values()
+            int(values["requests"])
+            for values in self._interval.values()
         )
         total_hits = sum(
-            int(values["hits"]) for values in self._interval.values()
+            int(values["hits"])
+            for values in self._interval.values()
         )
-        owner_counts = self._sampled_owner_counts()
+        sampled_counts = self._sampled_owner_counts()
+        actual_counts = self._actual_owner_counts()
         group_owner_counts = self._sampled_group_owner_counts()
-        configured_partids = {partid for partid, _ in self.settings.items()}
+        configured_partids = {
+            partid for partid, _ in self.settings.items()
+        }
         partids = sorted(configured_partids | set(self._interval))
         sample_scale = self.config.monitor_group_sets
-
         per_partid = {}
         for partid in partids:
             values = dict(self._interval[partid])
             setting = self.settings.lookup(partid)
             sampled_bytes = values["sampled_bytes"]
-            estimated_bytes = sampled_bytes * sample_scale
-            sampled_count = owner_counts.get(partid, 0)
-            occupancy_share = (
-                sampled_count / max(1, self.sampled_capacity_lines)
+            sampled_count = sampled_counts.get(partid, 0)
+            actual_count = actual_counts.get(partid, 0)
+            estimated_occupancy = (
+                sampled_count
+                * sample_scale
+                * self.config.line_size
+            )
+            actual_occupancy = (
+                actual_count * self.config.line_size
             )
             cmin_percent = self._effective_min_percent(setting)
             cmax_percent = self._effective_max_percent(setting)
             per_partid[str(partid)] = {
                 **values,
-                "estimated_access_bytes": estimated_bytes,
+                "estimated_access_bytes": sampled_bytes * sample_scale,
                 "estimated_bandwidth_gbps": (
-                    estimated_bytes * 8.0 / max(interval_ns, 1e-9)
+                    sampled_bytes
+                    * sample_scale
+                    * 8.0
+                    / max(interval_ns, 1e-9)
                 ),
                 "sampled_way_count": sampled_count,
-                "estimated_occupancy_bytes": (
-                    sampled_count
-                    * sample_scale
-                    * self.config.line_size
+                "actual_line_count": actual_count,
+                "estimated_occupancy_bytes": estimated_occupancy,
+                "actual_occupancy_bytes": actual_occupancy,
+                "monitor_error_bytes": (
+                    estimated_occupancy - actual_occupancy
+                ),
+                "monitor_error_percent": (
+                    (estimated_occupancy - actual_occupancy)
+                    * 100.0
+                    / max(1, actual_occupancy)
                 ),
                 "allowed_capacity_bytes": self.allowed_capacity_bytes(partid),
                 "cache_capacity_bytes": self.config.size_bytes,
-                "occupancy_share": occupancy_share,
+                "occupancy_share": (
+                    sampled_count
+                    / max(1, self.sampled_capacity_lines)
+                ),
+                "actual_occupancy_share": (
+                    actual_count
+                    / max(1, self.config.sets * self.config.ways)
+                ),
                 "cmin_percent": cmin_percent,
                 "cmax_percent": cmax_percent,
                 "cmin": cmin_percent,
                 "cmax": cmax_percent,
                 "cmin_quota_lines": self._quota_lines(
-                    cmin_percent, round_up=True
+                    cmin_percent,
+                    round_up=True,
                 ),
                 "cmax_quota_lines": self._quota_lines(
-                    cmax_percent, round_up=False
+                    cmax_percent,
+                    round_up=False,
                 ),
                 "sampled_capacity_lines": self.sampled_capacity_lines,
                 "reachable_percent": self._reachable_percent(partid),
@@ -503,9 +820,15 @@ class CacheMSC(Component):
                 "configured_cmin": setting.cache_min_percent,
                 "configured_cmax": setting.cache_max_percent,
                 "configured_cpbm": setting.cache_portion_bitmap,
-                "cmin_enable": self.enforce_controls and setting.cmin_enable,
-                "cmax_enable": self.enforce_controls and setting.cmax_enable,
-                "cpbm_enable": self.enforce_controls and setting.cpbm_enable,
+                "cmin_enable": (
+                    self.enforce_controls and setting.cmin_enable
+                ),
+                "cmax_enable": (
+                    self.enforce_controls and setting.cmax_enable
+                ),
+                "cpbm_enable": (
+                    self.enforce_controls and setting.cpbm_enable
+                ),
                 "monitor_enable": setting.monitor_enable,
                 "enforcement_enabled": self.enforce_controls,
             }
@@ -515,10 +838,13 @@ class CacheMSC(Component):
             set(self._interval_groups) | set(group_owner_counts)
         )
         for partid, pmg in group_keys:
-            values = dict(self._interval_groups[(partid, pmg)])
-            sampled_bytes = values["sampled_bytes"]
-            estimated_access_bytes = sampled_bytes * sample_scale
-            sampled_ways = group_owner_counts.get((partid, pmg), 0)
+            values = dict(
+                self._interval_groups[(partid, pmg)]
+            )
+            sampled_ways = group_owner_counts.get(
+                (partid, pmg),
+                0,
+            )
             estimated_occupancy = (
                 sampled_ways
                 * sample_scale
@@ -529,9 +855,12 @@ class CacheMSC(Component):
                 "partid": partid,
                 "pmg": pmg,
                 **values,
-                "estimated_access_bytes": estimated_access_bytes,
+                "estimated_access_bytes": (
+                    values["sampled_bytes"] * sample_scale
+                ),
                 "estimated_bandwidth_gbps": (
-                    estimated_access_bytes
+                    values["sampled_bytes"]
+                    * sample_scale
                     * 8.0
                     / max(interval_ns, 1e-9)
                 ),
@@ -552,6 +881,11 @@ class CacheMSC(Component):
         row = {
             "msc_id": self.component_id,
             "msc_type": "cache",
+            "model": "explicit_set_tag_way",
+            "replacement_policy": self.config.replacement_policy,
+            "merge_same_line_misses": (
+                self.config.merge_same_line_misses
+            ),
             "utilization": min(
                 1.0,
                 self._interval_lookup_busy_ns
@@ -570,14 +904,26 @@ class CacheMSC(Component):
             "lookup_parallelism": self.config.lookup_parallelism,
             "active_lookups": self._active_lookups,
             "active_lookup_peak": self._active_peak,
+            "mshr_occupancy": self.mshr_occupancy,
+            "mshr_peak": self._mshr_peak,
+            "mshr_entries": self.config.mshr_entries,
+            "mshr_waiting": len(self._mshr_wait_queue),
+            "fill_buffer_occupancy": self._fill_buffer_occupancy,
+            "fill_buffer_peak": self._fill_buffer_peak,
+            "fill_buffer_entries": self.config.fill_buffer_entries,
             "bytes": sum(
-                int(values["bytes"]) for values in self._interval.values()
+                int(values["bytes"])
+                for values in self._interval.values()
             ),
             "requests": total_requests,
             "sets": self.config.sets,
             "ways_per_set": self.config.ways,
             "monitor_group_sets": self.config.monitor_group_sets,
-            "sampled_set_count": len(self._sample_sets),
+            "instantiated_set_count": len(self._sets),
+            "sampled_set_count": sum(
+                int(self._is_sample_set(set_index))
+                for set_index in self._sets
+            ),
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
             "monitor_groups": monitor_groups,
@@ -589,6 +935,8 @@ class CacheMSC(Component):
         self._queue_samples = 0
         self._queue_peak = len(self._queue)
         self._active_peak = self._active_lookups
+        self._mshr_peak = self.mshr_occupancy
+        self._fill_buffer_peak = self._fill_buffer_occupancy
         return self.build_monitor_snapshot(
             self.kernel.now_ns,
             interval_ns,

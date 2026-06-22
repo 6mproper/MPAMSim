@@ -91,3 +91,14 @@ def test_ring_node_order_must_include_all_endpoints(
     ]
     with pytest.raises(ConfigError, match="misses required nodes"):
         load_config(config_writer(base_config))
+
+
+def test_plru_requires_power_of_two_ways(
+    base_config,
+    config_writer,
+) -> None:
+    cache = base_config["soc"]["caches"][0]
+    cache["ways"] = 3
+    cache["replacement_policy"] = "plru"
+    with pytest.raises(ConfigError, match="power-of-two"):
+        load_config(config_writer(base_config))

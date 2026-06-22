@@ -1396,6 +1396,10 @@ validation_level: basic | full
 - 最短方向、固定tie、逐hop移动、目的端拒绝绕行和DAT重组；
 - Ring按channel、方向、link、node和PARTID导出flit及反压证据；
 - CPU在分配TxnID和OSTD前检查REQ源link槽。
+- 真实L3 set/tag/way状态和确定性LRU/tree-PLRU；
+- MSHR同line read合并、fill buffer readiness和fill延迟；
+- CPBM/CMIN/CMAX、actual occupancy和1/8抽样监控共享同一line状态；
+- actual与sample估计误差、merge、fill、eviction和bypass证据。
 
 ### 17.2 仍需替换或补全
 
@@ -1404,7 +1408,7 @@ validation_level: basic | full
 | CPU | 已实现两级OSTD、三种Core策略、目标MC限制和REQ Ring准入；尚无可配源队列深度 | 接入依赖链和eligible scan |
 | 激励 | type混合多个维度 | 地址、操作、依赖、到达正交配置 |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
-| L3 | 概率命中和采样way状态 | 全set/tag/way、MSHR和fill |
+| L3 | 已实现真实set/tag/way、MSHR、fill和抽样误差；CMIN/CMAX仍读即时抽样值 | 改为读取上一256拍发布的滤波MPAM监控值 |
 | MC | 每PARTID FIFO头、token bucket | 共享buffer全候选QoS和周期门控 |
 | CBusy | 已按目标MC隔离，但仍由直接延迟事件送达 | 双时间尺度、RSP/DAT旁带反馈 |
 | 监控 | interval聚合已接入类型化样本和因果事件，尚无完整raw/filtered时序 | actual/raw/filtered和因果事件 |

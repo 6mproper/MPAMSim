@@ -45,6 +45,33 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Cache {cache.id} lookup_parallelism must be positive"
             )
+        if cache.miss_detect_latency_ns <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} miss_detect_latency_ns must be positive"
+            )
+        if cache.fill_latency_ns <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} fill_latency_ns must be positive"
+            )
+        if cache.mshr_entries <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} mshr_entries must be positive"
+            )
+        if cache.fill_buffer_entries <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} fill_buffer_entries must be positive"
+            )
+        if cache.replacement_policy not in {"lru", "plru"}:
+            raise ConfigError(
+                f"Cache {cache.id} replacement_policy must be lru or plru"
+            )
+        if (
+            cache.replacement_policy == "plru"
+            and cache.ways & (cache.ways - 1)
+        ):
+            raise ConfigError(
+                f"Cache {cache.id} PLRU requires power-of-two ways"
+            )
         if cache.monitor_group_sets != 8:
             raise ConfigError(
                 f"Cache {cache.id} monitor_group_sets must be 8 in this model"

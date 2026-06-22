@@ -58,8 +58,19 @@
             <label>Line bytes<input data-param="l3_line_size" type="number" min="16" max="256" step="16"></label>
             <label>监控分组 Sets<input data-param="l3_monitor_group_sets" type="number" value="8" readonly></label>
             <label>命中延迟 ns<input data-param="l3_hit_latency_ns" type="number" min="1" max="500" step="1"></label>
+            <label>Miss 识别 ns<input data-param="l3_miss_detect_latency_ns" type="number" min="1" max="500" step="1"></label>
+            <label>Fill 延迟 ns<input data-param="l3_fill_latency_ns" type="number" min="1" max="500" step="1"></label>
             <label>请求队列深度<input data-param="l3_queue_depth" type="number" min="1" max="8192" step="1"></label>
             <label>Lookup 并发槽<input data-param="l3_lookup_parallelism" type="number" min="1" max="1024" step="1"></label>
+            <label>MSHR Entries<input data-param="l3_mshr_entries" type="number" min="1" max="8192" step="1"></label>
+            <label>Fill Buffer Entries<input data-param="l3_fill_buffer_entries" type="number" min="1" max="1024" step="1"></label>
+            <label>替换策略
+              <select data-param="l3_replacement_policy">
+                <option value="lru">LRU</option>
+                <option value="plru">Tree PLRU</option>
+              </select>
+            </label>
+            <label class="toggle-field"><span>同 Line Read 合并</span><input data-param="l3_merge_same_line_misses" type="checkbox" checked></label>
           </div>
 
           <h2>NoC</h2>

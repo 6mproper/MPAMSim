@@ -202,8 +202,14 @@ def default_parameters() -> Dict[str, object]:
         "l3_line_size": 64,
         "l3_monitor_group_sets": 8,
         "l3_hit_latency_ns": 20,
+        "l3_miss_detect_latency_ns": 20,
+        "l3_fill_latency_ns": 10,
         "l3_queue_depth": 128,
         "l3_lookup_parallelism": 16,
+        "l3_mshr_entries": 64,
+        "l3_fill_buffer_entries": 16,
+        "l3_merge_same_line_misses": True,
+        "l3_replacement_policy": "lru",
         "noc_routers": 8,
         "noc_link_gbps": 256,
         "noc_router_latency_ns": 5,
@@ -597,12 +603,44 @@ def build_config(
     l3_hit_latency_ns = _number(
         values, "l3_hit_latency_ns", 20, 1, 500
     )
+    l3_miss_detect_latency_ns = _number(
+        values,
+        "l3_miss_detect_latency_ns",
+        20,
+        1,
+        500,
+    )
+    l3_fill_latency_ns = _number(
+        values, "l3_fill_latency_ns", 10, 1, 500
+    )
     l3_queue_depth = _integer(
         values, "l3_queue_depth", 128, 1, 8192
     )
     l3_lookup_parallelism = _integer(
         values, "l3_lookup_parallelism", 16, 1, 1024
     )
+    l3_mshr_entries = _integer(
+        values, "l3_mshr_entries", 64, 1, 8192
+    )
+    l3_fill_buffer_entries = _integer(
+        values, "l3_fill_buffer_entries", 16, 1, 1024
+    )
+    l3_merge_same_line_misses = bool(
+        values.get("l3_merge_same_line_misses", True)
+    )
+    l3_replacement_policy = _choice(
+        values,
+        "l3_replacement_policy",
+        "lru",
+        ["lru", "plru"],
+    )
+    if (
+        l3_replacement_policy == "plru"
+        and l3_ways & (l3_ways - 1)
+    ):
+        raise ParameterError(
+            "PLRU requires l3_ways to be a power of two"
+        )
     noc_routers = _integer(
         values, "noc_routers", 8, 1, 64
     )
@@ -838,8 +876,18 @@ def build_config(
             "ways": l3_ways,
             "monitor_group_sets": monitor_group_sets,
             "hit_latency_ns": l3_hit_latency_ns,
+            "miss_detect_latency_ns": (
+                l3_miss_detect_latency_ns
+            ),
+            "fill_latency_ns": l3_fill_latency_ns,
             "queue_depth": l3_queue_depth,
             "lookup_parallelism": l3_lookup_parallelism,
+            "mshr_entries": l3_mshr_entries,
+            "fill_buffer_entries": l3_fill_buffer_entries,
+            "merge_same_line_misses": (
+                l3_merge_same_line_misses
+            ),
+            "replacement_policy": l3_replacement_policy,
             "shared_by_cores": cache_core_map[cache_id],
         }
         for cache_id in cache_core_map

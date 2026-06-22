@@ -55,6 +55,12 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.caches[0].monitor_group_sets == 8
     assert config.caches[0].queue_depth == 128
     assert config.caches[0].lookup_parallelism == 16
+    assert config.caches[0].miss_detect_latency_ns == 20
+    assert config.caches[0].fill_latency_ns == 10
+    assert config.caches[0].mshr_entries == 64
+    assert config.caches[0].fill_buffer_entries == 16
+    assert config.caches[0].merge_same_line_misses is True
+    assert config.caches[0].replacement_policy == "lru"
     assert config.controls_by_msc["slc0"][0].cpbm_enable is True
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
@@ -139,6 +145,20 @@ def test_web_parameters_reject_invalid_ring_direction(
     parameters = default_parameters()
     parameters["noc_tie_direction"] = "load_balanced"
     with pytest.raises(ParameterError, match="noc_tie_direction"):
+        build_config(parameters, str(tmp_path / "run"))
+
+
+def test_web_parameters_reject_plru_with_non_power_of_two_ways(
+    tmp_path,
+) -> None:
+    parameters = default_parameters()
+    parameters["l3_ways"] = 3
+    parameters["l3_replacement_policy"] = "plru"
+    for row in parameters["partid_configs"]:
+        row["cpbm"] = "7"
+        row["cmin"] = 0
+        row["cmax"] = 100
+    with pytest.raises(ParameterError, match="PLRU"):
         build_config(parameters, str(tmp_path / "run"))
 
 
