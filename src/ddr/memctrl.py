@@ -290,6 +290,9 @@ class MemoryControllerMSC(Component):
                 return True
         return False
 
+    def _dram_ready(self, slot: int) -> bool:
+        return True
+
     def _ready_entries(self) -> List[BufferEntry]:
         ready: List[BufferEntry] = []
         for entry in self._buffer:
@@ -301,7 +304,7 @@ class MemoryControllerMSC(Component):
                 and self._hard_block[request.partid]
             )
             request.mc_arbitration.hard_blocked = hard
-            if hard or self._ordering_blocked(entry):
+            if hard or self._ordering_blocked(entry) or not self._dram_ready(entry.slot):
                 continue
             ready.append(entry)
         return ready

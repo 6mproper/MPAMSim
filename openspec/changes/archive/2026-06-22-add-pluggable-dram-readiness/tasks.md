@@ -1,0 +1,3 @@
+- [x] 1.1 MC增加_ready_mask(slot) -> bool方法
+- [x] 1.2 _ready_entries使用ready_mask过滤
+- [x] 1.3 ready mask变化后触发_schedule_dispatch

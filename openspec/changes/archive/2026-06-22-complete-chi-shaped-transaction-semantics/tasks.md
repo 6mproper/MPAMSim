@@ -1,0 +1,2 @@
+- [x] 设置completion_condition基于operation
+- [x] 运行完整回归

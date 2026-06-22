@@ -190,6 +190,8 @@ class Simulation:
         self._progress_callback: Optional[
             Callable[[float, MetricsCollector], None]
         ] = None
+        self._watchdog_last_completed = 0
+        self._watchdog_stall_count = 0
 
         controls = config.controls_by_msc
         no_control = len(config.policies) == 1 and config.policies[0].name == "no_control"
@@ -575,6 +577,12 @@ class Simulation:
         )
         if first_interval > 0:
             self.kernel.schedule_at(first_interval, self._control_interval, "control-interval")
+        watchdog_interval = max(1000.0, float(self.config.simulation.control_interval_ns))
+        self.kernel.schedule_at(
+            watchdog_interval,
+            self._watchdog_check,
+            "watchdog",
+        )
         self.kernel.run(self._run_until_ns)
         if self.collector.last_capture_ns < self._run_until_ns:
             self.collector.capture_interval(
@@ -597,6 +605,26 @@ class Simulation:
                 self.component_registry.to_dicts()
             ),
         )
+
+    def _watchdog_check(self) -> None:
+        current = self.collector.total_completed
+        if current == self._watchdog_last_completed and self.kernel.now_ns < self._run_until_ns:
+            self._watchdog_stall_count += 1
+            if self._watchdog_stall_count > 10:
+                raise RuntimeError(
+                    f"Watchdog: no progress for {self._watchdog_stall_count} checks "
+                    f"({self.collector.total_completed} completed, "
+                    f"{self.kernel.pending_events} pending events)"
+                )
+        else:
+            self._watchdog_stall_count = 0
+        self._watchdog_last_completed = current
+        if self.kernel.now_ns < self._run_until_ns:
+            self.kernel.schedule_at(
+                self.kernel.now_ns + max(1000.0, float(self.config.simulation.control_interval_ns)),
+                self._watchdog_check,
+                "watchdog",
+            )
 
     def _resource_type(self, resource_id: str) -> str:
         for descriptor in self.component_registry.descriptors():

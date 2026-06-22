@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from src.config.schema import WorkloadConfig
+from src.contracts.transaction import CompletionCondition
 from src.sim.kernel import SimulationKernel
 
 from .request import Request
@@ -192,6 +193,11 @@ class WorkloadGenerator:
             core_id=self.requester.config.core or "",
             thread_id=int(self.requester.config.thread or 0),
             priority=self.default_priority,
+        )
+        request.completion_condition = (
+            CompletionCondition.READ_DATA
+            if pending.operation == "read"
+            else CompletionCondition.WRITE_RESPONSE
         )
         request.memory_controller_id = pending.memory_controller_id
         self.requester.on_issue(
