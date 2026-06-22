@@ -76,14 +76,62 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Cache {cache.id} monitor_group_sets must be 8 in this model"
             )
-    for mc in config.memory_controllers:
-        if mc.token_bucket_window_ns <= 0:
+        if cache.clock_mhz <= 0:
             raise ConfigError(
-                f"Memory controller {mc.id} token window must be positive"
+                f"Cache {cache.id} clock must be positive"
             )
-        if mc.aging_ns <= 0:
+        if cache.monitor_period_cycles <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} monitor period must be positive"
+            )
+        if (
+            cache.history_weight < 0
+            or cache.current_weight < 0
+            or cache.history_weight + cache.current_weight != 256
+        ):
+            raise ConfigError(
+                f"Cache {cache.id} monitor weights must be "
+                "non-negative and sum to 256"
+            )
+    for mc in config.memory_controllers:
+        if mc.clock_mhz <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} clock must be positive"
+            )
+        if mc.monitor_period_cycles <= 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} monitor period must be positive"
+            )
+        if (
+            mc.history_weight < 0
+            or mc.current_weight < 0
+            or mc.history_weight + mc.current_weight != 256
+        ):
+            raise ConfigError(
+                f"Memory controller {mc.id} monitor weights must be "
+                "non-negative and sum to 256"
+            )
+        if not 0 <= mc.bandwidth_hysteresis < 1:
+            raise ConfigError(
+                f"Memory controller {mc.id} bandwidth hysteresis "
+                "must be in [0, 1)"
+            )
+        if mc.aging_mode not in {
+            "none",
+            "per_partid_service_deficit",
+        }:
+            raise ConfigError(
+                f"Memory controller {mc.id} aging_mode must be none "
+                "or per_partid_service_deficit"
+            )
+        if mc.aging_quantum_cycles <= 0:
             raise ConfigError(
                 f"Memory controller {mc.id} aging quantum must be positive"
+            )
+        if not 1 <= mc.aging_counter_bits <= 16:
+            raise ConfigError(
+                f"Memory controller {mc.id} aging counter bits "
+                "must be in [1, 16]"
             )
         if not 0 <= mc.qos_aging_max_steps <= 7:
             raise ConfigError(
@@ -126,6 +174,23 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Memory controller {mc.id} CBusy queue thresholds must be ordered in [0, 1]"
             )
+    interleave = config.address_interleave
+    if interleave.mode not in {"linear", "xor"}:
+        raise ConfigError(
+            "Memory interleave mode must be linear or xor"
+        )
+    if (
+        interleave.granularity_bytes <= 0
+        or interleave.granularity_bytes
+        & (interleave.granularity_bytes - 1)
+    ):
+        raise ConfigError(
+            "Memory interleave granularity must be a positive power of two"
+        )
+    if not 0 <= interleave.xor_shift <= 63:
+        raise ConfigError(
+            "Memory interleave xor_shift must be in [0, 63]"
+        )
     cores = []
     for cluster in config.clusters:
         if cluster.l3 not in cache_ids:

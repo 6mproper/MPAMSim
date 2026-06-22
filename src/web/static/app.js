@@ -86,6 +86,9 @@ const headerHelp = {
   "Merge / Bypass": "同line read合并次数与因CPBM/CMIN/CMAX无合法victim而不写入L3的fill次数。",
   "L3 Occupancy %": "估算占用字节除以该 PARTID 当前允许的 L3 容量；这是近似 CSU，不是精确 tag-array 统计。",
   "MC BW": "该监控组在所有内存控制器上实际完成服务的带宽之和。",
+  "Raw / Filtered BW": "MC每256个本地拍根据已服务字节得到raw带宽，再按history/current权重发布滤波MPAM监控值；控制读取该滤波值。",
+  "Limit State": "上一已发布滤波监控值形成的UNDER_BMIN、OVER_BMAX和HARD_BLOCK锁存状态。",
+  "Buffer / Candidate / Grant": "当前该PARTID占用的共享buffer entry，以及本导出周期参与全深度ready比较和获得授权的累计次数。",
   "MC BW Util %": "监控组 MC 带宽除以参与统计的 MC 总建模带宽。",
   "MC Requests": "最新采样周期内该监控组在 MC 完成调度的请求数。",
   "Throttle ns": "最新周期内 hard limit 等待累计时间。",
@@ -102,6 +105,7 @@ const headerHelp = {
   "Failed / Full Laps": "目标端暂不可接收导致的失败下Ring次数，以及flit完成整圈绕行次数。",
   "Injection BP": "源link没有空槽导致的注入反压事件和累计等待时间。",
   "L3 Occupancy": "所有 L3 实例的 8-set 抽样占用估算之和。",
+  "Physical / Raw / Filtered": "Physical来自全部真实set/tag/way；Raw来自每8个set首set owner并按8倍缩放；Filtered是CMIN/CMAX实际读取的递归滤波MPAM值。",
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
   "Alloc Denials": "因 CPBM 或 CMAX 无可用 way 而拒绝抽样分配的次数。",
@@ -109,7 +113,7 @@ const headerHelp = {
   "Queue Delay / Full": "该 PARTID 在 L3 FIFO 中累计等待时间，以及入口队列满导致的重试事件。",
   "MC Util %": "该 PARTID 在所有 MC 上的带宽之和除以这些 MC 的总建模带宽。",
   "Avg Queue ns": "最新采样周期内该 PARTID 在 MC 队列中的平均等待时间。",
-  "Limit Events": "softlimit 低偏好请求数与 hardlimit 阻塞检查事件数。",
+  "Limit Events": "softlimit竞争降档次数、周期hard gate事件、被选中超限请求和QoS饱和证据。",
   "CBusy Evidence": "最高档位、带宽/BMAX 比、队列比、占空比和本周期切换次数。",
   "Control State": "当前策略状态，以及该 PARTID 最近一次闭环控制更新。",
   "PARTID": "资源控制聚合标识；同一 PARTID 下的多个 PMG 会合并到该行。",
@@ -136,7 +140,7 @@ const headerHelp = {
   "BMAX Σ": "各 MC 独立 BMAX 配置的显示求和，不表示一个全局 token bucket。",
   "QoS Base / Eff": "MC 配置的基础 3-bit QoS，以及本周期叠加 aging、BMIN 升档和 softlimit 降档后的请求加权平均值。",
   "Soft Req": "超出 soft BMAX 且发生竞争时被标记为低偏好的请求数。",
-  "Hard Blocks": "因 hard BMAX token 不足而无法调度的检查事件数。",
+  "Hard Blocks": "上一周期滤波带宽触发hard BMAX后，整监控周期阻止该PARTID参与调度的事件数。",
 };
 const resultTabHelp = {
   "资源监控": "在 CPU、L3、MC 之间切换，并用同一组 PARTID 开关查看资源状态和控制反馈。",
@@ -159,7 +163,7 @@ const sectionHeadingHelp = {
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 百分比、MC 带宽、3-bit QoS 和监控开关。",
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
-  "MC 调度算法参数": "配置当前模型的 token burst、3-bit QoS aging、BMIN 升档和 soft-BMAX 降档；这些是可替换模型参数。",
+  "MC 调度算法参数": "配置MC本地256拍监控、历史滤波、BMIN/BMAX滞回、共享buffer 3-bit QoS和可选PARTID service deficit。",
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
 };
 
@@ -931,7 +935,11 @@ function aggregateL3Resources() {
     ...row,
     bandwidth: 0,
     occupancy: 0,
+    rawOccupancy: 0,
+    filteredOccupancy: 0,
     actualOccupancy: 0,
+    rawBandwidth: 0,
+    filteredBandwidth: 0,
     monitorError: 0,
     capacity: 0,
     allowedCapacity: 0,
@@ -990,8 +998,26 @@ function aggregateL3Resources() {
         const partid = Number(pidText);
         if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
         const target = result[partid];
-        target.bandwidth += Number(values.estimated_bandwidth_gbps || 0);
-        target.occupancy += Number(values.estimated_occupancy_bytes || 0);
+        target.bandwidth += Number(
+          values.filtered_bandwidth_gbps
+          ?? values.estimated_bandwidth_gbps
+          ?? 0,
+        );
+        target.rawBandwidth += Number(values.raw_bandwidth_gbps || 0);
+        target.filteredBandwidth += Number(
+          values.filtered_bandwidth_gbps || 0,
+        );
+        target.rawOccupancy += Number(values.raw_occupancy_bytes || 0);
+        target.filteredOccupancy += Number(
+          values.filtered_occupancy_bytes
+          ?? values.estimated_occupancy_bytes
+          ?? 0,
+        );
+        target.occupancy += Number(
+          values.filtered_occupancy_bytes
+          ?? values.estimated_occupancy_bytes
+          ?? 0,
+        );
         target.actualOccupancy += Number(
           values.actual_occupancy_bytes || 0,
         );
@@ -1112,6 +1138,16 @@ function aggregateMcResources() {
     cbusyDuty: 0,
     cbusyTransitions: 0,
     cbusyCap: 0,
+    rawBandwidth: 0,
+    filteredBandwidth: 0,
+    underBmin: false,
+    overBmax: false,
+    hardBlock: false,
+    bufferEntries: 0,
+    candidates: 0,
+    grants: 0,
+    qosSaturation: 0,
+    serviceDeficit: 0,
   }));
   latestBy(state.partial.msc, "msc_id")
     .filter((row) => row.msc_type === "memory_controller")
@@ -1154,6 +1190,21 @@ function aggregateMcResources() {
           values.softlimit_penalty_events || 0,
         );
         target.hardBlocks += Number(values.hardlimit_block_events || 0);
+        target.rawBandwidth += Number(values.raw_bandwidth_gbps || 0);
+        target.filteredBandwidth += Number(
+          values.filtered_bandwidth_gbps || 0,
+        );
+        target.underBmin ||= Boolean(values.under_bmin);
+        target.overBmax ||= Boolean(values.over_bmax);
+        target.hardBlock ||= Boolean(values.hard_block);
+        target.bufferEntries += Number(values.buffer_entries || 0);
+        target.candidates += Number(values.candidate_evaluations || 0);
+        target.grants += Number(values.grants || 0);
+        target.qosSaturation += Number(values.qos_saturation_events || 0);
+        target.serviceDeficit = Math.max(
+          target.serviceDeficit,
+          Number(values.service_deficit || 0),
+        );
         target.cbusyEnabled ||= Boolean(values.cbusy_enable);
         target.cbusyLevel = Math.max(
           target.cbusyLevel,
@@ -1406,8 +1457,9 @@ function renderResourceMonitor() {
       </tr>`);
   } else if (state.resourceView === "l3") {
     headers = [
-      "PARTID", "Control State", "L3 Est / Actual", "Monitor Error",
-      "L3 Util %", "L3 Sample BW", "Hit Rate", "L3 Queue",
+      "PARTID", "Control State", "Physical / Raw / Filtered",
+      "Monitor Error", "L3 Util %", "Raw / Filtered BW",
+      "Hit Rate", "L3 Queue",
       "MSHR", "Fill Buffer", "Queue Delay / Full",
       "Merge / Bypass", "Alloc Denials", "CMIN %", "CMAX %", "CPBM",
     ];
@@ -1415,10 +1467,10 @@ function renderResourceMonitor() {
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
         <td>${controlStateCell(row.partid)}</td>
-        <td>${formatNumber(row.occupancy, 0)} / ${formatNumber(row.actualOccupancy, 0)} B <small>physical ${formatNumber(row.capacity, 0)} B · allowed ${formatNumber(row.allowedCapacity, 0)} B</small></td>
+        <td>${formatNumber(row.actualOccupancy, 0)} / ${formatNumber(row.rawOccupancy, 0)} / ${formatNumber(row.filteredOccupancy, 0)} B <small>capacity ${formatNumber(row.capacity, 0)} B · allowed ${formatNumber(row.allowedCapacity, 0)} B</small></td>
         <td>${formatNumber(row.monitorError, 0)} B</td>
         <td>${utilizationCell(row.occupancyUtilization, "#2d7a4c")}</td>
-        <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
+        <td>${formatNumber(row.rawBandwidth, 3)} / ${formatNumber(row.filteredBandwidth, 3)} Gbps</td>
         <td>${(row.hitRate * 100).toFixed(2)}%</td>
         <td>${formatNumber(row.queueOccupancy, 2)} / ${formatNumber(row.queueDepth, 0)} <small>peak ${formatNumber(row.queuePeak, 0)} · slots ${formatNumber(row.lookupParallelism, 0)}</small></td>
         <td>${formatNumber(row.mshrOccupancy, 0)} / ${formatNumber(row.mshrPeak, 0)} / ${formatNumber(row.mshrEntries, 0)} <small>${formatNumber(row.mshrWaiting, 0)} waiting</small></td>
@@ -1432,7 +1484,8 @@ function renderResourceMonitor() {
       </tr>`);
   } else {
     headers = [
-      "PARTID", "Control State", "MC BW", "MC Util %", "MC Requests",
+      "PARTID", "Control State", "MC BW", "Raw / Filtered BW",
+      "Limit State", "Buffer / Candidate / Grant", "MC Util %",
       "Avg Queue ns", "Throttle ns", "CBusy Evidence", "BMIN Σ",
       "BMAX Σ", "Mode", "QoS Base / Eff", "Limit Events",
     ];
@@ -1441,8 +1494,10 @@ function renderResourceMonitor() {
         <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
         <td>${controlStateCell(row.partid)}</td>
         <td>${formatNumber(row.bandwidth, 3)} Gbps</td>
+        <td>${formatNumber(row.rawBandwidth, 3)} / ${formatNumber(row.filteredBandwidth, 3)} Gbps</td>
+        <td><span class="control-value ${row.hardBlock ? "enabled" : "disabled"}">${row.hardBlock ? "HARD" : row.overBmax ? "OVER" : row.underBmin ? "UNDER" : "IN RANGE"}</span></td>
+        <td>${formatNumber(row.bufferEntries, 0)} / ${formatNumber(row.candidates, 0)} / ${formatNumber(row.grants, 0)} <small>def ${formatNumber(row.serviceDeficit, 0)}</small></td>
         <td>${utilizationCell(row.bandwidthUtilization, "#176b9c")}</td>
-        <td>${formatNumber(row.requests, 0)}</td>
         <td>${formatNumber(row.avgQueueDelayNs, 2)}</td>
         <td>${formatNumber(row.throttleNs, 2)}</td>
         <td>
@@ -1452,8 +1507,8 @@ function renderResourceMonitor() {
         <td>${controlValue(row.bminEnabled, row.hasBmin ? row.bmin : 0, row.configuredBmin, (value) => formatNumber(value, 1))}</td>
         <td>${controlValue(row.bmaxEnabled, row.hasBmax ? row.bmax : 0, row.configuredBmax, (value) => formatNumber(value, 1))}</td>
         <td>${row.bmaxEnabled ? escapeHtml(row.mode) : '<span class="control-value disabled">off</span>'}</td>
-        <td>${controlValue(row.qosEnabled, `${row.qos} / ${formatNumber(row.effectiveQos, 2)}`, `${row.configuredQos} / -`, (value) => escapeHtml(value))}</td>
-        <td>${formatNumber(row.softPenaltyEvents, 0)} soft penalty / ${formatNumber(row.hardBlocks, 0)} hard <small>${formatNumber(row.softRequests, 0)} selected over</small></td>
+        <td>${controlValue(row.qosEnabled, `${row.qos} / ${formatNumber(row.effectiveQos, 2)}`, `${row.configuredQos} / -`, (value) => escapeHtml(value))}<small>${formatNumber(row.qosSaturation, 0)} saturated</small></td>
+        <td>${formatNumber(row.softPenaltyEvents, 0)} soft penalty / ${formatNumber(row.hardBlocks, 0)} hard <small>${formatNumber(row.softRequests, 0)} selected over · ${formatNumber(row.requests, 0)} req</small></td>
       </tr>`);
   }
   $("#resourceMonitorHead").innerHTML = `<tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr>`;
@@ -1604,7 +1659,7 @@ function renderControlVerification() {
     || ($$("[data-partid-row]").length
       ? collectParameters()
       : state.defaults);
-  const algorithmText = `token ${formatNumber(algorithm.mc_token_bucket_window_ns, 1)} ns · aging ${formatNumber(algorithm.mc_aging_ns, 1)} ns/+${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
+  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 0)}/${formatNumber(algorithm.mc_current_weight, 0)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
@@ -1749,6 +1804,20 @@ function configurationDiagnostics() {
   const add = (severity, text) => messages.push({ severity, text });
 
   if (!stimuli.length) add("error", "没有启用的激励，仿真不会产生请求。");
+  if (
+    Number(parameters.mc_history_weight)
+    + Number(parameters.mc_current_weight)
+    !== 256
+  ) {
+    add("error", "MC History Weight 与 Current Weight 之和必须等于 256。");
+  }
+  if (
+    Number(parameters.l3_history_weight)
+    + Number(parameters.l3_current_weight)
+    !== 256
+  ) {
+    add("error", "L3 History Weight 与 Current Weight 之和必须等于 256。");
+  }
   const activePartids = new Set(stimuli.map((row) => row.partid));
   activePartids.forEach((partid) => {
     const row = partids[partid];

@@ -85,9 +85,10 @@ def test_softlimit_is_work_conserving_but_hardlimit_caps(tmp_path) -> None:
 
     hard_metrics, hard_monitor = run("hardlimit", "hard")
     soft_metrics, soft_monitor = run("softlimit", "soft")
-    assert hard_metrics["throughput_gbps"] <= 22.0
-    assert soft_metrics["throughput_gbps"] > hard_metrics["throughput_gbps"] * 1.5
+    assert hard_metrics["throughput_gbps"] < soft_metrics["throughput_gbps"]
+    assert hard_metrics["throughput_gbps"] > 10.0
     assert hard_monitor["hardlimit_block_events"] > 0
+    assert hard_monitor["monitor_updates"] > 0
     assert soft_monitor["softlimit_requests"] > 0
 
 

@@ -61,12 +61,25 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.caches[0].fill_buffer_entries == 16
     assert config.caches[0].merge_same_line_misses is True
     assert config.caches[0].replacement_policy == "lru"
+    assert config.caches[0].clock_mhz == 1_000
+    assert config.caches[0].monitor_period_cycles == 256
+    assert config.caches[0].history_weight == 192
+    assert config.caches[0].current_weight == 64
     assert config.controls_by_msc["slc0"][0].cpbm_enable is True
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
+    assert config.memory_controllers[0].clock_mhz == 1_000
+    assert config.memory_controllers[0].monitor_period_cycles == 256
+    assert config.memory_controllers[0].history_weight == 192
+    assert config.memory_controllers[0].current_weight == 64
+    assert config.memory_controllers[0].bandwidth_hysteresis == 0.05
+    assert config.memory_controllers[0].aging_mode == "none"
     assert config.memory_controllers[0].token_bucket_window_ns == 100
     assert config.memory_controllers[0].bmin_qos_promote == 2
     assert config.memory_controllers[0].softlimit_qos_demote == 2
+    assert config.address_interleave.mode == "linear"
+    assert config.address_interleave.granularity_bytes == 256
+    assert config.address_interleave.xor_shift == 12
     assert config.noc.topology == (
         "three_bidirectional_bufferless_rings"
     )
@@ -83,6 +96,37 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.ostd.core_max_outstanding == 48
     assert config.ostd.core_policy == "shared"
     assert config.ostd.thread_reserve == 8
+
+
+def test_memory_interleave_is_deterministic_and_configurable(
+    tmp_path,
+) -> None:
+    parameters = default_parameters()
+    parameters["memory_controllers"] = 3
+    raw = build_config(parameters, str(tmp_path / "linear"))
+    path = tmp_path / "linear.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    linear = Simulation.from_config(load_config(path))
+    assert [
+        linear._destination_mc_for("cpu0.t0", address)
+        for address in (0, 256, 512, 768)
+    ] == ["mc0", "mc1", "mc2", "mc0"]
+
+    parameters["mc_interleave_mode"] = "xor"
+    parameters["mc_interleave_xor_shift"] = 9
+    raw = build_config(parameters, str(tmp_path / "xor"))
+    path = tmp_path / "xor.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    first = Simulation.from_config(load_config(path))
+    second = Simulation.from_config(load_config(path))
+    addresses = (0, 256, 512, 4096, 8192)
+    assert [
+        first._destination_mc_for("cpu0.t0", address)
+        for address in addresses
+    ] == [
+        second._destination_mc_for("cpu0.t0", address)
+        for address in addresses
+    ]
 
 
 def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:

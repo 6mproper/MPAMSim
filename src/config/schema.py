@@ -38,6 +38,10 @@ class CacheConfig:
     fill_buffer_entries: int = 16
     merge_same_line_misses: bool = True
     replacement_policy: str = "lru"
+    clock_mhz: float = 1000.0
+    monitor_period_cycles: int = 256
+    history_weight: int = 192
+    current_weight: int = 64
 
 
 @dataclass
@@ -65,6 +69,15 @@ class MemoryControllerConfig:
     scheduler: str
     queue_depth: int = 512
     base_latency_ns: float = 80.0
+    clock_mhz: float = 1000.0
+    monitor_period_cycles: int = 256
+    history_weight: int = 192
+    current_weight: int = 64
+    bandwidth_hysteresis: float = 0.05
+    aging_mode: str = "none"
+    aging_quantum_cycles: int = 256
+    aging_counter_bits: int = 3
+    # Retained only so older YAML files continue to load.
     token_bucket_window_ns: float = 100.0
     aging_ns: float = 500.0
     qos_aging_max_steps: int = 3
@@ -79,6 +92,13 @@ class MemoryControllerConfig:
     cbusy_l1_queue_ratio: float = 0.25
     cbusy_l2_queue_ratio: float = 0.50
     cbusy_l3_queue_ratio: float = 0.75
+
+
+@dataclass
+class AddressInterleaveConfig:
+    mode: str = "linear"
+    granularity_bytes: int = 256
+    xor_shift: int = 12
 
 
 @dataclass
@@ -175,6 +195,7 @@ class ProjectConfig:
     caches: List[CacheConfig]
     noc: NocConfig
     memory_controllers: List[MemoryControllerConfig]
+    address_interleave: AddressInterleaveConfig
     requesters: List[RequesterConfig]
     ostd: OstdConfig
     partid_width: int

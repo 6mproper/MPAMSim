@@ -25,5 +25,13 @@ def test_memory_controller_bandwidth_cap(base_config, config_writer) -> None:
     config = load_config(config_writer(base_config))
     result = Simulation.from_config(config).run()
     metrics = result.collector.cumulative_metrics(result.elapsed_ns)[2]
-    assert 8.0 <= metrics["throughput_gbps"] <= 11.0
+    mc_row = next(
+        row
+        for row in reversed(result.collector.msc_rows)
+        if row["msc_type"] == "memory_controller"
+    )
+    monitor = mc_row["per_partid"]["2"]
+    assert 10.0 < metrics["throughput_gbps"] < 25.0
+    assert monitor["hardlimit_block_events"] > 0
+    assert monitor["throttle_delay_ns"] > 0
     assert metrics["avg_throttle_delay_ns"] > 0

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 
 from .schema import (
+    AddressInterleaveConfig,
     CacheConfig,
     ClusterConfig,
     MemoryControllerConfig,
@@ -169,6 +170,12 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             replacement_policy=str(
                 item.get("replacement_policy", "lru")
             ),
+            clock_mhz=float(item.get("clock_mhz", 1000.0)),
+            monitor_period_cycles=int(
+                item.get("monitor_period_cycles", 256)
+            ),
+            history_weight=int(item.get("history_weight", 192)),
+            current_weight=int(item.get("current_weight", 64)),
         )
         for item in soc.get("caches", [])
     ]
@@ -197,6 +204,7 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             for node in noc_raw.get("ring_node_order", [])
         ],
     )
+    memory_raw = soc.get("memory", {})
     memory_controllers = [
         MemoryControllerConfig(
             id=str(item["id"]),
@@ -205,6 +213,22 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             scheduler=str(item.get("scheduler", "priority_rr")),
             queue_depth=int(item.get("queue_depth", 512)),
             base_latency_ns=float(item.get("base_latency_ns", 80.0)),
+            clock_mhz=float(item.get("clock_mhz", 1000.0)),
+            monitor_period_cycles=int(
+                item.get("monitor_period_cycles", 256)
+            ),
+            history_weight=int(item.get("history_weight", 192)),
+            current_weight=int(item.get("current_weight", 64)),
+            bandwidth_hysteresis=float(
+                item.get("bandwidth_hysteresis", 0.05)
+            ),
+            aging_mode=str(item.get("aging_mode", "none")),
+            aging_quantum_cycles=int(
+                item.get("aging_quantum_cycles", 256)
+            ),
+            aging_counter_bits=int(
+                item.get("aging_counter_bits", 3)
+            ),
             token_bucket_window_ns=float(item.get("token_bucket_window_ns", 100.0)),
             aging_ns=float(item.get("aging_ns", 500.0)),
             qos_aging_max_steps=_qos_value(
@@ -239,8 +263,16 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 item.get("cbusy_l3_queue_ratio", 0.75)
             ),
         )
-        for item in soc.get("memory", {}).get("controllers", [])
+        for item in memory_raw.get("controllers", [])
     ]
+    interleave_raw = memory_raw.get("interleave", {})
+    address_interleave = AddressInterleaveConfig(
+        mode=str(interleave_raw.get("mode", "linear")),
+        granularity_bytes=int(
+            interleave_raw.get("granularity_bytes", 256)
+        ),
+        xor_shift=int(interleave_raw.get("xor_shift", 12)),
+    )
 
     requesters = _load_requesters(raw, clusters, threads_per_core)
     requester_section = raw.get("requesters", {})
@@ -347,6 +379,7 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
         caches=caches,
         noc=noc,
         memory_controllers=memory_controllers,
+        address_interleave=address_interleave,
         requesters=requesters,
         ostd=ostd,
         partid_width=int(mpam.get("partid_width", 8)),

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable, DefaultDict, Deque, Dict, Optional, Tuple
+from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
 
 from src.config.schema import MemoryControllerConfig
 from src.mpam.settings import SettingsTable
@@ -12,9 +12,11 @@ from src.traffic.request import Request
 
 
 @dataclass
-class TokenState:
-    tokens: float = 0.0
-    last_update_ns: float = 0.0
+class BufferEntry:
+    slot: int
+    sequence: int
+    request: Request
+    enqueue_time_ns: float
 
 
 def _mc_counters() -> Dict[str, float]:
@@ -35,40 +37,55 @@ def _mc_counters() -> Dict[str, float]:
         "qos_promoted_requests": 0,
         "qos_demoted_requests": 0,
         "qos_aging_promotions": 0,
+        "qos_saturation_events": 0,
+        "candidate_evaluations": 0,
+        "grants": 0,
     }
 
 
 class MemoryControllerMSC(Component):
     capabilities = (
         "memory_controller_service",
-        "token_bucket_bmin",
-        "token_bucket_bmax",
+        "shared_request_buffer",
+        "full_depth_ready_candidates",
+        "same_line_write_ordering",
         "three_bit_qos",
+        "rotating_slot_scan",
+        "filtered_periodic_bmin_bmax",
+        "optional_partid_service_deficit",
         "four_level_cbusy",
         "per_partid_monitoring",
     )
     required_monitors = (
-        "bandwidth",
+        "raw_filtered_bandwidth",
         "queue_occupancy",
         "effective_qos",
-        "limit_events",
+        "candidate_grant",
+        "limit_state",
     )
     actions = (
         "admit",
+        "build_ready_mask",
         "select_candidate",
         "dispatch",
+        "publish_monitor_state",
         "publish_cbusy",
     )
     validation_hooks = (
         "queue_capacity",
         "qos_range",
         "bmin_bmax_order",
+        "monitor_weight_sum",
     )
-    incompatible_capabilities = ("monitor_interval_bmax_gate",)
+    incompatible_capabilities = (
+        "token_bucket_bmin",
+        "token_bucket_bmax",
+        "per_request_timestamp_aging",
+    )
     approximations = (
-        "per-PARTID FIFO head candidates",
-        "token bucket BMIN/BMAX",
-        "per-request timestamp aging",
+        "fixed shared request slots",
+        "monitor-interval hard BMAX gate",
+        "bandwidth-only DRAM service",
     )
 
     def __init__(
@@ -89,17 +106,29 @@ class MemoryControllerMSC(Component):
         self.on_complete = on_complete
         self.on_cbusy = on_cbusy
         self.enforce_controls = enforce_controls
-        self._queues: DefaultDict[
-            int, Deque[Tuple[int, Request]]
-        ] = defaultdict(deque)
+
+        self._buffer: List[Optional[BufferEntry]] = [
+            None
+            for _ in range(config.queue_depth)
+        ]
         self._sequence = 0
+        self._last_grant_slot = config.queue_depth - 1
         self._dispatch_pending = False
-        self._max_tokens: DefaultDict[int, TokenState] = defaultdict(
-            TokenState
+        self._peak_queue_length = 0
+
+        self._monitor_service_bytes: DefaultDict[int, int] = defaultdict(int)
+        self._raw_bandwidth_gbps: DefaultDict[int, float] = defaultdict(float)
+        self._filtered_bandwidth_gbps: DefaultDict[int, float] = defaultdict(
+            float
         )
-        self._min_tokens: DefaultDict[int, TokenState] = defaultdict(
-            TokenState
-        )
+        self._under_bmin: DefaultDict[int, bool] = defaultdict(bool)
+        self._over_bmax: DefaultDict[int, bool] = defaultdict(bool)
+        self._hard_block: DefaultDict[int, bool] = defaultdict(bool)
+        self._monitor_updates: DefaultDict[int, int] = defaultdict(int)
+
+        self._service_deficit: DefaultDict[int, int] = defaultdict(int)
+        self._grant_seen: DefaultDict[int, bool] = defaultdict(bool)
+
         self._interval_busy_ns = 0.0
         self._interval_requests = 0
         self._interval_bytes = 0
@@ -107,29 +136,52 @@ class MemoryControllerMSC(Component):
         self._queue_samples = 0
         self._interval_per_partid: DefaultDict[
             int, Dict[str, float]
-        ] = defaultdict(
-            _mc_counters
-        )
+        ] = defaultdict(_mc_counters)
         self._interval_per_group: DefaultDict[
             Tuple[int, int], Dict[str, float]
-        ] = defaultdict(
-            _mc_counters
-        )
-        self._cbusy_sample_bytes: DefaultDict[int, int] = defaultdict(int)
-        self._cbusy_sample_hard_blocks: DefaultDict[int, int] = defaultdict(int)
+        ] = defaultdict(_mc_counters)
+
         self._cbusy_level: DefaultDict[int, int] = defaultdict(int)
         self._cbusy_release_samples: DefaultDict[int, int] = defaultdict(int)
         self._cbusy_last_bw_ratio: DefaultDict[int, float] = defaultdict(float)
-        self._cbusy_last_queue_ratio: DefaultDict[int, float] = defaultdict(float)
+        self._cbusy_last_queue_ratio: DefaultDict[int, float] = defaultdict(
+            float
+        )
         self._cbusy_interval_peak_bw_ratio: DefaultDict[
             int, float
         ] = defaultdict(float)
         self._cbusy_interval_peak_queue_ratio: DefaultDict[
             int, float
         ] = defaultdict(float)
-        self._cbusy_interval_transitions: DefaultDict[int, int] = defaultdict(int)
-        self._cbusy_interval_assertions: DefaultDict[int, int] = defaultdict(int)
-        self._cbusy_interval_active_ns: DefaultDict[int, float] = defaultdict(float)
+        self._cbusy_interval_transitions: DefaultDict[int, int] = defaultdict(
+            int
+        )
+        self._cbusy_interval_assertions: DefaultDict[int, int] = defaultdict(
+            int
+        )
+        self._cbusy_interval_active_ns: DefaultDict[int, float] = defaultdict(
+            float
+        )
+
+        for partid, setting in self.settings.items():
+            self._under_bmin[partid] = bool(
+                enforce_controls
+                and setting.bmin_enable
+                and setting.bw_min_gbps is not None
+                and setting.bw_min_gbps > 0
+            )
+
+        self.kernel.schedule(
+            self.monitor_period_ns,
+            self._publish_bandwidth_monitor,
+            f"mc-monitor:{self.component_id}",
+        )
+        if self.config.aging_mode == "per_partid_service_deficit":
+            self.kernel.schedule(
+                self.aging_quantum_ns,
+                self._update_service_deficit,
+                f"mc-deficit:{self.component_id}",
+            )
         self.kernel.schedule(
             self.config.cbusy_sample_ns,
             self._evaluate_cbusy,
@@ -144,12 +196,42 @@ class MemoryControllerMSC(Component):
         )
 
     @property
+    def monitor_period_ns(self) -> float:
+        return (
+            self.config.monitor_period_cycles
+            * 1000.0
+            / self.config.clock_mhz
+        )
+
+    @property
+    def aging_quantum_ns(self) -> float:
+        return (
+            self.config.aging_quantum_cycles
+            * 1000.0
+            / self.config.clock_mhz
+        )
+
+    @property
     def queue_length(self) -> int:
-        return sum(len(queue) for queue in self._queues.values())
+        return sum(entry is not None for entry in self._buffer)
+
+    def _partid_buffer_count(self, partid: int) -> int:
+        return sum(
+            entry is not None and entry.request.partid == partid
+            for entry in self._buffer
+        )
 
     def receive(self, request: Request) -> None:
-        if self.queue_length >= self.config.queue_depth:
-            retry_ns = 5.0
+        free_slot = next(
+            (
+                slot
+                for slot, entry in enumerate(self._buffer)
+                if entry is None
+            ),
+            None,
+        )
+        if free_slot is None:
+            retry_ns = max(0.001, self.monitor_period_ns / 16.0)
             request.mem_queue_delay_ns += retry_ns
             self.kernel.schedule(
                 retry_ns,
@@ -160,7 +242,16 @@ class MemoryControllerMSC(Component):
         request.memory_controller_id = self.component_id
         request.mem_enqueue_time_ns = self.kernel.now_ns
         self._sequence += 1
-        self._queues[request.partid].append((self._sequence, request))
+        self._buffer[free_slot] = BufferEntry(
+            slot=free_slot,
+            sequence=self._sequence,
+            request=request,
+            enqueue_time_ns=self.kernel.now_ns,
+        )
+        self._peak_queue_length = max(
+            self._peak_queue_length,
+            self.queue_length,
+        )
         self._sample_queue()
         self._schedule_dispatch(0.0)
 
@@ -177,351 +268,212 @@ class MemoryControllerMSC(Component):
         self.kernel.schedule(
             delay_ns,
             self._dispatch,
-            "mc-dispatch",
+            f"mc-dispatch:{self.component_id}",
         )
 
-    def _refill(
-        self,
-        partid: int,
-        rate_gbps: Optional[float],
-        states: DefaultDict[int, TokenState],
-    ) -> None:
-        if rate_gbps is None or rate_gbps <= 0:
-            return
-        state = states[partid]
-        elapsed = max(
-            0.0, self.kernel.now_ns - state.last_update_ns
-        )
-        bytes_per_ns = rate_gbps / 8.0
-        capacity = max(
-            64.0,
-            bytes_per_ns * self.config.token_bucket_window_ns,
-        )
-        state.tokens = min(
-            capacity,
-            state.tokens + elapsed * bytes_per_ns,
-        )
-        state.last_update_ns = self.kernel.now_ns
-
-    def _max_available(self, partid: int, size_bytes: int) -> bool:
-        setting = self.settings.lookup(partid)
+    @staticmethod
+    def _same_line(first: Request, second: Request) -> bool:
         if (
-            not setting.bmax_enable
-            or setting.bw_max_gbps is None
+            first.line_address is not None
+            and second.line_address is not None
         ):
-            return True
-        self._refill(
-            partid,
-            setting.bw_max_gbps,
-            self._max_tokens,
-        )
-        return (
-            self._max_tokens[partid].tokens + 1e-9 >= size_bytes
-        )
+            return first.line_address == second.line_address
+        return first.address // 64 == second.address // 64
 
-    def _under_bmin(self, partid: int, size_bytes: int) -> bool:
-        setting = self.settings.lookup(partid)
-        if (
-            not setting.bmin_enable
-            or setting.bw_min_gbps is None
-            or setting.bw_min_gbps <= 0
-        ):
-            return False
-        self._refill(
-            partid,
-            setting.bw_min_gbps,
-            self._min_tokens,
-        )
-        return (
-            self._min_tokens[partid].tokens + 1e-9 >= size_bytes
-        )
-
-    def _eligible(self, partid: int, request: Request) -> bool:
-        request.mc_arbitration.hard_blocked = False
-        if not self.enforce_controls:
-            return True
-        setting = self.settings.lookup(partid)
-        if (
-            not setting.bmax_enable
-            or setting.bw_limit_mode == "softlimit"
-            or setting.bw_max_gbps is None
-        ):
-            return True
-        available = self._max_available(
-            partid, request.size_bytes
-        )
-        if not available:
-            request.mc_arbitration.hard_blocked = True
-            self._interval_per_partid[partid][
-                "hardlimit_block_events"
-            ] += 1
-            self._interval_per_group[
-                (partid, request.pmg)
-            ]["hardlimit_block_events"] += 1
-            self._cbusy_sample_hard_blocks[partid] += 1
-        return available
-
-    def _next_token_wait(
-        self, partid: int, request: Request
-    ) -> float:
-        if not self.enforce_controls:
-            return 0.0
-        setting = self.settings.lookup(partid)
-        if (
-            not setting.bmax_enable
-            or setting.bw_limit_mode != "hardlimit"
-            or setting.bw_max_gbps is None
-        ):
-            return 0.0
-        self._refill(
-            partid,
-            setting.bw_max_gbps,
-            self._max_tokens,
-        )
-        missing = max(
-            0.0,
-            request.size_bytes
-            - self._max_tokens[partid].tokens,
-        )
-        return missing / max(
-            setting.bw_max_gbps / 8.0, 1e-12
-        )
-
-    def _select_request(self) -> Optional[Tuple[int, Request]]:
-        candidates = []
-        contended = self.queue_length > 1
-        for partid, queue in self._queues.items():
-            if not queue:
+    def _ordering_blocked(self, candidate: BufferEntry) -> bool:
+        request = candidate.request
+        for older in self._buffer:
+            if (
+                older is None
+                or older.sequence >= candidate.sequence
+                or not self._same_line(older.request, request)
+            ):
                 continue
-            sequence, request = queue[0]
-            if not self._eligible(partid, request):
+            if older.request.op == "write" or request.op == "write":
+                return True
+        return False
+
+    def _ready_entries(self) -> List[BufferEntry]:
+        ready: List[BufferEntry] = []
+        for entry in self._buffer:
+            if entry is None:
                 continue
-            setting = self.settings.lookup(partid)
-            age = max(
-                0.0,
-                self.kernel.now_ns
-                - request.mem_enqueue_time_ns,
-            )
-            aging_steps = min(
-                self.config.qos_aging_max_steps,
-                int(
-                age / max(1.0, self.config.aging_ns)
-                ),
-            )
-            bmin_promote = (
-                self.config.bmin_qos_promote
-                if (
-                    self.enforce_controls
-                    and setting.bmin_enable
-                    and self._under_bmin(
-                        partid, request.size_bytes
-                    )
-                )
-                else 0
-            )
-            soft_over = (
+            request = entry.request
+            hard = bool(
                 self.enforce_controls
-                and setting.bmax_enable
-                and setting.bw_limit_mode == "softlimit"
-                and setting.bw_max_gbps is not None
-                and not self._max_available(
-                    partid, request.size_bytes
-                )
+                and self._hard_block[request.partid]
             )
-            soft_demote = (
-                self.config.softlimit_qos_demote
-                if soft_over and contended
-                else 0
+            request.mc_arbitration.hard_blocked = hard
+            if hard or self._ordering_blocked(entry):
+                continue
+            ready.append(entry)
+        return ready
+
+    def _deficit_qos_steps(self, partid: int) -> int:
+        if (
+            not self.enforce_controls
+            or self.config.aging_mode
+            != "per_partid_service_deficit"
+        ):
+            return 0
+        return min(
+            self.config.qos_aging_max_steps,
+            self._service_deficit[partid],
+        )
+
+    def _score_entry(
+        self,
+        entry: BufferEntry,
+        contended: bool,
+    ) -> Tuple[int, int, int, int, bool]:
+        request = entry.request
+        setting = self.settings.lookup(request.partid)
+        base_qos = (
+            setting.mc_qos
+            if self.enforce_controls and setting.mc_qos_enable
+            else 0
+        )
+        bmin_promote = (
+            self.config.bmin_qos_promote
+            if (
+                self.enforce_controls
+                and contended
+                and setting.bmin_enable
+                and self._under_bmin[request.partid]
             )
-            base_qos = (
-                setting.mc_qos
-                if (
-                    self.enforce_controls
-                    and setting.mc_qos_enable
-                )
-                else 0
-            )
-            effective_qos = max(
-                0,
-                min(
-                    7,
-                    base_qos
-                    + aging_steps
-                    + bmin_promote
-                    - soft_demote,
-                ),
-            )
-            candidates.append(
-                (
-                    effective_qos,
-                    -sequence,
-                    partid,
-                    request,
-                    base_qos,
-                    aging_steps,
-                    bmin_promote,
-                    soft_demote,
-                    soft_over,
-                )
-            )
-        if not candidates:
-            return None
-        (
-            _,
-            _,
-            partid,
-            request,
+            else 0
+        )
+        soft_over = bool(
+            self.enforce_controls
+            and setting.bmax_enable
+            and setting.bw_limit_mode == "softlimit"
+            and self._over_bmax[request.partid]
+        )
+        soft_demote = (
+            self.config.softlimit_qos_demote
+            if soft_over and contended
+            else 0
+        )
+        deficit_steps = self._deficit_qos_steps(request.partid)
+        unclamped = (
+            base_qos
+            + bmin_promote
+            - soft_demote
+            + deficit_steps
+        )
+        effective_qos = max(0, min(7, unclamped))
+        return (
+            effective_qos,
             base_qos,
-            aging_steps,
             bmin_promote,
             soft_demote,
             soft_over,
-        ) = max(candidates)
-        sequence, _ = self._queues[partid].popleft()
-        request.mc_arbitration.base_qos = base_qos
-        request.mc_arbitration.effective_qos = max(
-            0,
-            min(
-                7,
-                base_qos + aging_steps + bmin_promote - soft_demote,
-            ),
         )
-        request.mc_arbitration.aging_steps = aging_steps
+
+    def _select_request(self) -> Optional[BufferEntry]:
+        candidates = self._ready_entries()
+        if not candidates:
+            return None
+        contended = len(
+            {entry.request.partid for entry in candidates}
+        ) >= 2
+        scored: Dict[int, Tuple[int, int, int, int, bool]] = {}
+        for entry in candidates:
+            scored[entry.slot] = self._score_entry(entry, contended)
+            counters = self._interval_per_partid[entry.request.partid]
+            counters["candidate_evaluations"] += 1
+            self._interval_per_group[
+                (entry.request.partid, entry.request.pmg)
+            ]["candidate_evaluations"] += 1
+        highest_qos = max(values[0] for values in scored.values())
+        candidate_slots = {
+            slot
+            for slot, values in scored.items()
+            if values[0] == highest_qos
+        }
+        selected: Optional[BufferEntry] = None
+        for offset in range(1, self.config.queue_depth + 1):
+            slot = (
+                self._last_grant_slot + offset
+            ) % self.config.queue_depth
+            if slot in candidate_slots:
+                selected = self._buffer[slot]
+                break
+        if selected is None:
+            return None
+
+        (
+            effective_qos,
+            base_qos,
+            bmin_promote,
+            soft_demote,
+            soft_over,
+        ) = scored[selected.slot]
+        deficit_steps = self._deficit_qos_steps(
+            selected.request.partid
+        )
+        request = selected.request
+        request.mc_arbitration.base_qos = base_qos
+        request.mc_arbitration.effective_qos = effective_qos
+        request.mc_arbitration.aging_steps = deficit_steps
         request.mc_arbitration.bmin_promoted = bmin_promote > 0
         request.mc_arbitration.soft_demoted = soft_demote > 0
         request.mc_arbitration.soft_over_limit = soft_over
         request.mc_arbitration.hard_blocked = False
-        request.mc_arbitration.selected_sequence = sequence
-        return sequence, request
-
-    def _consume_tokens(self, request: Request) -> None:
-        if not self.enforce_controls:
-            return
-        partid = request.partid
-        setting = self.settings.lookup(partid)
-        if (
-            setting.bmax_enable
-            and setting.bw_max_gbps is not None
-        ):
-            self._refill(
-                partid,
-                setting.bw_max_gbps,
-                self._max_tokens,
-            )
-            if (
-                self._max_tokens[partid].tokens + 1e-9
-                >= request.size_bytes
-            ):
-                self._max_tokens[partid].tokens = max(
-                    0.0,
-                    self._max_tokens[partid].tokens
-                    - request.size_bytes,
-                )
-        if (
-            setting.bw_min_gbps is not None
-            and setting.bmin_enable
-            and setting.bw_min_gbps > 0
-        ):
-            self._refill(
-                partid,
-                setting.bw_min_gbps,
-                self._min_tokens,
-            )
-            if (
-                self._min_tokens[partid].tokens + 1e-9
-                >= request.size_bytes
-            ):
-                self._min_tokens[partid].tokens = max(
-                    0.0,
-                    self._min_tokens[partid].tokens
-                    - request.size_bytes,
-                )
+        request.mc_arbitration.selected_sequence = selected.sequence
+        self._buffer[selected.slot] = None
+        self._last_grant_slot = selected.slot
+        self._grant_seen[request.partid] = True
+        return selected
 
     def _dispatch(self) -> None:
         self._dispatch_pending = False
         if self.queue_length == 0:
             return
-
         selected = self._select_request()
         if selected is None:
-            blocked = [
-                (partid, queue[0][1])
-                for partid, queue in self._queues.items()
-                if queue
-                and self.enforce_controls
-                and self.settings.lookup(
-                    partid
-                ).bw_limit_mode
-                == "hardlimit"
-                and self.settings.lookup(partid).bmax_enable
-            ]
-            waits = [
-                self._next_token_wait(partid, request)
-                for partid, request in blocked
-            ]
-            wait_ns = max(
-                0.001,
-                min(waits) if waits else 0.001,
-            )
-            for partid, request in blocked:
-                self._interval_per_partid[partid][
-                    "throttle_delay_ns"
-                ] += wait_ns
-                self._interval_per_group[
-                    (partid, request.pmg)
-                ]["throttle_delay_ns"] += wait_ns
-                request.throttle_delay_ns += wait_ns
-            self._schedule_dispatch(wait_ns)
             return
 
-        _, request = selected
-        self._consume_tokens(request)
+        request = selected.request
         queue_delay = max(
             0.0,
-            self.kernel.now_ns - request.mem_enqueue_time_ns,
+            self.kernel.now_ns - selected.enqueue_time_ns,
         )
         serialization_ns = (
             request.size_bytes
             * 8.0
             / self.total_bandwidth_gbps
         )
-        service_delay = (
-            self.config.base_latency_ns + serialization_ns
-        )
+        service_delay = self.config.base_latency_ns + serialization_ns
         request.mem_queue_delay_ns += queue_delay
         request.mem_service_delay_ns += service_delay
 
-        counters = self._interval_per_partid[
-            request.partid
-        ]
-        counters["requests"] += 1
-        counters["bytes"] += request.size_bytes
-        counters["queue_delay_ns"] += queue_delay
-        counters["service_delay_ns"] += service_delay
+        counters = self._interval_per_partid[request.partid]
         group_counters = self._interval_per_group[
             (request.partid, request.pmg)
         ]
-        group_counters["requests"] += 1
-        group_counters["bytes"] += request.size_bytes
-        group_counters["queue_delay_ns"] += queue_delay
-        group_counters["service_delay_ns"] += service_delay
-        if request.mc_arbitration.bmin_promoted:
-            counters["bmin_priority_requests"] += 1
-            group_counters["bmin_priority_requests"] += 1
-        if request.mc_arbitration.soft_over_limit:
-            counters["softlimit_requests"] += 1
-            counters["softlimit_bytes"] += request.size_bytes
-            group_counters["softlimit_requests"] += 1
-            group_counters["softlimit_bytes"] += request.size_bytes
-        effective_qos = request.mc_arbitration.effective_qos
-        aging_steps = request.mc_arbitration.aging_steps
         for target in (counters, group_counters):
+            target["requests"] += 1
+            target["bytes"] += request.size_bytes
+            target["queue_delay_ns"] += queue_delay
+            target["service_delay_ns"] += service_delay
+            target["grants"] += 1
+            if request.mc_arbitration.bmin_promoted:
+                target["bmin_priority_requests"] += 1
+            if request.mc_arbitration.soft_over_limit:
+                target["softlimit_requests"] += 1
+                target["softlimit_bytes"] += request.size_bytes
+            if request.mc_arbitration.soft_demoted:
+                target["softlimit_penalty_events"] += 1
+            effective_qos = request.mc_arbitration.effective_qos
             target["effective_qos_sum"] += effective_qos
             target["effective_qos_min"] = min(
-                target["effective_qos_min"], effective_qos
+                target["effective_qos_min"],
+                effective_qos,
             )
             target["effective_qos_max"] = max(
-                target["effective_qos_max"], effective_qos
+                target["effective_qos_max"],
+                effective_qos,
             )
             target["qos_promoted_requests"] += int(
                 request.mc_arbitration.bmin_promoted
@@ -529,27 +481,192 @@ class MemoryControllerMSC(Component):
             target["qos_demoted_requests"] += int(
                 request.mc_arbitration.soft_demoted
             )
-            target["qos_aging_promotions"] += aging_steps
-        if request.mc_arbitration.soft_demoted:
-            counters["softlimit_penalty_events"] += 1
-            group_counters["softlimit_penalty_events"] += 1
+            target["qos_aging_promotions"] += (
+                request.mc_arbitration.aging_steps
+            )
+            unclamped = (
+                request.mc_arbitration.base_qos
+                + (
+                    self.config.bmin_qos_promote
+                    if request.mc_arbitration.bmin_promoted
+                    else 0
+                )
+                - (
+                    self.config.softlimit_qos_demote
+                    if request.mc_arbitration.soft_demoted
+                    else 0
+                )
+                + request.mc_arbitration.aging_steps
+            )
+            target["qos_saturation_events"] += int(
+                unclamped < 0 or unclamped > 7
+            )
 
         self._interval_busy_ns += serialization_ns
         self._interval_requests += 1
         self._interval_bytes += request.size_bytes
-        self._cbusy_sample_bytes[request.partid] += request.size_bytes
+        self._monitor_service_bytes[request.partid] += request.size_bytes
         self._sample_queue()
 
         self.kernel.schedule(
             service_delay,
             lambda: self.on_complete(request),
-            "mc-complete",
+            f"mc-complete:{self.component_id}",
         )
         self._schedule_dispatch(serialization_ns)
+
+    def _configured_partids(self) -> set[int]:
+        return {partid for partid, _ in self.settings.items()}
+
+    def _known_partids(self) -> List[int]:
+        pending = {
+            entry.request.partid
+            for entry in self._buffer
+            if entry is not None
+        }
+        return sorted(
+            self._configured_partids()
+            | pending
+            | set(self._monitor_service_bytes)
+            | set(self._filtered_bandwidth_gbps)
+            | set(self._cbusy_level)
+        )
+
+    def _update_limit_states(
+        self,
+        partid: int,
+        filtered_gbps: float,
+    ) -> None:
+        setting = self.settings.lookup(partid)
+        hysteresis = self.config.bandwidth_hysteresis
+        if (
+            not self.enforce_controls
+            or not setting.bmin_enable
+            or setting.bw_min_gbps is None
+            or setting.bw_min_gbps <= 0
+        ):
+            self._under_bmin[partid] = False
+        elif self._under_bmin[partid]:
+            self._under_bmin[partid] = (
+                filtered_gbps
+                < setting.bw_min_gbps * (1.0 + hysteresis)
+            )
+        else:
+            self._under_bmin[partid] = (
+                filtered_gbps < setting.bw_min_gbps
+            )
+
+        if (
+            not self.enforce_controls
+            or not setting.bmax_enable
+            or setting.bw_max_gbps is None
+            or setting.bw_max_gbps <= 0
+        ):
+            self._over_bmax[partid] = False
+        elif self._over_bmax[partid]:
+            self._over_bmax[partid] = (
+                filtered_gbps
+                > setting.bw_max_gbps * (1.0 - hysteresis)
+            )
+        else:
+            self._over_bmax[partid] = (
+                filtered_gbps > setting.bw_max_gbps
+            )
+        self._hard_block[partid] = bool(
+            self._over_bmax[partid]
+            and setting.bw_limit_mode == "hardlimit"
+            and setting.bmax_enable
+            and self.enforce_controls
+        )
+
+    def _publish_bandwidth_monitor(self) -> None:
+        period_ns = self.monitor_period_ns
+        weight_sum = (
+            self.config.history_weight
+            + self.config.current_weight
+        )
+        for partid in self._known_partids():
+            raw = (
+                self._monitor_service_bytes[partid]
+                * 8.0
+                / period_ns
+            )
+            previous = self._filtered_bandwidth_gbps[partid]
+            filtered = (
+                self.config.history_weight * previous
+                + self.config.current_weight * raw
+            ) / weight_sum
+            self._raw_bandwidth_gbps[partid] = raw
+            self._filtered_bandwidth_gbps[partid] = filtered
+            self._monitor_updates[partid] += 1
+            self._update_limit_states(partid, filtered)
+            if self._hard_block[partid]:
+                blocked = [
+                    entry
+                    for entry in self._buffer
+                    if (
+                        entry is not None
+                        and entry.request.partid == partid
+                    )
+                ]
+                if blocked:
+                    counters = self._interval_per_partid[partid]
+                    counters["hardlimit_block_events"] += 1
+                    counters["throttle_delay_ns"] += (
+                        len(blocked) * period_ns
+                    )
+                    for entry in blocked:
+                        entry.request.throttle_delay_ns += period_ns
+                        group = self._interval_per_group[
+                            (partid, entry.request.pmg)
+                        ]
+                        group["hardlimit_block_events"] += 1
+                        group["throttle_delay_ns"] += period_ns
+            self._monitor_service_bytes[partid] = 0
+        self._schedule_dispatch(0.0)
+        self.kernel.schedule(
+            period_ns,
+            self._publish_bandwidth_monitor,
+            f"mc-monitor:{self.component_id}",
+        )
+
+    def _update_service_deficit(self) -> None:
+        max_counter = (1 << self.config.aging_counter_bits) - 1
+        ready_partids = {
+            entry.request.partid
+            for entry in self._ready_entries()
+        }
+        for partid in self._known_partids():
+            if (
+                partid not in ready_partids
+                or self._hard_block[partid]
+            ):
+                self._service_deficit[partid] = 0
+            elif self._grant_seen[partid]:
+                self._service_deficit[partid] = max(
+                    0,
+                    self._service_deficit[partid] - 1,
+                )
+            else:
+                self._service_deficit[partid] = min(
+                    max_counter,
+                    self._service_deficit[partid] + 1,
+                )
+            self._grant_seen[partid] = False
+        self._schedule_dispatch(0.0)
+        self.kernel.schedule(
+            self.aging_quantum_ns,
+            self._update_service_deficit,
+            f"mc-deficit:{self.component_id}",
+        )
 
     def _sample_queue(self) -> None:
         self._queue_sample_sum += self.queue_length
         self._queue_samples += 1
+        self._peak_queue_length = max(
+            self._peak_queue_length,
+            self.queue_length,
+        )
 
     def _cbusy_cap(self, partid: int, level: int) -> int:
         setting = self.settings.lookup(partid)
@@ -564,7 +681,6 @@ class MemoryControllerMSC(Component):
         partid: int,
         bandwidth_ratio: float,
         queue_ratio: float,
-        hard_blocks: int,
     ) -> int:
         setting = self.settings.lookup(partid)
         if (
@@ -572,7 +688,11 @@ class MemoryControllerMSC(Component):
             or not setting.cbusy_enable
         ):
             return 0
-        contended = self.queue_length > 1
+        ready_partids = {
+            entry.request.partid
+            for entry in self._ready_entries()
+        }
+        contended = len(ready_partids) >= 2
         bw_thresholds = (
             self.config.cbusy_l1_bw_ratio,
             self.config.cbusy_l2_bw_ratio,
@@ -595,7 +715,7 @@ class MemoryControllerMSC(Component):
                 )
             ):
                 level = candidate
-        if hard_blocks > 0:
+        if self._hard_block[partid]:
             level = max(level, 2)
         return level
 
@@ -615,23 +735,12 @@ class MemoryControllerMSC(Component):
         )
 
     def _evaluate_cbusy(self) -> None:
-        configured = {partid for partid, _ in self.settings.items()}
-        partids = sorted(
-            configured
-            | set(self._queues)
-            | set(self._cbusy_sample_bytes)
-            | set(self._cbusy_level)
-        )
         sample_ns = self.config.cbusy_sample_ns
-        for partid in partids:
+        for partid in self._known_partids():
             setting = self.settings.lookup(partid)
-            bandwidth = (
-                self._cbusy_sample_bytes[partid]
-                * 8.0
-                / max(sample_ns, 1e-9)
-            )
             bandwidth_ratio = (
-                bandwidth / setting.bw_max_gbps
+                self._filtered_bandwidth_gbps[partid]
+                / setting.bw_max_gbps
                 if (
                     setting.bmax_enable
                     and setting.bw_max_gbps is not None
@@ -640,14 +749,13 @@ class MemoryControllerMSC(Component):
                 else 0.0
             )
             queue_ratio = (
-                len(self._queues[partid])
+                self._partid_buffer_count(partid)
                 / max(1, self.config.queue_depth)
             )
             detected = self._detected_cbusy_level(
                 partid,
                 bandwidth_ratio,
                 queue_ratio,
-                self._cbusy_sample_hard_blocks[partid],
             )
             current = self._cbusy_level[partid]
             new_level = current
@@ -690,8 +798,6 @@ class MemoryControllerMSC(Component):
                     self._cbusy_interval_assertions[partid] += 1
                 self._publish_cbusy(partid, new_level)
 
-        self._cbusy_sample_bytes.clear()
-        self._cbusy_sample_hard_blocks.clear()
         self.kernel.schedule(
             sample_ns,
             self._evaluate_cbusy,
@@ -701,27 +807,32 @@ class MemoryControllerMSC(Component):
     def monitor_snapshot(self, interval_ns: float):
         utilization = min(
             1.0,
-            self._interval_busy_ns
-            / max(interval_ns, 1e-9),
+            self._interval_busy_ns / max(interval_ns, 1e-9),
         )
-        configured_partids = {
-            partid for partid, _ in self.settings.items()
-        }
         partids = sorted(
-            configured_partids
+            self._configured_partids()
             | set(self._interval_per_partid)
+            | set(self._filtered_bandwidth_gbps)
         )
         per_partid = {}
         for partid in partids:
-            values = dict(
-                self._interval_per_partid[partid]
-            )
+            values = dict(self._interval_per_partid[partid])
             setting = self.settings.lookup(partid)
             requests = int(values["requests"])
             effective_qos_avg = (
                 values["effective_qos_sum"] / requests
                 if requests
                 else 0.0
+            )
+            bmax = (
+                setting.bw_max_gbps
+                if self.enforce_controls and setting.bmax_enable
+                else None
+            )
+            bmin = (
+                setting.bw_min_gbps
+                if self.enforce_controls and setting.bmin_enable
+                else None
             )
             per_partid[str(partid)] = {
                 **values,
@@ -730,22 +841,27 @@ class MemoryControllerMSC(Component):
                     * 8.0
                     / max(interval_ns, 1e-9)
                 ),
-                "bmax_gbps": (
-                    setting.bw_max_gbps
-                    if (
-                        self.enforce_controls
-                        and setting.bmax_enable
-                    )
+                "raw_bandwidth_gbps": self._raw_bandwidth_gbps[partid],
+                "filtered_bandwidth_gbps": (
+                    self._filtered_bandwidth_gbps[partid]
+                ),
+                "bmax_gbps": bmax,
+                "bmin_gbps": bmin,
+                "bmax_assert_gbps": bmax,
+                "bmax_release_gbps": (
+                    bmax * (1.0 - self.config.bandwidth_hysteresis)
+                    if bmax is not None
                     else None
                 ),
-                "bmin_gbps": (
-                    setting.bw_min_gbps
-                    if (
-                        self.enforce_controls
-                        and setting.bmin_enable
-                    )
+                "bmin_assert_gbps": bmin,
+                "bmin_release_gbps": (
+                    bmin * (1.0 + self.config.bandwidth_hysteresis)
+                    if bmin is not None
                     else None
                 ),
+                "under_bmin": self._under_bmin[partid],
+                "over_bmax": self._over_bmax[partid],
+                "hard_block": self._hard_block[partid],
                 "limit_mode": (
                     setting.bw_limit_mode
                     if self.enforce_controls
@@ -753,10 +869,7 @@ class MemoryControllerMSC(Component):
                 ),
                 "base_qos": (
                     setting.mc_qos
-                    if (
-                        self.enforce_controls
-                        and setting.mc_qos_enable
-                    )
+                    if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
                 "effective_qos_avg": effective_qos_avg,
@@ -765,6 +878,16 @@ class MemoryControllerMSC(Component):
                 ),
                 "effective_qos_max": (
                     values["effective_qos_max"] if requests else 0
+                ),
+                "service_deficit": self._service_deficit[partid],
+                "service_deficit_qos_steps": (
+                    self._deficit_qos_steps(partid)
+                ),
+                "monitor_updates": self._monitor_updates[partid],
+                "buffer_entries": self._partid_buffer_count(partid),
+                "buffer_ratio": (
+                    self._partid_buffer_count(partid)
+                    / max(1, self.config.queue_depth)
                 ),
                 "configured_bmax_gbps": setting.bw_max_gbps,
                 "configured_bmin_gbps": setting.bw_min_gbps,
@@ -801,10 +924,14 @@ class MemoryControllerMSC(Component):
                     self._cbusy_interval_active_ns[partid]
                     / max(interval_ns, 1e-9),
                 ),
-                "cbusy_ostd_cap": self._cbusy_cap(
-                    partid,
-                    self._cbusy_level[partid],
-                ) if self._cbusy_level[partid] > 0 else None,
+                "cbusy_ostd_cap": (
+                    self._cbusy_cap(
+                        partid,
+                        self._cbusy_level[partid],
+                    )
+                    if self._cbusy_level[partid] > 0
+                    else None
+                ),
                 "cbusy_l1_ostd": setting.cbusy_l1_ostd,
                 "cbusy_l2_ostd": setting.cbusy_l2_ostd,
                 "cbusy_l3_ostd": setting.cbusy_l3_ostd,
@@ -814,9 +941,7 @@ class MemoryControllerMSC(Component):
 
         monitor_groups = {}
         for partid, pmg in sorted(self._interval_per_group):
-            values = dict(
-                self._interval_per_group[(partid, pmg)]
-            )
+            values = dict(self._interval_per_group[(partid, pmg)])
             bandwidth = (
                 values["bytes"]
                 * 8.0
@@ -829,6 +954,10 @@ class MemoryControllerMSC(Component):
                 "pmg": pmg,
                 **values,
                 "achieved_bandwidth_gbps": bandwidth,
+                "raw_bandwidth_gbps": self._raw_bandwidth_gbps[partid],
+                "filtered_bandwidth_gbps": (
+                    self._filtered_bandwidth_gbps[partid]
+                ),
                 "controller_bandwidth_gbps": self.total_bandwidth_gbps,
                 "bandwidth_utilization": min(
                     1.0,
@@ -836,18 +965,12 @@ class MemoryControllerMSC(Component):
                 ),
                 "bmax_gbps": (
                     setting.bw_max_gbps
-                    if (
-                        self.enforce_controls
-                        and setting.bmax_enable
-                    )
+                    if self.enforce_controls and setting.bmax_enable
                     else None
                 ),
                 "bmin_gbps": (
                     setting.bw_min_gbps
-                    if (
-                        self.enforce_controls
-                        and setting.bmin_enable
-                    )
+                    if self.enforce_controls and setting.bmin_enable
                     else None
                 ),
                 "limit_mode": (
@@ -857,10 +980,7 @@ class MemoryControllerMSC(Component):
                 ),
                 "base_qos": (
                     setting.mc_qos
-                    if (
-                        self.enforce_controls
-                        and setting.mc_qos_enable
-                    )
+                    if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
                 "effective_qos_avg": (
@@ -868,6 +988,9 @@ class MemoryControllerMSC(Component):
                     if requests
                     else 0.0
                 ),
+                "under_bmin": self._under_bmin[partid],
+                "over_bmax": self._over_bmax[partid],
+                "hard_block": self._hard_block[partid],
                 "bmax_enable": self.enforce_controls and setting.bmax_enable,
                 "bmin_enable": self.enforce_controls and setting.bmin_enable,
                 "mc_qos_enable": (
@@ -888,10 +1011,19 @@ class MemoryControllerMSC(Component):
                 self._queue_sample_sum
                 / max(1, self._queue_samples)
             ),
+            "queue_peak": self._peak_queue_length,
+            "queue_depth": self.config.queue_depth,
             "bytes": self._interval_bytes,
             "requests": self._interval_requests,
-            "token_bucket_window_ns": self.config.token_bucket_window_ns,
-            "aging_ns": self.config.aging_ns,
+            "clock_mhz": self.config.clock_mhz,
+            "monitor_period_cycles": self.config.monitor_period_cycles,
+            "monitor_period_ns": self.monitor_period_ns,
+            "history_weight": self.config.history_weight,
+            "current_weight": self.config.current_weight,
+            "bandwidth_hysteresis": self.config.bandwidth_hysteresis,
+            "aging_mode": self.config.aging_mode,
+            "aging_quantum_cycles": self.config.aging_quantum_cycles,
+            "aging_counter_bits": self.config.aging_counter_bits,
             "qos_aging_max_steps": self.config.qos_aging_max_steps,
             "bmin_qos_promote": self.config.bmin_qos_promote,
             "softlimit_qos_demote": self.config.softlimit_qos_demote,
@@ -904,6 +1036,7 @@ class MemoryControllerMSC(Component):
         self._interval_bytes = 0
         self._queue_sample_sum = 0
         self._queue_samples = 0
+        self._peak_queue_length = self.queue_length
         self._interval_per_partid.clear()
         self._interval_per_group.clear()
         self._cbusy_interval_transitions.clear()
@@ -915,4 +1048,7 @@ class MemoryControllerMSC(Component):
             self.kernel.now_ns,
             interval_ns,
             row,
+            local_cycle=int(
+                self.kernel.now_ns * self.config.clock_mhz / 1000.0
+            ),
         )

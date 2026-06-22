@@ -210,6 +210,10 @@ def default_parameters() -> Dict[str, object]:
         "l3_fill_buffer_entries": 16,
         "l3_merge_same_line_misses": True,
         "l3_replacement_policy": "lru",
+        "l3_clock_mhz": 1000,
+        "l3_monitor_period_cycles": 256,
+        "l3_history_weight": 192,
+        "l3_current_weight": 64,
         "noc_routers": 8,
         "noc_link_gbps": 256,
         "noc_router_latency_ns": 5,
@@ -225,6 +229,17 @@ def default_parameters() -> Dict[str, object]:
         "channel_bandwidth_gbps": 128,
         "mc_base_latency_ns": 80,
         "mc_queue_depth": 512,
+        "mc_interleave_mode": "linear",
+        "mc_interleave_granularity_bytes": 256,
+        "mc_interleave_xor_shift": 12,
+        "mc_clock_mhz": 1000,
+        "mc_monitor_period_cycles": 256,
+        "mc_history_weight": 192,
+        "mc_current_weight": 64,
+        "mc_bandwidth_hysteresis": 0.05,
+        "mc_aging_mode": "none",
+        "mc_aging_quantum_cycles": 256,
+        "mc_aging_counter_bits": 3,
         "mc_token_bucket_window_ns": 100,
         "mc_aging_ns": 500,
         "mc_qos_aging_max_steps": 3,
@@ -641,6 +656,22 @@ def build_config(
         raise ParameterError(
             "PLRU requires l3_ways to be a power of two"
         )
+    l3_clock_mhz = _number(
+        values, "l3_clock_mhz", 1000, 1, 10_000
+    )
+    l3_monitor_period_cycles = _integer(
+        values, "l3_monitor_period_cycles", 256, 1, 1_000_000
+    )
+    l3_history_weight = _integer(
+        values, "l3_history_weight", 192, 0, 256
+    )
+    l3_current_weight = _integer(
+        values, "l3_current_weight", 64, 0, 256
+    )
+    if l3_history_weight + l3_current_weight != 256:
+        raise ParameterError(
+            "L3 history_weight + current_weight must equal 256"
+        )
     noc_routers = _integer(
         values, "noc_routers", 8, 1, 64
     )
@@ -704,6 +735,60 @@ def build_config(
     )
     mc_queue_depth = _integer(
         values, "mc_queue_depth", 512, 1, 8192
+    )
+    mc_interleave_mode = _choice(
+        values,
+        "mc_interleave_mode",
+        "linear",
+        ["linear", "xor"],
+    )
+    mc_interleave_granularity_bytes = _integer(
+        values,
+        "mc_interleave_granularity_bytes",
+        256,
+        1,
+        1 << 30,
+    )
+    if (
+        mc_interleave_granularity_bytes
+        & (mc_interleave_granularity_bytes - 1)
+    ):
+        raise ParameterError(
+            "MC interleave granularity must be a power of two"
+        )
+    mc_interleave_xor_shift = _integer(
+        values, "mc_interleave_xor_shift", 12, 0, 63
+    )
+    mc_clock_mhz = _number(
+        values, "mc_clock_mhz", 1000, 1, 10_000
+    )
+    mc_monitor_period_cycles = _integer(
+        values, "mc_monitor_period_cycles", 256, 1, 1_000_000
+    )
+    mc_history_weight = _integer(
+        values, "mc_history_weight", 192, 0, 256
+    )
+    mc_current_weight = _integer(
+        values, "mc_current_weight", 64, 0, 256
+    )
+    if mc_history_weight + mc_current_weight != 256:
+        raise ParameterError(
+            "MC history_weight + current_weight must equal 256"
+        )
+    mc_bandwidth_hysteresis = _number(
+        values, "mc_bandwidth_hysteresis", 0.05, 0, 0.999999
+    )
+    mc_aging_mode = _choice(
+        values,
+        "mc_aging_mode",
+        "none",
+        ["none", "per_partid_service_deficit"],
+    )
+    mc_aging_quantum_cycles = _integer(
+        values, "mc_aging_quantum_cycles", 256, 1, 1_000_000
+    )
+    mc_aging_counter_bits = _integer(
+        values, "mc_aging_counter_bits", 3, 1, 16
     )
     mc_token_bucket_window_ns = _number(
         values, "mc_token_bucket_window_ns", 100, 0.1, 1_000_000
@@ -888,6 +973,10 @@ def build_config(
                 l3_merge_same_line_misses
             ),
             "replacement_policy": l3_replacement_policy,
+            "clock_mhz": l3_clock_mhz,
+            "monitor_period_cycles": l3_monitor_period_cycles,
+            "history_weight": l3_history_weight,
+            "current_weight": l3_current_weight,
             "shared_by_cores": cache_core_map[cache_id],
         }
         for cache_id in cache_core_map
@@ -900,6 +989,14 @@ def build_config(
             "scheduler": "priority_rr",
             "queue_depth": mc_queue_depth,
             "base_latency_ns": mc_base_latency_ns,
+            "clock_mhz": mc_clock_mhz,
+            "monitor_period_cycles": mc_monitor_period_cycles,
+            "history_weight": mc_history_weight,
+            "current_weight": mc_current_weight,
+            "bandwidth_hysteresis": mc_bandwidth_hysteresis,
+            "aging_mode": mc_aging_mode,
+            "aging_quantum_cycles": mc_aging_quantum_cycles,
+            "aging_counter_bits": mc_aging_counter_bits,
             "token_bucket_window_ns": mc_token_bucket_window_ns,
             "aging_ns": mc_aging_ns,
             "qos_aging_max_steps": mc_qos_aging_max_steps,
@@ -1020,7 +1117,14 @@ def build_config(
                 ],
             },
             "memory": {
-                "controllers": memory_controllers
+                "controllers": memory_controllers,
+                "interleave": {
+                    "mode": mc_interleave_mode,
+                    "granularity_bytes": (
+                        mc_interleave_granularity_bytes
+                    ),
+                    "xor_shift": mc_interleave_xor_shift,
+                },
             },
         },
         "requesters": {

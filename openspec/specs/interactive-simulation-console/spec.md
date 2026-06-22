@@ -273,3 +273,22 @@ PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBu
 
 - **WHEN** 用户指向MSHR、fill或merge配置
 - **THEN** 显示分配、等待、合并、owner、完成、前向进展和监控证据
+
+### Requirement: MC周期控制配置和证据
+
+控制台 MUST 配置MC clock、256拍周期、filter weights、滞回和service deficit，并显示
+raw/filtered BW、UNDER/OVER/HARD状态、candidate、grant和QoS饱和。
+
+#### Scenario: 查看Hard BMAX说明
+
+- **WHEN** 用户指向hard limit或MC monitor配置
+- **THEN** 说明上一周期输入、过冲、整周期门控、滞回释放和buffer增长
+
+### Requirement: 目标和监控平面时间证据
+
+控制台 MUST 对所选一个或多个PARTID显示目标、physical actual、raw MPAM、filtered MPAM和控制状态。
+
+#### Scenario: 多PARTID对比
+
+- **WHEN** 用户选择多个PARTID
+- **THEN** 图例使用PARTID颜色和信号线型共同区分曲线，且disabled不显示为0

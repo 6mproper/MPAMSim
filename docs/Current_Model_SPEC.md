@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档状态 | 已确认的目标架构与实现基线 |
-| 文档日期 | 2026-06-21 |
-| 当前代码基线 | `85721e3`，后续提交仅更新规格文档 |
+| 文档日期 | 2026-06-22 |
+| 当前代码基线 | `943494c`之后的原位迁移实现 |
 | 仿真方法 | 确定性离散事件仿真 |
 | 参考拓扑 | 8核、每核2线程、16个硬件线程、16个PARTID |
 | 研究重点 | 系统流控、MPAM监控与控制、控制动态和PPA折中 |
@@ -1374,7 +1374,7 @@ validation_level: basic | full
 
 ## 17. 当前实现状态
 
-当前代码仍是原型，尚未实现本文全部目标。
+当前代码仍在按第19章迁移，但CPU、Ring、真实L3和MC共享buffer主数据面已经替换。
 
 ### 17.1 可保留基础
 
@@ -1400,6 +1400,16 @@ validation_level: basic | full
 - MSHR同line read合并、fill buffer readiness和fill延迟；
 - CPBM/CMIN/CMAX、actual occupancy和1/8抽样监控共享同一line状态；
 - actual与sample估计误差、merge、fill、eviction和bypass证据。
+- L3独立clock、256拍raw/filtered owner和访问带宽监控；
+- CMIN/CMAX只读取上一发布filtered sampled-owner，physical actual仅观测；
+- linear/XOR地址到MC交织，在CPU OSTD准入前确定home MC。
+- 每MC固定深度共享buffer和全深度ready候选；
+- 同line read/read可重排，任何含write的较新事务等待较老事务；
+- 3-bit base/effective QoS和同档rotating slot scan；
+- 每256个MC本地拍发布raw/filtered带宽，BMIN/BMAX读取上一发布值；
+- BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
+- 可选每PARTID饱和service-deficit计数器；
+- CBusy读取每PARTID buffer占用、filtered BW和hard状态。
 
 ### 17.2 仍需替换或补全
 
@@ -1408,10 +1418,10 @@ validation_level: basic | full
 | CPU | 已实现两级OSTD、三种Core策略、目标MC限制和REQ Ring准入；尚无可配源队列深度 | 接入依赖链和eligible scan |
 | 激励 | type混合多个维度 | 地址、操作、依赖、到达正交配置 |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
-| L3 | 已实现真实set/tag/way、MSHR、fill和抽样误差；CMIN/CMAX仍读即时抽样值 | 改为读取上一256拍发布的滤波MPAM监控值 |
-| MC | 每PARTID FIFO头、token bucket | 共享buffer全候选QoS和周期门控 |
+| L3 | 已实现真实set/tag/way、MSHR、fill、physical/raw/filtered抽样误差和上一256拍CMIN/CMAX输入 | 后续增加跨line child transaction和更完整本地监控事件导出 |
+| MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS和周期BMIN/BMAX | 后续增加DRAM ready mask和RSP/DAT旁带CBusy |
 | CBusy | 已按目标MC隔离，但仍由直接延迟事件送达 | 双时间尺度、RSP/DAT旁带反馈 |
-| 监控 | interval聚合已接入类型化样本和因果事件，尚无完整raw/filtered时序 | actual/raw/filtered和因果事件 |
+| 监控 | L3/MC快照已包含actual/raw/filtered和local cycle，但历史仍按全局导出周期保存 | 保存每个资源本地监控周期和稳定因果ID |
 | UI | 多页签和大表 | 配置驱动单工作区 |
 
 ### 17.3 已被目标规格取代

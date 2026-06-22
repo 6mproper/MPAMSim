@@ -71,6 +71,10 @@
               </select>
             </label>
             <label class="toggle-field"><span>同 Line Read 合并</span><input data-param="l3_merge_same_line_misses" type="checkbox" checked></label>
+            <label data-algorithm="l3-cmax">L3 Clock MHz<input data-param="l3_clock_mhz" type="number" min="1" max="10000" step="1"></label>
+            <label data-algorithm="l3-cmax">监控周期 cycles<input data-param="l3_monitor_period_cycles" type="number" min="1" max="1000000" step="1"></label>
+            <label data-algorithm="l3-cmax">History Weight<input data-param="l3_history_weight" type="number" min="0" max="256" step="1"></label>
+            <label data-algorithm="l3-cmax">Current Weight<input data-param="l3_current_weight" type="number" min="0" max="256" step="1"></label>
           </div>
 
           <h2>NoC</h2>
@@ -99,6 +103,9 @@
             <label>单通道 Gbps<input data-param="channel_bandwidth_gbps" type="number" min="1" max="2048" step="1"></label>
             <label>基础延迟 ns<input data-param="mc_base_latency_ns" type="number" min="1" max="2000" step="1"></label>
             <label>请求队列深度<input data-param="mc_queue_depth" type="number" min="1" max="8192" step="1"></label>
+            <label>地址交织<select data-param="mc_interleave_mode"><option value="linear">Linear</option><option value="xor">XOR</option></select></label>
+            <label>交织粒度 bytes<input data-param="mc_interleave_granularity_bytes" type="number" min="1" max="1073741824" step="1"></label>
+            <label>XOR Shift<input data-param="mc_interleave_xor_shift" type="number" min="0" max="63" step="1"></label>
           </div>
         </section>
 
@@ -177,9 +184,15 @@
           </div>
           <h2>MC 调度算法参数</h2>
           <div class="field-grid">
-            <label>Token 窗口 ns<input data-param="mc_token_bucket_window_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
-            <label>Aging 周期 ns<input data-param="mc_aging_ns" type="number" min="0.1" max="1000000" step="0.1"></label>
-            <label data-algorithm="mc-qos">Aging 最大升档<input data-param="mc_qos_aging_max_steps" type="number" min="0" max="7" step="1"></label>
+            <label data-algorithm="mc-bmax">MC Clock MHz<input data-param="mc_clock_mhz" type="number" min="1" max="10000" step="1"></label>
+            <label data-algorithm="mc-bmax">监控周期 cycles<input data-param="mc_monitor_period_cycles" type="number" min="1" max="1000000" step="1"></label>
+            <label data-algorithm="mc-bmax">History Weight<input data-param="mc_history_weight" type="number" min="0" max="256" step="1"></label>
+            <label data-algorithm="mc-bmax">Current Weight<input data-param="mc_current_weight" type="number" min="0" max="256" step="1"></label>
+            <label data-algorithm="mc-bmax">带宽滞回比例<input data-param="mc_bandwidth_hysteresis" type="number" min="0" max="0.99" step="0.01"></label>
+            <label data-algorithm="mc-qos">防饥饿模式<select data-param="mc_aging_mode"><option value="none">关闭</option><option value="per_partid_service_deficit">PARTID Service Deficit</option></select></label>
+            <label data-algorithm="mc-qos">Deficit 周期 cycles<input data-param="mc_aging_quantum_cycles" type="number" min="1" max="1000000" step="1"></label>
+            <label data-algorithm="mc-qos">Deficit 计数位宽<input data-param="mc_aging_counter_bits" type="number" min="1" max="16" step="1"></label>
+            <label data-algorithm="mc-qos">Deficit 最大升档<input data-param="mc_qos_aging_max_steps" type="number" min="0" max="7" step="1"></label>
             <label data-algorithm="mc-qos">BMIN QoS 升档<input data-param="mc_bmin_qos_promote" type="number" min="0" max="7" step="1"></label>
             <label data-algorithm="mc-qos">Softlimit QoS 降档<input data-param="mc_softlimit_qos_demote" type="number" min="0" max="7" step="1"></label>
           </div>
@@ -209,13 +222,13 @@
         <div class="flow-path">
           <div class="flow-stage" data-stage="0"><b>PE</b><span>Requester</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="1"><b>NoC</b><span>Queue / VC</span></div>
+          <div class="flow-stage" data-stage="1"><b>NoC</b><span>Bufferless Rings</span></div>
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="2" data-algorithm="l3-allocation"><b>L3</b><span>Portion MSC</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="3" data-algorithm="mc-bmax"><b>MC</b><span>Token bucket</span></div>
+          <div class="flow-stage" data-stage="3" data-algorithm="mc-bmax"><b>MC</b><span>Shared Buffer</span></div>
           <div class="flow-arrow">→</div>
-          <div class="flow-stage" data-stage="4" data-algorithm="mc-qos"><b>Scheduler</b><span>QoS / aging</span></div>
+          <div class="flow-stage" data-stage="4" data-algorithm="mc-qos"><b>Scheduler</b><span>3-bit QoS / RR</span></div>
           <div class="flow-arrow">→</div>
           <div class="flow-stage" data-stage="5"><b>Monitor</b><span>Feedback</span></div>
         </div>
