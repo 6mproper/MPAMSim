@@ -603,8 +603,8 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "1000表示每1 us重新检测一次。",
     ),
     "cbusy_feedback_latency_ns": _field(
-        "CBusy反馈传播延迟",
-        "MC档位变化到CPU requester可见之间的模型延迟。",
+        "CBusy反馈传播延迟（已弃用）",
+        "已由RSP/DAT返回旁带替代。保留该字段仅用于旧配置兼容，值不再被MC读取。",
         "ns",
         "CBusy事件发布路径。",
         "增大会增加队列过冲和RN持有旧档位的时间。",

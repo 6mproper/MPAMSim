@@ -187,9 +187,6 @@ class Simulation:
         self._request_id = 0
         self._interval_index = 0
         self._control_event_sequence = 0
-        self._delivered_cbusy_levels: Dict[
-            tuple, int
-        ] = {}
         self._progress_callback: Optional[
             Callable[[float, MetricsCollector], None]
         ] = None
@@ -234,7 +231,6 @@ class Simulation:
                 mc,
                 self.settings_tables[mc.id],
                 self._memory_service_complete,
-                on_cbusy=self._cbusy_feedback,
                 enforce_controls=self.enforce_controls,
             )
             for mc in config.memory_controllers
@@ -470,39 +466,37 @@ class Simulation:
             request.partid,
             request.memory_controller_id,
         )
+        if request.memory_controller_id:
+            mc = self.memory_controllers[request.memory_controller_id]
+            cbusy = request.carry_cbusy_level
+            cap = mc._cbusy_cap(request.partid, cbusy)
+            for requester in self.requesters.values():
+                if request.partid in requester.configured_partids:
+                    old_level = requester.cbusy_level(
+                        request.partid,
+                        request.memory_controller_id,
+                    )
+                    requester.set_cbusy(
+                        request.memory_controller_id,
+                        request.partid,
+                        cbusy,
+                        cap,
+                    )
+                    if cbusy != old_level:
+                        self.collector.record_control(
+                            self._control_event(
+                                resource_id=request.memory_controller_id,
+                                partid=request.partid,
+                                event_type="cbusy_update",
+                                field="cbusy_level",
+                                old_state=old_level,
+                                new_state=cbusy,
+                                policy="mc_cbusy",
+                                reason=f"carried on return, OSTD cap {cap}",
+                                details={"carry_level": cbusy, "ostd_cap": cap},
+                            )
+                        )
         self.collector.on_complete(request, self.kernel.now_ns)
-
-    def _cbusy_feedback(
-        self,
-        msc_id: str,
-        partid: int,
-        level: int,
-        cap: int,
-    ) -> None:
-        key = (msc_id, partid)
-        old_level = self._delivered_cbusy_levels.get(key, 0)
-        self._delivered_cbusy_levels[key] = level
-        self.collector.record_control(
-            self._control_event(
-                resource_id=msc_id,
-                partid=partid,
-                event_type="feedback_delivered",
-                field="cbusy_level",
-                old_state=old_level,
-                new_state=level,
-                policy="mc_cbusy",
-                reason=f"effective OSTD cap {cap}",
-                details={"effective_ostd_cap": cap},
-            )
-        )
-        for requester in self.requesters.values():
-            if partid in requester.configured_partids:
-                requester.set_cbusy(
-                    msc_id,
-                    partid,
-                    level,
-                    cap,
-                )
 
     def _control_interval(self) -> None:
         self._interval_index += 1

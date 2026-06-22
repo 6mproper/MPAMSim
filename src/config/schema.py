@@ -84,6 +84,8 @@ class MemoryControllerConfig:
     bmin_qos_promote: int = 2
     softlimit_qos_demote: int = 2
     cbusy_sample_ns: float = 1_000.0
+    # Deprecated: CBusy now carried on RSP/DAT return sideband.
+    # Retained for schema compatibility; value is not read by MC.
     cbusy_feedback_latency_ns: float = 50.0
     cbusy_release_hold_samples: int = 3
     cbusy_l1_bw_ratio: float = 1.0

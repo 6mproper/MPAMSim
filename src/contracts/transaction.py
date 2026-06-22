@@ -123,6 +123,7 @@ class Transaction:
         default_factory=McArbitrationState
     )
     cache_hit: bool = False
+    carry_cbusy_level: int = 0
 
     def __setattr__(self, name: str, value: object) -> None:
         declared = name in getattr(type(self), "__dataclass_fields__", {})

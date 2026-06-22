@@ -199,7 +199,7 @@
           <h2>CBusy 快反馈</h2>
           <div class="field-grid">
             <label>采样周期 ns<input data-param="cbusy_sample_ns" type="number" min="1" max="1000000" step="10"></label>
-            <label>反馈延迟 ns<input data-param="cbusy_feedback_latency_ns" type="number" min="0" max="100000" step="1"></label>
+            <label title="已弃用：CBusy现随RSP/DAT返回携带">反馈延迟 ns（已弃用）<input data-param="cbusy_feedback_latency_ns" type="number" min="0" max="100000" step="1" disabled></label>
             <label>释放保持 samples<input data-param="cbusy_release_hold_samples" type="number" min="1" max="1000" step="1"></label>
             <label>L1 BW 比<input data-param="cbusy_l1_bw_ratio" type="number" min="0.01" max="10" step="0.01"></label>
             <label>L2 BW 比<input data-param="cbusy_l2_bw_ratio" type="number" min="0.01" max="10" step="0.01"></label>
