@@ -13,7 +13,7 @@ from src.monitor.collector import MetricsCollector
 from src.monitor.exporter import write_csv, write_json
 from src.monitor.report import render_report
 from src.mpam.settings import SettingsTable
-from src.noc.fabric import NocFabric
+from src.noc.fabric import CallbackEndpoint, NocFabric
 from src.scheduler.factory import build_policies
 from src.traffic.generator import WorkloadGenerator
 from src.traffic.request import Request
@@ -207,13 +207,33 @@ class Simulation:
                 for mc in config.memory_controllers
             }
         )
-        self.noc = NocFabric(self.kernel, config.noc)
+        required_ring_nodes = [
+            *(f"r{index}" for index in range(config.noc.routers)),
+            *(cache.id for cache in config.caches),
+            *(mc.id for mc in config.memory_controllers),
+        ]
+        ring_node_order = tuple(
+            config.noc.ring_node_order or required_ring_nodes
+        )
+        missing_ring_nodes = set(required_ring_nodes) - set(
+            ring_node_order
+        )
+        if missing_ring_nodes:
+            raise ValueError(
+                "ring_node_order misses required nodes: "
+                f"{sorted(missing_ring_nodes)}"
+            )
+        self.noc = NocFabric(
+            self.kernel,
+            config.noc,
+            ring_node_order,
+        )
         self.memory_controllers = {
             mc.id: MemoryControllerMSC(
                 self.kernel,
                 mc,
                 self.settings_tables[mc.id],
-                self._complete,
+                self._memory_service_complete,
                 on_cbusy=self._cbusy_feedback,
                 enforce_controls=self.enforce_controls,
             )
@@ -225,7 +245,7 @@ class Simulation:
                 cache,
                 self.settings_tables[cache.id],
                 config.simulation.seed + 100 + index,
-                self._complete,
+                self._cache_hit_complete,
                 self._cache_miss,
                 enforce_controls=self.enforce_controls,
             )
@@ -269,6 +289,19 @@ class Simulation:
                         seed=self.config.simulation.seed + 1000 + seed_offset,
                         next_request_id=self._next_request_id,
                         submit=self._submit,
+                        can_submit=(
+                            lambda requester_id=requester_id:
+                            self._can_submit(requester_id)
+                        ),
+                        on_submit_backpressure=(
+                            lambda partid, delay_ns,
+                            requester_id=requester_id:
+                            self._record_source_ring_backpressure(
+                                requester_id,
+                                partid,
+                                delay_ns,
+                            )
+                        ),
                         resolve_destination_mc=(
                             lambda address, requester_id=requester_id:
                             self._destination_mc_for(
@@ -307,16 +340,56 @@ class Simulation:
         ) % len(self.config.memory_controllers)
         return self.config.memory_controllers[index].id
 
-    def _submit(self, request: Request) -> None:
+    def _requester_cache_id(self, requester_id: str) -> str:
+        requester = self.config.requester_by_id[requester_id]
+        return self.config.core_to_cache.get(
+            requester.core or "",
+            self.config.caches[0].id,
+        )
+
+    def _can_submit(self, requester_id: str) -> bool:
+        requester = self.config.requester_by_id[requester_id]
+        return self.noc.can_inject(
+            requester.attach_node,
+            self._requester_cache_id(requester_id),
+            "req",
+        )
+
+    def _record_source_ring_backpressure(
+        self,
+        requester_id: str,
+        partid: int,
+        delay_ns: float,
+    ) -> None:
+        requester = self.config.requester_by_id[requester_id]
+        cache_id = self._requester_cache_id(requester_id)
+        self.noc.record_injection_backpressure(
+            partid,
+            delay_ns,
+            "req",
+            self.noc.route_direction(
+                requester.attach_node,
+                cache_id,
+            ),
+            requester.attach_node,
+        )
+
+    def _submit(self, request: Request) -> bool:
         requester = self.config.requester_by_id[request.requester_id]
-        cache_id = self.config.core_to_cache.get(requester.core or "", self.config.caches[0].id)
+        cache_id = self._requester_cache_id(request.requester_id)
         request.cache_id = cache_id
         request.destination_node = cache_id
         request.set_line_size(
             self.config.cache_by_id[cache_id].line_size
         )
         cache = self.caches[cache_id]
-        self.noc.receive(request, cache.receive)
+        return self.noc.transmit(
+            request,
+            "req",
+            cache,
+            source_node=requester.attach_node,
+            destination_node=cache_id,
+        )
 
     def _cache_miss(self, request: Request) -> None:
         mc_id = (
@@ -328,7 +401,79 @@ class Simulation:
         )
         request.memory_controller_id = mc_id
         request.destination_node = mc_id
-        self.memory_controllers[mc_id].receive(request)
+        self._transmit_with_retry(
+            request,
+            "req",
+            source_node=request.cache_id,
+            destination_node=mc_id,
+            downstream=self.memory_controllers[mc_id],
+        )
+
+    def _response_channel(self, request: Request) -> str:
+        return "dat" if request.op == "read" else "rsp"
+
+    def _cache_hit_complete(self, request: Request) -> None:
+        requester = self.config.requester_by_id[request.requester_id]
+        self._transmit_with_retry(
+            request,
+            self._response_channel(request),
+            source_node=request.cache_id,
+            destination_node=requester.attach_node,
+            downstream=CallbackEndpoint(self._complete),
+        )
+
+    def _memory_service_complete(self, request: Request) -> None:
+        self._transmit_with_retry(
+            request,
+            self._response_channel(request),
+            source_node=request.memory_controller_id,
+            destination_node=request.cache_id,
+            downstream=CallbackEndpoint(self._cache_return),
+        )
+
+    def _cache_return(self, request: Request) -> None:
+        requester = self.config.requester_by_id[request.requester_id]
+        self._transmit_with_retry(
+            request,
+            self._response_channel(request),
+            source_node=request.cache_id,
+            destination_node=requester.attach_node,
+            downstream=CallbackEndpoint(self._complete),
+        )
+
+    def _transmit_with_retry(
+        self,
+        request: Request,
+        channel: str,
+        *,
+        source_node: str,
+        destination_node: str,
+        downstream,
+    ) -> None:
+        if self.noc.transmit(
+            request,
+            channel,
+            downstream,
+            source_node=source_node,
+            destination_node=destination_node,
+        ):
+            return
+        retry_ns = self.noc.hop_delay_ns
+        if channel == "req":
+            request.timing.req_ring_delay_ns += retry_ns
+        else:
+            request.timing.rsp_dat_ring_delay_ns += retry_ns
+        self.kernel.schedule(
+            retry_ns,
+            lambda: self._transmit_with_retry(
+                request,
+                channel,
+                source_node=source_node,
+                destination_node=destination_node,
+                downstream=downstream,
+            ),
+            f"{channel}-ring-injection-retry",
+        )
 
     def _complete(self, request: Request) -> None:
         self.requesters[request.requester_id].on_completion(

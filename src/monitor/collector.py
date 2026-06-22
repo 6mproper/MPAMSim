@@ -31,7 +31,10 @@ class PartidStats:
         self.requests += 1
         self.bytes += request.size_bytes
         self.latencies.append(latency)
-        self.noc_delay_ns += request.noc_delay_ns
+        self.noc_delay_ns += (
+            request.timing.req_ring_delay_ns
+            + request.timing.rsp_dat_ring_delay_ns
+        )
         self.cache_delay_ns += request.cache_delay_ns
         self.cache_queue_delay_ns += request.cache_queue_delay_ns
         self.mem_queue_delay_ns += request.mem_queue_delay_ns
@@ -124,6 +127,12 @@ class MetricsCollector:
                             request.mc_arbitration.soft_demoted
                         ),
                         "noc_delay_ns": request.noc_delay_ns,
+                        "req_ring_delay_ns": (
+                            request.timing.req_ring_delay_ns
+                        ),
+                        "rsp_dat_ring_delay_ns": (
+                            request.timing.rsp_dat_ring_delay_ns
+                        ),
                         "cache_delay_ns": request.cache_delay_ns,
                         "cache_queue_delay_ns": request.cache_queue_delay_ns,
                         "mem_queue_delay_ns": request.mem_queue_delay_ns,

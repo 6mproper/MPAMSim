@@ -107,6 +107,40 @@ def validate_config(config: ProjectConfig) -> None:
     _ensure_unique(cores, "core")
 
     router_ids = {f"r{index}" for index in range(config.noc.routers)}
+    if config.noc.clock_mhz <= 0:
+        raise ConfigError("noc clock_mhz must be positive")
+    if config.noc.flit_bytes <= 0:
+        raise ConfigError("noc flit_bytes must be positive")
+    if config.noc.link_slots_per_direction <= 0:
+        raise ConfigError(
+            "noc link_slots_per_direction must be positive"
+        )
+    if config.noc.hop_latency_cycles <= 0:
+        raise ConfigError(
+            "noc hop_latency_cycles must be positive"
+        )
+    if config.noc.tie_direction not in {"cw", "ccw"}:
+        raise ConfigError("noc tie_direction must be cw or ccw")
+    if (
+        config.noc.ring_node_order
+        and len(set(config.noc.ring_node_order))
+        != len(config.noc.ring_node_order)
+    ):
+        raise ConfigError("noc ring_node_order must be unique")
+    if config.noc.ring_node_order:
+        required_ring_nodes = (
+            router_ids
+            | cache_ids
+            | set(config.mc_by_id)
+        )
+        missing = required_ring_nodes - set(
+            config.noc.ring_node_order
+        )
+        if missing:
+            raise ConfigError(
+                "noc ring_node_order misses required nodes: "
+                f"{sorted(missing)}"
+            )
     for requester in config.requesters:
         if requester.max_outstanding <= 0:
             raise ConfigError(f"Requester {requester.id} max_outstanding must be positive")

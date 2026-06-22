@@ -1392,14 +1392,18 @@ validation_level: basic | full
 - `shared`、`static_partition`和`reserve_borrow` Core策略；
 - 按`(PARTID, home MC)`保存CBusy反馈、准入计数和stall；
 - `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。
+- REQ、RSP、DAT三条独立双向bufferless ring；
+- 最短方向、固定tie、逐hop移动、目的端拒绝绕行和DAT重组；
+- Ring按channel、方向、link、node和PARTID导出flit及反压证据；
+- CPU在分配TxnID和OSTD前检查REQ源link槽。
 
 ### 17.2 仍需替换或补全
 
 | 模块 | 当前原型 | 目标 |
 | --- | --- | --- |
-| CPU | 已实现两级OSTD、三种Core策略、目标MC限制；尚无源队列深度和REQ Ring许可 | 接入源队列、依赖链、eligible scan和Ring注入准入 |
+| CPU | 已实现两级OSTD、三种Core策略、目标MC限制和REQ Ring准入；尚无可配源队列深度 | 接入依赖链和eligible scan |
 | 激励 | type混合多个维度 | 地址、操作、依赖、到达正交配置 |
-| NoC | 单FIFO/序列化链路 | 三条双向bufferless ring |
+| NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
 | L3 | 概率命中和采样way状态 | 全set/tag/way、MSHR和fill |
 | MC | 每PARTID FIFO头、token bucket | 共享buffer全候选QoS和周期门控 |
 | CBusy | 已按目标MC隔离，但仍由直接延迟事件送达 | 双时间尺度、RSP/DAT旁带反馈 |

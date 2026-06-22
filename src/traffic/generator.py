@@ -29,7 +29,9 @@ class WorkloadGenerator:
         requester_count: int,
         seed: int,
         next_request_id: Callable[[], int],
-        submit: Callable[[Request], None],
+        submit: Callable[[Request], bool],
+        can_submit: Callable[[], bool],
+        on_submit_backpressure: Callable[[int, float], None],
         resolve_destination_mc: Callable[[int], str],
         default_priority: int,
     ) -> None:
@@ -38,6 +40,8 @@ class WorkloadGenerator:
         self.requester = requester
         self.next_request_id = next_request_id
         self.submit = submit
+        self.can_submit = can_submit
+        self.on_submit_backpressure = on_submit_backpressure
         self.resolve_destination_mc = resolve_destination_mc
         self.default_priority = default_priority
         self.rng = random.Random(seed)
@@ -142,6 +146,27 @@ class WorkloadGenerator:
                 f"retry:{self.workload.name}",
             )
             return
+        if not self.can_submit():
+            retry_ns = min(
+                max(0.001, self._interval_ns),
+                10.0,
+            )
+            self.requester.on_backpressure(
+                self.workload.partid,
+                pending.memory_controller_id,
+                retry_ns,
+                "req_ring",
+            )
+            self.on_submit_backpressure(
+                self.workload.partid,
+                retry_ns,
+            )
+            self.kernel.schedule(
+                retry_ns,
+                self._issue,
+                f"ring-retry:{self.workload.name}",
+            )
+            return
 
         request = Request(
             transaction_id=self.next_request_id(),
@@ -167,7 +192,10 @@ class WorkloadGenerator:
             pending.memory_controller_id,
         )
         self._pending = None
-        self.submit(request)
+        if not self.submit(request):
+            raise RuntimeError(
+                "REQ Ring admission changed after successful preflight"
+            )
         next_time = self.kernel.now_ns + self._sample_interval()
         if math.isfinite(next_time) and next_time < self._stop_ns:
             self.kernel.schedule_at(next_time, self._issue, f"issue:{self.workload.name}")

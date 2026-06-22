@@ -69,6 +69,16 @@
             <label>Router 延迟 ns<input data-param="noc_router_latency_ns" type="number" min="0.1" max="500" step="0.1"></label>
             <label>队列深度<input data-param="noc_queue_depth" type="number" min="1" max="4096" step="1"></label>
             <label>虚通道数<input data-param="noc_virtual_channels" type="number" min="1" max="16" step="1"></label>
+            <label>Ring 时钟 MHz<input data-param="noc_clock_mhz" type="number" min="1" max="10000" step="1"></label>
+            <label>Flit bytes<input data-param="noc_flit_bytes" type="number" min="4" max="256" step="4"></label>
+            <label>每方向链路槽<input data-param="noc_link_slots_per_direction" type="number" min="1" max="64" step="1"></label>
+            <label>每 Hop 周期<input data-param="noc_hop_latency_cycles" type="number" min="1" max="100" step="1"></label>
+            <label>等距方向
+              <select data-param="noc_tie_direction">
+                <option value="cw">顺时针</option>
+                <option value="ccw">逆时针</option>
+              </select>
+            </label>
           </div>
 
           <h2>Memory Controller</h2>
@@ -287,6 +297,7 @@
           <div class="resource-monitor-toolbar">
             <div class="resource-tabs" role="tablist" aria-label="监控资源">
               <button class="resource-tab active" data-resource-view="cpu" data-help="查看每个 PARTID 的 Thread OSTD、共享 Core 池、按目标 MC 分开的 OSTD/CBusy、完成和源端背压。">CPU</button>
+              <button class="resource-tab" data-resource-view="ring" data-help="查看REQ/RSP/DAT三条双向bufferless Ring的flit注入、槽占用、下Ring失败和绕行。">Ring</button>
               <button class="resource-tab" data-resource-view="l3" data-help="查看每个 PARTID 在所有 L3 实例上的抽样占用、带宽和缓存控制状态。">L3</button>
               <button class="resource-tab" data-resource-view="mc" data-help="查看每个 PARTID 在所有内存控制器上的带宽、排队、限速和调度状态。">MC</button>
             </div>

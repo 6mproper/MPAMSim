@@ -209,6 +209,11 @@ def default_parameters() -> Dict[str, object]:
         "noc_router_latency_ns": 5,
         "noc_queue_depth": 64,
         "noc_virtual_channels": 4,
+        "noc_clock_mhz": 1000,
+        "noc_flit_bytes": 16,
+        "noc_link_slots_per_direction": 1,
+        "noc_hop_latency_cycles": 1,
+        "noc_tie_direction": "cw",
         "memory_controllers": 2,
         "channels_per_mc": 2,
         "channel_bandwidth_gbps": 128,
@@ -617,6 +622,32 @@ def build_config(
     noc_virtual_channels = _integer(
         values, "noc_virtual_channels", 4, 1, 16
     )
+    noc_clock_mhz = _number(
+        values, "noc_clock_mhz", 1000, 1, 10_000
+    )
+    noc_flit_bytes = _integer(
+        values, "noc_flit_bytes", 16, 4, 256
+    )
+    noc_link_slots_per_direction = _integer(
+        values,
+        "noc_link_slots_per_direction",
+        1,
+        1,
+        64,
+    )
+    noc_hop_latency_cycles = _integer(
+        values,
+        "noc_hop_latency_cycles",
+        1,
+        1,
+        100,
+    )
+    noc_tie_direction = _choice(
+        values,
+        "noc_tie_direction",
+        "cw",
+        ["cw", "ccw"],
+    )
     mc_count = _integer(
         values, "memory_controllers", 2, 1, 8
     )
@@ -914,7 +945,7 @@ def build_config(
             },
             "caches": caches,
             "noc": {
-                "topology": "mesh",
+                "topology": "three_bidirectional_bufferless_rings",
                 "routers": noc_routers,
                 "link_bandwidth_gbps": noc_link_gbps,
                 "router_latency_ns": noc_router_latency_ns,
@@ -924,6 +955,21 @@ def build_config(
                     1,
                     math.ceil(math.sqrt(noc_routers)) - 1,
                 ),
+                "clock_mhz": noc_clock_mhz,
+                "flit_bytes": noc_flit_bytes,
+                "link_slots_per_direction": (
+                    noc_link_slots_per_direction
+                ),
+                "hop_latency_cycles": noc_hop_latency_cycles,
+                "tie_direction": noc_tie_direction,
+                "ring_node_order": [
+                    *(f"r{index}" for index in range(noc_routers)),
+                    *(cache["id"] for cache in caches),
+                    *(
+                        controller["id"]
+                        for controller in memory_controllers
+                    ),
+                ],
             },
             "memory": {
                 "controllers": memory_controllers

@@ -547,6 +547,12 @@ class RequesterRuntime:
                             "core_round_robin",
                         )
                     ),
+                    "req_ring_stall_ns": (
+                        self.stall_by_reason_partid.get(
+                            (partid, "req_ring"),
+                            0.0,
+                        )
+                    ),
                     "configured_ostd_stall_ns": max(
                         0.0,
                         self.backpressure_by_partid[partid]

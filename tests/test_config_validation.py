@@ -78,3 +78,16 @@ def test_mc_qos_is_three_bit(base_config, config_writer) -> None:
     ]
     with pytest.raises(ConfigError, match="mc_qos"):
         load_config(config_writer(base_config))
+
+
+def test_ring_node_order_must_include_all_endpoints(
+    base_config,
+    config_writer,
+) -> None:
+    base_config["soc"]["noc"]["ring_node_order"] = [
+        "r0",
+        "r1",
+        "slc0",
+    ]
+    with pytest.raises(ConfigError, match="misses required nodes"):
+        load_config(config_writer(base_config))

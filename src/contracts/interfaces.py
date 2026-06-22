@@ -15,11 +15,22 @@ class EndpointPort(Protocol):
 
 
 class RingTransport(Protocol):
-    def inject(
+    def can_inject(
+        self,
+        source_node: str,
+        destination_node: str,
+        channel: str,
+    ) -> bool:
+        ...
+
+    def transmit(
         self,
         transaction: Transaction,
         channel: str,
         downstream: EndpointPort,
+        *,
+        source_node: str,
+        destination_node: str,
     ) -> bool:
         ...
 

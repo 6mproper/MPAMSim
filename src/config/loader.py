@@ -162,6 +162,21 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
         queue_depth=int(noc_raw.get("queue_depth", 64)),
         virtual_channels=int(noc_raw.get("virtual_channels", 1)),
         average_hops=int(noc_raw.get("average_hops", 2)),
+        clock_mhz=float(noc_raw.get("clock_mhz", 1000.0)),
+        flit_bytes=int(noc_raw.get("flit_bytes", 16)),
+        link_slots_per_direction=int(
+            noc_raw.get("link_slots_per_direction", 1)
+        ),
+        hop_latency_cycles=int(
+            noc_raw.get("hop_latency_cycles", 1)
+        ),
+        tie_direction=str(
+            noc_raw.get("tie_direction", "cw")
+        ),
+        ring_node_order=[
+            str(node)
+            for node in noc_raw.get("ring_node_order", [])
+        ],
     )
     memory_controllers = [
         MemoryControllerConfig(

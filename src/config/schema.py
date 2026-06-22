@@ -43,6 +43,12 @@ class NocConfig:
     queue_depth: int
     virtual_channels: int
     average_hops: int = 2
+    clock_mhz: float = 1000.0
+    flit_bytes: int = 16
+    link_slots_per_direction: int = 1
+    hop_latency_cycles: int = 1
+    tie_direction: str = "cw"
+    ring_node_order: List[str] = field(default_factory=list)
 
 
 @dataclass

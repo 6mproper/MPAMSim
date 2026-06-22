@@ -92,6 +92,10 @@ const headerHelp = {
   "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
   "CBusy": "所有 MC 对该 PARTID 反馈的最高 CBusy 档位及对应 effective OSTD。",
   "CBusy Stall ns": "因 CBusy-derived effective OSTD 达到上限而产生的源端累计等待。",
+  "Offered / Injected": "端点希望发送的flit数，以及实际占用源link槽进入Ring的flit数。",
+  "Ejected / Transfers": "成功下Ring的flit数，以及完成全部flit重组的transaction数。",
+  "Failed / Full Laps": "目标端暂不可接收导致的失败下Ring次数，以及flit完成整圈绕行次数。",
+  "Injection BP": "源link没有空槽导致的注入反压事件和累计等待时间。",
   "L3 Occupancy": "所有 L3 实例的 8-set 抽样占用估算之和。",
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
@@ -1208,6 +1212,42 @@ function aggregateMcResources() {
   return result;
 }
 
+function aggregateRingResources() {
+  const noc = latestBy(state.partial.msc || [], "msc_id")
+    .find((row) => row.msc_type === "noc");
+  if (!noc) return [];
+  return Object.entries(noc.per_channel_direction || {})
+    .map(([key, values]) => {
+      const [channel, direction] = key.split(":");
+      return {
+        channel: channel.toUpperCase(),
+        direction,
+        offered: Number(values.offered_flits || 0),
+        injected: Number(values.injected_flits || 0),
+        ejected: Number(values.ejected_flits || 0),
+        transfers: Number(values.completed_transfers || 0),
+        failed: Number(values.failed_ejections || 0),
+        laps: Number(values.full_laps || 0),
+        hops: Number(values.hops || 0),
+        backpressureEvents: Number(
+          values.injection_backpressure_events || 0,
+        ),
+        backpressureNs: Number(
+          values.injection_backpressure_ns || 0,
+        ),
+        slotOccupancy: Number(noc.slot_occupancy || 0),
+        totalSlots: Number(noc.total_slots || 0),
+        inFlight: Number(noc.in_flight_flits || 0),
+        inFlightPeak: Number(noc.in_flight_peak || 0),
+        sourcePending: Number(noc.source_pending_flits || 0),
+      };
+    })
+    .sort((left, right) => (
+      left.channel.localeCompare(right.channel)
+      || left.direction.localeCompare(right.direction)
+    ));
+}
+
 function controlValue(enabled, effective, configured, formatter = String) {
   const effectiveText = formatter(effective);
   const configuredText = formatter(configured);
@@ -1303,6 +1343,26 @@ function renderResourceMonitor() {
         <td>${formatNumber(row.backpressureNs, 2)}</td>
         <td>${formatNumber(row.cbusyStallNs, 2)}</td>
       </tr>`);
+  } else if (state.resourceView === "ring") {
+    headers = [
+      "Channel", "Direction", "Offered / Injected",
+      "Ejected / Transfers", "Slot Occupancy", "In Flight",
+      "Source Pending", "Failed / Full Laps", "Hops",
+      "Injection BP",
+    ];
+    rows = aggregateRingResources().map((row) => `
+      <tr>
+        <td><strong>${escapeHtml(row.channel)}</strong></td>
+        <td>${escapeHtml(row.direction)}</td>
+        <td>${formatNumber(row.offered, 0)} / ${formatNumber(row.injected, 0)}</td>
+        <td>${formatNumber(row.ejected, 0)} / ${formatNumber(row.transfers, 0)}</td>
+        <td>${formatNumber(row.slotOccupancy, 2)} / ${formatNumber(row.totalSlots, 0)}</td>
+        <td>${formatNumber(row.inFlight, 0)} <small>peak ${formatNumber(row.inFlightPeak, 0)}</small></td>
+        <td>${formatNumber(row.sourcePending, 0)}</td>
+        <td>${formatNumber(row.failed, 0)} / ${formatNumber(row.laps, 0)}</td>
+        <td>${formatNumber(row.hops, 0)}</td>
+        <td>${formatNumber(row.backpressureEvents, 0)} <small>${formatNumber(row.backpressureNs, 2)} ns</small></td>
+      </tr>`);
   } else if (state.resourceView === "l3") {
     headers = [
       "PARTID", "Control State", "L3 Occupancy", "L3 Util %",
@@ -1360,6 +1420,17 @@ function renderResourceMonitor() {
     if (label === "CMIN %") header.dataset.algorithm = "l3-cmin";
     if (label === "CMAX %") header.dataset.algorithm = "l3-cmax";
     if (label === "QoS Base / Eff") header.dataset.algorithm = "mc-qos";
+    if (
+      [
+        "Channel",
+        "Offered / Injected",
+        "Ejected / Transfers",
+        "Failed / Full Laps",
+        "Injection BP",
+      ].includes(label)
+    ) {
+      header.dataset.algorithm = "ring-transport";
+    }
     if (!header.dataset.algorithm) setHelp(header, headerHelp[label]);
   });
 }

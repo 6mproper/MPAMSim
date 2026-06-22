@@ -17,6 +17,8 @@ def test_l3_queue_reports_pressure_and_backpressure(tmp_path) -> None:
             "l3_queue_depth": 4,
             "l3_lookup_parallelism": 1,
             "max_outstanding": 32,
+            "noc_flit_bytes": 64,
+            "noc_link_slots_per_direction": 64,
         }
     )
     for row in parameters["stimulus_configs"]:

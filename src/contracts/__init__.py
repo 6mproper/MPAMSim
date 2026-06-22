@@ -1,4 +1,5 @@
 from .capabilities import CapabilityDescriptor, ComponentRegistry
+from .flit import RingChannel, RingDirection, RingFlit
 from .interfaces import (
     CacheLookupPipeline,
     ControlPolicy,
@@ -48,6 +49,9 @@ __all__ = [
     "Operation",
     "ReplacementPolicy",
     "RequestClass",
+    "RingChannel",
+    "RingDirection",
+    "RingFlit",
     "RingTransport",
     "Transaction",
     "TransactionRoute",

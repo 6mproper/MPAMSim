@@ -393,6 +393,8 @@ def derive_control_verification_cases(
                 "max_outstanding": 64,
                 "core_max_outstanding": 128,
                 "core_ostd_policy": "shared",
+                "noc_flit_bytes": 64,
+                "noc_link_slots_per_direction": 64,
             }
         )
         for row in case.get("stimulus_configs", []):
