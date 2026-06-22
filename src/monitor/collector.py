@@ -220,6 +220,9 @@ class MetricsCollector:
         self.last_capture_ns = time_ns
         return current
 
+    def record_local_sample(self, sample: MonitorSample) -> None:
+        self.monitor_sample_rows.append(sample.to_row())
+
     def record_control(self, event: ControlEvent) -> None:
         self.control_events.append(event)
         self.control_rows.append(event.to_row())

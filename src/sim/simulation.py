@@ -232,6 +232,7 @@ class Simulation:
                 self.settings_tables[mc.id],
                 self._memory_service_complete,
                 enforce_controls=self.enforce_controls,
+                local_sample_callback=self.collector.record_local_sample,
             )
             for mc in config.memory_controllers
         }
@@ -244,6 +245,7 @@ class Simulation:
                 self._cache_hit_complete,
                 self._cache_miss,
                 enforce_controls=self.enforce_controls,
+                local_sample_callback=self.collector.record_local_sample,
             )
             for index, cache in enumerate(config.caches)
         }

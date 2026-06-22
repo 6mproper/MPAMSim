@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
 
 from src.config.schema import MemoryControllerConfig
+from src.contracts.telemetry import MonitorSample, MetricSemantic, _metric_unit
 from src.mpam.settings import SettingsTable
 from src.sim.component import Component
 from src.sim.kernel import SimulationKernel
@@ -95,6 +96,9 @@ class MemoryControllerMSC(Component):
         settings: SettingsTable,
         on_complete: Callable[[Request], None],
         enforce_controls: bool = True,
+        local_sample_callback: Optional[
+            Callable[["MonitorSample"], None]
+        ] = None,
     ) -> None:
         super().__init__(config.id, "memory_controller")
         self.kernel = kernel
@@ -102,6 +106,8 @@ class MemoryControllerMSC(Component):
         self.settings = settings
         self.on_complete = on_complete
         self.enforce_controls = enforce_controls
+        self._local_sample_callback = local_sample_callback
+        self._local_cycle = 0
 
         self._buffer: List[Optional[BufferEntry]] = [
             None
@@ -575,6 +581,7 @@ class MemoryControllerMSC(Component):
 
     def _publish_bandwidth_monitor(self) -> None:
         period_ns = self.monitor_period_ns
+        self._local_cycle += 1
         weight_sum = (
             self.config.history_weight
             + self.config.current_weight
@@ -617,12 +624,56 @@ class MemoryControllerMSC(Component):
                         group["hardlimit_block_events"] += 1
                         group["throttle_delay_ns"] += period_ns
             self._monitor_service_bytes[partid] = 0
+            if self._local_sample_callback is not None:
+                self._emit_local_samples(partid, raw, filtered)
         self._schedule_dispatch(0.0)
         self.kernel.schedule(
             period_ns,
             self._publish_bandwidth_monitor,
             f"mc-monitor:{self.component_id}",
         )
+
+    def _emit_local_samples(
+        self,
+        partid: int,
+        raw_gbps: float,
+        filtered_gbps: float,
+    ) -> None:
+        setting = self.settings.lookup(partid)
+        time_ns = self.kernel.now_ns
+        rid = self.component_id
+        base_id = f"obs:{rid}:{self._local_cycle}"
+        metrics: Dict[str, object] = {
+            "raw_bandwidth_gbps": raw_gbps,
+            "filtered_bandwidth_gbps": filtered_gbps,
+            "buffer_entries": self._partid_buffer_count(partid),
+            "cbusy_level": self._cbusy_level[partid],
+            "hard_block": self._hard_block[partid],
+        }
+        for metric, value in sorted(metrics.items()):
+            semantic = (
+                MetricSemantic.CONTROL_STATE
+                if metric
+                in {"cbusy_level", "hard_block"}
+                else MetricSemantic.FILTERED_MONITOR
+                if metric.startswith("filtered")
+                else MetricSemantic.RAW_MONITOR
+            )
+            sample = MonitorSample(
+                time_ns=time_ns,
+                resource_type="memory_controller",
+                resource_id=rid,
+                local_cycle=self._local_cycle,
+                partid=partid,
+                pmg=None,
+                metric=metric,
+                value=value if partid in self._configured_partids() else None,
+                unit=_metric_unit(metric),
+                semantic=semantic,
+                sample_id=f"{base_id}:p{partid}:{metric}",
+                observation_id=f"{base_id}:p{partid}:{metric}",
+            )
+            self._local_sample_callback(sample)  # type: ignore[misc]
 
     def _update_service_deficit(self) -> None:
         max_counter = (1 << self.config.aging_counter_bits) - 1
