@@ -11,6 +11,7 @@ const state = {
   experimentPartial: null,
   verification: null,
   verificationPartial: null,
+  presets: [],
   uiMetadata: {},
   partial: {
     metrics: [],
@@ -513,6 +514,84 @@ function showToast(message) {
   showToast.timer = setTimeout(() => toast.classList.remove("visible"), 5000);
 }
 
+function presetById(id) {
+  return state.presets.find((preset) => preset.id === id) || null;
+}
+
+function activePartidsFromParameters(parameters) {
+  return [...new Set(
+    (parameters.stimulus_configs || [])
+      .filter((row) => row.enabled)
+      .map((row) => Number(row.partid))
+      .filter((partid) => Number.isFinite(partid)),
+  )].sort((left, right) => left - right);
+}
+
+function updatePresetSummary() {
+  const output = $("#presetExpected");
+  if (!output) return;
+  const preset = presetById($("#presetSelect")?.value || "");
+  if (!preset) {
+    output.textContent = "选择预设后查看预期观察点。";
+    return;
+  }
+  output.innerHTML = `
+    <b>${escapeHtml(preset.summary)}</b>
+    <span>${escapeHtml(preset.expected)}</span>
+  `;
+}
+
+function renderPresetSelector() {
+  const select = $("#presetSelect");
+  if (!select) return;
+  select.innerHTML = [
+    '<option value="">默认初始配置</option>',
+    ...state.presets.map((preset) =>
+      `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`
+    ),
+  ].join("");
+  updatePresetSummary();
+}
+
+function focusPresetPartids(parameters) {
+  const activePartids = activePartidsFromParameters(parameters);
+  if (!activePartids.length) return;
+  const first = activePartids[0];
+  state.visiblePartids = new Set(activePartids);
+  state.overviewPartid = first;
+  state.effectPartid = first;
+  state.causalPartid = first;
+  state.experimentPartid = first;
+}
+
+function applySelectedPreset() {
+  const preset = presetById($("#presetSelect")?.value || "");
+  if (!preset) {
+    fillForm(state.defaults);
+    state.visiblePartids = new Set(
+      Array.from({ length: 16 }, (_, partid) => partid),
+    );
+    state.overviewPartid = 0;
+    state.effectPartid = 0;
+    state.causalPartid = 0;
+    state.experimentPartid = 0;
+    applyContextHelp();
+    renderConfigDiagnostics();
+    setStatus("ready", "已恢复默认初始配置", 0);
+    renderAll();
+    showToast("已恢复默认初始配置");
+    return;
+  }
+  const parameters = JSON.parse(JSON.stringify(preset.parameters));
+  fillForm(parameters);
+  focusPresetPartids(parameters);
+  applyContextHelp();
+  renderConfigDiagnostics();
+  setStatus("ready", `已应用预设：${preset.name}`, 0);
+  renderAll();
+  showToast(`已应用预设：${preset.name}`);
+}
+
 async function loadDefaults() {
   const payload = await requestJson("/api/defaults");
   state.uiMetadata = payload.ui_metadata || {};
@@ -521,6 +600,8 @@ async function loadDefaults() {
     ...(state.uiMetadata.control_algorithms || {}),
   };
   state.defaults = payload.parameters;
+  state.presets = payload.presets || [];
+  renderPresetSelector();
   fillForm(state.defaults);
 }
 
@@ -3452,6 +3533,8 @@ function bindEvents() {
     renderAll();
   });
   $$('input[name="policy"]').forEach((input) => input.addEventListener("change", renderResourceMonitor));
+  $("#presetSelect").addEventListener("change", updatePresetSummary);
+  $("#applyPresetButton").addEventListener("click", applySelectedPreset);
   $("#runButton").addEventListener("click", runSimulation);
   $("#experimentButton").addEventListener("click", runExperiment);
   $("#controlVerificationButton").addEventListener(

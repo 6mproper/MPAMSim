@@ -65,6 +65,9 @@ def test_results_default_to_control_evidence_workspace() -> None:
         "advanced-evidence",
     ]
     for element_id in (
+        "presetSelect",
+        "applyPresetButton",
+        "presetExpected",
         "overviewCpuCard",
         "overviewL3Card",
         "overviewMcCard",

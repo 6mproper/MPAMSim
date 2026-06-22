@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 from typing import Dict, List
 
@@ -323,6 +324,298 @@ def default_parameters() -> Dict[str, object]:
         "partid_configs": _default_partid_configs(),
         "stimulus_configs": _default_stimulus_configs(),
     }
+
+
+def _disable_all_stimulus(parameters: Dict[str, object]) -> None:
+    for row in parameters["stimulus_configs"]:
+        row["enabled"] = False
+        row["target_p99_ns"] = 0.0
+
+
+def _disable_all_controls(parameters: Dict[str, object]) -> None:
+    for row in parameters["partid_configs"]:
+        row.update(
+            {
+                "monitor_enable": True,
+                "cpbm_enable": False,
+                "cmin_enable": False,
+                "cmax_enable": False,
+                "bmin_enable": False,
+                "bmax_enable": False,
+                "mc_qos_enable": False,
+                "cbusy_enable": False,
+                "cmin": 0.0,
+                "cmax": 100.0,
+                "bmin_gbps": 0.0,
+                "bmax_gbps": 256.0,
+                "limit_mode": "softlimit",
+                "mc_qos": 3,
+            }
+        )
+
+
+def _set_all_cpbm(parameters: Dict[str, object], cpbm: str) -> None:
+    for row in parameters["partid_configs"]:
+        row["cpbm"] = cpbm
+
+
+def _apply_stimulus(
+    parameters: Dict[str, object],
+    slot: int,
+    partid: int,
+    rate_value: float,
+    workload_type: str = "random_read",
+    rate_unit: str = "gbps",
+    working_set_mb: int = 64,
+    read_ratio: float = 1.0,
+    target_p99_ns: float = 0.0,
+) -> None:
+    row = parameters["stimulus_configs"][slot]
+    type_defaults = _stimulus_defaults_for_type(workload_type)
+    row.update(
+        {
+            "enabled": True,
+            "partid": partid,
+            "pmg": partid,
+            "workload_type": workload_type,
+            **type_defaults,
+            "source_queue_depth": (
+                4
+                if type_defaults["issue_selection"] == "eligible_scan"
+                else 1
+            ),
+            "eligible_scan_depth": (
+                4
+                if type_defaults["issue_selection"] == "eligible_scan"
+                else 1
+            ),
+            "rate_value": rate_value,
+            "rate_unit": rate_unit,
+            "request_size_bytes": 64,
+            "read_ratio": read_ratio,
+            "working_set_mb": working_set_mb,
+            "target_p99_ns": target_p99_ns,
+        }
+    )
+
+
+def _preset_base() -> Dict[str, object]:
+    parameters = copy.deepcopy(default_parameters())
+    parameters.update(
+        {
+            "duration_ns": 120_000,
+            "control_interval_ns": 20_000,
+            "policy": "static_mpam",
+            "memory_controllers": 1,
+            "channels_per_mc": 1,
+            "channel_bandwidth_gbps": 16,
+            "mc_base_latency_ns": 250,
+            "mc_queue_depth": 48,
+            "max_outstanding": 32,
+            "core_max_outstanding": 48,
+            "cbusy_sample_ns": 500,
+            "cbusy_feedback_latency_ns": 10,
+            "cbusy_release_hold_samples": 3,
+            "cbusy_l1_queue_ratio": 0.04,
+            "cbusy_l2_queue_ratio": 0.08,
+            "cbusy_l3_queue_ratio": 0.14,
+            "cbusy_l1_bw_ratio": 0.80,
+            "cbusy_l2_bw_ratio": 1.00,
+            "cbusy_l3_bw_ratio": 1.20,
+            "mc_aging_mode": "per_partid_service_deficit",
+            "mc_qos_aging_max_steps": 2,
+        }
+    )
+    _disable_all_stimulus(parameters)
+    _disable_all_controls(parameters)
+    return parameters
+
+
+def control_effect_presets() -> List[Dict[str, object]]:
+    """Return synthetic, deterministic UI presets that expose control effects."""
+    presets: List[Dict[str, object]] = []
+
+    hard_cbusy = _preset_base()
+    _apply_stimulus(hard_cbusy, 0, 0, 500, "random_read", "mrps")
+    hard_cbusy["partid_configs"][0].update(
+        {
+            "name": "p0_hard_bmax_cbusy",
+            "bmax_enable": True,
+            "bmax_gbps": 8.0,
+            "limit_mode": "hardlimit",
+            "cbusy_enable": True,
+            "cbusy_l1_ostd": 8,
+            "cbusy_l2_ostd": 4,
+            "cbusy_l3_ostd": 2,
+        }
+    )
+    presets.append(
+        {
+            "id": "mc_hard_bmax_cbusy",
+            "name": "MC hard BMAX + CBusy",
+            "summary": "单PARTID高压随机读，触发MC hard BMAX和返回侧CBusy源端OSTD限制。",
+            "expected": "控制总览应看到MC hard/over状态、CBusy L1-L3、CPU effective OSTD低于configured。",
+            "parameters": hard_cbusy,
+        }
+    )
+
+    qos_bmin = _preset_base()
+    qos_bmin.update(
+        {
+            "duration_ns": 160_000,
+            "mc_queue_depth": 64,
+            "mc_bmin_qos_promote": 3,
+            "mc_softlimit_qos_demote": 2,
+        }
+    )
+    _apply_stimulus(qos_bmin, 0, 0, 64, "stream")
+    _apply_stimulus(qos_bmin, 2, 1, 64, "stream")
+    qos_bmin["partid_configs"][0].update(
+        {
+            "name": "p0_bmin_qos",
+            "cpbm_enable": True,
+            "cmax_enable": True,
+            "cpbm": "0000",
+            "cmax": 0.0,
+            "bmin_enable": True,
+            "bmin_gbps": 10.0,
+            "bmax_enable": True,
+            "bmax_gbps": 14.0,
+            "limit_mode": "softlimit",
+            "mc_qos_enable": True,
+            "mc_qos": 7,
+        }
+    )
+    qos_bmin["partid_configs"][1].update(
+        {
+            "name": "p1_background",
+            "cpbm_enable": True,
+            "cmax_enable": True,
+            "cpbm": "0000",
+            "cmax": 0.0,
+            "mc_qos_enable": True,
+            "mc_qos": 0,
+            "bmax_enable": True,
+            "bmax_gbps": 16.0,
+            "limit_mode": "softlimit",
+        }
+    )
+    presets.append(
+        {
+            "id": "mc_bmin_qos_compete",
+            "name": "MC BMIN / QoS 竞争",
+            "summary": "两个PARTID同时打满MC，P0通过BMIN和3-bit QoS获得调度偏好。",
+            "expected": "控制总览应看到P0 effective QoS高于背景流，MC filtered带宽进入BMIN/BMAX目标带附近。",
+            "parameters": qos_bmin,
+        }
+    )
+
+    l3_pressure = _preset_base()
+    l3_pressure.update(
+        {
+            "duration_ns": 150_000,
+            "l3_instances": 1,
+            "l3_sets": 512,
+            "l3_ways": 8,
+            "l3_queue_depth": 64,
+            "channel_bandwidth_gbps": 64,
+        }
+    )
+    _set_all_cpbm(l3_pressure, "ff")
+    _apply_stimulus(l3_pressure, 0, 0, 120, "random_read", "gbps", 128)
+    _apply_stimulus(l3_pressure, 1, 1, 120, "random_read", "gbps", 128)
+    l3_pressure["partid_configs"][0].update(
+        {
+            "name": "p0_cmin_protected",
+            "cpbm_enable": True,
+            "cmin_enable": True,
+            "cmax_enable": True,
+            "cmin": 40.0,
+            "cmax": 100.0,
+            "cpbm": "ff",
+        }
+    )
+    l3_pressure["partid_configs"][1].update(
+        {
+            "name": "p1_cmax_limited",
+            "cpbm_enable": True,
+            "cmax_enable": True,
+            "cmax": 25.0,
+            "cpbm": "ff",
+        }
+    )
+    presets.append(
+        {
+            "id": "l3_cmin_cmax_pressure",
+            "name": "L3 CMIN / CMAX 压力",
+            "summary": "小L3容量下两个随机读PARTID互相竞争，突出CMIN保护和CMAX增长限制。",
+            "expected": "控制总览应看到L3 filtered/actual差异、allocation denial或替换压力。",
+            "parameters": l3_pressure,
+        }
+    )
+
+    mixed = _preset_base()
+    mixed.update(
+        {
+            "duration_ns": 180_000,
+            "l3_instances": 1,
+            "l3_sets": 1024,
+            "l3_ways": 8,
+            "channel_bandwidth_gbps": 24,
+            "mc_queue_depth": 64,
+        }
+    )
+    _set_all_cpbm(mixed, "ff")
+    _apply_stimulus(mixed, 0, 0, 96, "random_read", "gbps", 128, 1.0, 350.0)
+    _apply_stimulus(mixed, 1, 1, 96, "stream")
+    _apply_stimulus(mixed, 2, 2, 96, "mixed_rw", "gbps", 256, 0.7)
+    mixed["policy"] = "closed_loop_qos"
+    mixed["partid_configs"][0].update(
+        {
+            "name": "p0_protected",
+            "cpbm_enable": True,
+            "cmin_enable": True,
+            "cmax_enable": True,
+            "cmin": 30.0,
+            "cmax": 70.0,
+            "bmin_enable": True,
+            "bmin_gbps": 8.0,
+            "bmax_enable": True,
+            "bmax_gbps": 14.0,
+            "limit_mode": "softlimit",
+            "mc_qos_enable": True,
+            "mc_qos": 7,
+            "cbusy_enable": True,
+            "cbusy_l1_ostd": 10,
+            "cbusy_l2_ostd": 5,
+            "cbusy_l3_ostd": 2,
+        }
+    )
+    for partid in (1, 2):
+        mixed["partid_configs"][partid].update(
+            {
+                "name": f"p{partid}_background",
+                "cpbm_enable": True,
+                "cmax_enable": True,
+                "cmax": 45.0,
+                "bmax_enable": True,
+                "bmax_gbps": 10.0,
+                "limit_mode": "softlimit",
+                "mc_qos_enable": True,
+                "mc_qos": 1,
+            }
+        )
+    presets.append(
+        {
+            "id": "mixed_control_overview",
+            "name": "混合控制总览压力",
+            "summary": "P0保护流叠加两个背景流，用于同时观察CPU OSTD、L3和MC控制状态。",
+            "expected": "控制总览矩阵应出现多个PARTID状态，P0曲线显示目标带、filtered监控和控制事件。",
+            "parameters": mixed,
+        }
+    )
+
+    return presets
 
 
 def _parse_partid_configs(

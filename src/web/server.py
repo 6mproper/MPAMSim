@@ -25,6 +25,7 @@ from .config_builder import (
     ParameterError,
     _stimulus_defaults_for_type,
     build_config,
+    control_effect_presets,
     default_parameters,
 )
 from .config_metadata import config_metadata_payload
@@ -1066,6 +1067,14 @@ class ControlVerificationManager(ExperimentManager):
 VERIFICATIONS = ControlVerificationManager()
 
 
+def defaults_payload() -> Dict[str, object]:
+    return {
+        "parameters": default_parameters(),
+        "presets": control_effect_presets(),
+        "ui_metadata": config_metadata_payload(),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SoCFlowConsole/0.1"
 
@@ -1073,12 +1082,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         if path == "/api/defaults":
-            self._json(
-                {
-                    "parameters": default_parameters(),
-                    "ui_metadata": config_metadata_payload(),
-                }
-            )
+            self._json(defaults_payload())
             return
         if path.startswith("/api/jobs/"):
             job_id = path.rsplit("/", 1)[-1]

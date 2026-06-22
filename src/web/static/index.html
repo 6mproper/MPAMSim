@@ -22,6 +22,14 @@
 
   <div class="workspace">
     <aside class="config-panel">
+      <div class="preset-bar" data-help="选择一组服务端定义的压力场景，快速生成能观察到MSC控制效果的完整配置。应用预设只改当前表单，不会自动启动仿真。">
+        <label class="preset-picker">
+          <span>控制效果预设</span>
+          <select id="presetSelect" aria-label="控制效果预设"></select>
+        </label>
+        <button id="applyPresetButton" type="button" class="preset-button">应用</button>
+        <p id="presetExpected" class="preset-expected">选择预设后查看预期观察点。</p>
+      </div>
       <nav class="config-tabs" aria-label="配置分类">
         <button class="tab-button active" data-tab="soc" data-help="配置核/线程、L3、NoC 与内存控制器等系统拓扑和容量参数。">SoC</button>
         <button class="tab-button" data-tab="traffic" data-help="配置 16 个硬件线程各自的流量类型、PARTID、PMG、速率与工作集。">激励</button>

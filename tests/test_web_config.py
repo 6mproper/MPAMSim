@@ -5,10 +5,16 @@ import yaml
 
 from src.config.loader import load_config
 from src.sim.simulation import Simulation
-from src.web.config_builder import ParameterError, build_config, default_parameters
+from src.web.config_builder import (
+    ParameterError,
+    build_config,
+    control_effect_presets,
+    default_parameters,
+)
 from src.web.server import (
     ControlVerificationManager,
     Job,
+    defaults_payload,
     derive_control_verification_cases,
     derive_experiment_cases,
     summarize_experiment_result,
@@ -209,6 +215,42 @@ def test_web_parameters_reject_plru_with_non_power_of_two_ways(
         row["cmax"] = 100
     with pytest.raises(ParameterError, match="PLRU"):
         build_config(parameters, str(tmp_path / "run"))
+
+
+def test_control_effect_presets_are_buildable(tmp_path) -> None:
+    presets = control_effect_presets()
+    assert len(presets) >= 4
+    assert {
+        "mc_hard_bmax_cbusy",
+        "mc_bmin_qos_compete",
+        "l3_cmin_cmax_pressure",
+        "mixed_control_overview",
+    } <= {preset["id"] for preset in presets}
+    for preset in presets:
+        parameters = preset["parameters"]
+        assert len(parameters["stimulus_configs"]) == 16
+        assert len(parameters["partid_configs"]) == 16
+        assert [row["slot"] for row in parameters["stimulus_configs"]] == list(range(16))
+        assert [row["partid"] for row in parameters["partid_configs"]] == list(range(16))
+        assert any(row["enabled"] for row in parameters["stimulus_configs"])
+        raw = build_config(parameters, str(tmp_path / preset["id"]))
+        assert raw["simulation"]["time_ns"] > 0
+        assert len(raw["workloads"]) >= 1
+
+
+def test_defaults_payload_contains_control_effect_presets() -> None:
+    payload = defaults_payload()
+    assert "parameters" in payload
+    assert "ui_metadata" in payload
+    assert len(payload["presets"]) >= 4
+    for preset in payload["presets"]:
+        assert set(preset) == {
+            "id",
+            "name",
+            "summary",
+            "expected",
+            "parameters",
+        }
 
 
 def test_experiment_cases_only_change_bmax_and_cbusy_enables() -> None:
