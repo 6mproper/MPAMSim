@@ -168,6 +168,8 @@ class WorkloadConfig:
     burst_length: int = 1
     burst_period_ns: Optional[float] = None
     address_distribution: str = "auto"
+    dependency_mode: str = "independent"
+    source_queue_depth: int = 1
     locality: str = "auto"
     start_ns: int = 0
     stop_ns: Optional[int] = None

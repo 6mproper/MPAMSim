@@ -1,0 +1,3 @@
+- [x] 1.1 WorkloadConfig增加dependency_mode、source_queue_depth
+- [x] 1.2 WorkloadGenerator实现pointer_chain等待逻辑
+- [x] 1.3 运行完整pytest确认无回归

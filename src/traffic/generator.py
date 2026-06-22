@@ -50,6 +50,7 @@ class WorkloadGenerator:
         self._stop_ns = float(workload.stop_ns or 0)
         self._burst_remaining = max(1, workload.burst_length)
         self._pending: PendingStimulus | None = None
+        self._source_queue: list[PendingStimulus] = []
 
     def start(self) -> None:
         jitter = self.rng.random() * min(self._interval_ns, 10.0)
@@ -100,6 +101,12 @@ class WorkloadGenerator:
                 )
                 self._pending = None
             return
+        if self.workload.dependency_mode == "pointer_chain":
+            outstanding = self.requester.outstanding_by_partid.get(self.workload.partid, 0)
+            if outstanding > 0:
+                retry_ns = min(10.0, self._interval_ns)
+                self.kernel.schedule(retry_ns, self._issue, f"chain-wait:{self.workload.name}")
+                return
         if self._pending is None:
             op = (
                 "read"
