@@ -508,8 +508,7 @@ class MemoryControllerMSC(Component):
         self._monitor_service_bytes[request.partid] += request.size_bytes
         self._sample_queue()
 
-        cbusy_level = self._sample_cbusy(request.partid)
-        request.carry_cbusy_level = cbusy_level
+        request.carry_cbusy_level = self._cbusy_level[request.partid]
 
         self.kernel.schedule(
             service_delay,
@@ -627,6 +626,7 @@ class MemoryControllerMSC(Component):
                         group["hardlimit_block_events"] += 1
                         group["throttle_delay_ns"] += period_ns
             self._monitor_service_bytes[partid] = 0
+            self._sample_cbusy(partid)
             if self._local_sample_callback is not None:
                 self._emit_local_samples(partid, raw, filtered)
         self._schedule_dispatch(0.0)

@@ -513,13 +513,15 @@ class Simulation:
         for policy in self.policies:
             updates = policy.on_interval(self._interval_index, self.kernel.now_ns, metrics)
             for update_index, update in enumerate(updates):
+                decision_id = (
+                    f"decision:{self._interval_index}:"
+                    f"{policy.name}:{update_index}"
+                )
                 decision = update.with_context(
-                    decision_id=(
-                        f"decision:{self._interval_index}:"
-                        f"{policy.name}:{update_index}"
-                    ),
+                    decision_id=decision_id,
                     monitor_sample_id=self.collector.last_capture_id,
                     action_effective_time_ns=self.kernel.now_ns,
+                    observation_id=self.collector.last_capture_id,
                 )
                 table = self.settings_tables.get(
                     decision.target_resource_id
@@ -546,6 +548,8 @@ class Simulation:
                             decision.monitor_sample_id
                         ),
                         decision_id=decision.decision_id,
+                        observation_id=decision.observation_id,
+                        cause_id=decision.monitor_sample_id,
                         action_effective_time_ns=(
                             decision.action_effective_time_ns
                         ),
@@ -644,6 +648,8 @@ class Simulation:
         reason: str,
         monitor_sample_id: str = "",
         decision_id: str = "",
+        observation_id: str = "",
+        cause_id: Optional[str] = None,
         action_effective_time_ns: Optional[float] = None,
         pmg: Optional[int] = None,
         details: Optional[Dict[str, object]] = None,
@@ -662,6 +668,8 @@ class Simulation:
             field=field,
             policy=policy,
             reason=reason,
+            observation_id=observation_id,
+            cause_id=cause_id,
             monitor_sample_id=monitor_sample_id,
             decision_id=decision_id,
             action_effective_time_ns=(

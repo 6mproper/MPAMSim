@@ -16,12 +16,14 @@
 
 ### Requirement: BMAX hard limit
 
-当前MC模型 MUST 用每PARTID token bucket实现hard BMAX，token不足时阻止dispatch。
+当前MC模型 MUST 使用上一监控周期发布的filtered bandwidth与配置BMAX比较。
+hard OVER_BMAX状态 MUST 在整个监控周期内阻止该PARTID所有entry参与candidate选择，
+直到filtered值降至滞回释放阈值以下。
 
 #### Scenario: 超过hard limit
 
-- **WHEN** `hardlimit`请求缺少BMAX token
-- **THEN** dispatch等待、throttle delay增加并记录hard-block事件
+- **WHEN** 上一发布filtered BW使PARTID进入hard OVER_BMAX
+- **THEN** 该PARTID所有entry保留在buffer但不参与QoS选择，记录hard-block事件
 
 ### Requirement: BMAX soft limit
 
@@ -119,17 +121,23 @@ soft-limit demotion。
 
 ### Requirement: 3-bit QoS仲裁
 
-当前MC scheduler MUST 选择最高有效QoS，相同QoS选择最老请求。
+当前MC scheduler MUST 选择最高有效QoS，相同QoS候选从上次grant slot之后旋转扫描选择，
+不使用enqueue时间作为默认比较。
 
 #### Scenario: QoS钳位
 
 - **WHEN** aging、BMIN或soft demotion改变QoS
 - **THEN** 有效QoS保持在0到7
 
+#### Scenario: Rotating slot公平性
+
+- **WHEN** 多个slot持续保持相同最高QoS
+- **THEN** grant位置按slot轮转且确定性前进
+
 #### Scenario: Hard limit阻塞高QoS
 
-- **WHEN** QoS 7请求缺少hard BMAX token
-- **THEN** token恢复前排除该请求
+- **WHEN** QoS 7请求被hard BMAX阻塞
+- **THEN** 阻塞解除前排除该请求
 
 ### Requirement: 上一滤波周期驱动BMIN和BMAX
 
@@ -139,6 +147,21 @@ soft-limit demotion。
 
 - **WHEN** 当前周期服务使raw带宽超过BMAX
 - **THEN** 请求可在本周期继续服务，hard block从下一周期生效
+
+### Requirement: 可插拔DRAM Readiness
+
+MC MUST 在QoS候选选择前通过`_dram_ready(slot)`方法检查每个entry的DRAM readiness。
+默认实现全部ready。not-ready entry保留在共享buffer但不参与QoS仲裁，ready后自动唤醒调度。
+
+#### Scenario: DRAM ready变化触发调度
+
+- **WHEN** not-ready entry变为ready
+- **THEN** 调用方负责触发_schedule_dispatch重新评估候选
+
+#### Scenario: 默认模型全部ready
+
+- **WHEN** 未启用DRAM时序模型
+- **THEN** 所有buffer entry参与QoS选择，行为与无此接口完全一致
 
 ### Requirement: Work-Conserving Soft控制
 

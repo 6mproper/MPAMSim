@@ -122,6 +122,21 @@ working set和target。
 - **WHEN** 两次仿真使用相同配置和seed
 - **THEN** 所有observation_id、decision_id和action_id序列完全一致
 
+### Requirement: 独立激励维度配置
+
+每个workload MUST 支持独立配置address_pattern、dependency_mode和arrival_mode。
+pointer_chain依赖模式下每条链同时最多一个未完成请求，必须在当前事务返回后才能生成下一地址。
+
+#### Scenario: pointer_chain串行化
+
+- **WHEN** dependency_mode=pointer_chain
+- **THEN** 同一链上的请求严格串行，前一请求的terminal response到达前不生成新地址
+
+#### Scenario: independent模式
+
+- **WHEN** dependency_mode=independent
+- **THEN** 请求按注入间隔独立生成，不受前一请求返回约束
+
 ### Requirement: CBusy控制有效OSTD
 
 requester MUST 把随RSP或最后一个DAT flit返回携带的CBusy作为匹配`(目标MC, PARTID)`的新事务有效OSTD上限，
