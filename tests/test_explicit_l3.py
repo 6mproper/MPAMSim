@@ -14,6 +14,9 @@ def _config(
     merge: bool = True,
     fill_entries: int = 2,
     replacement: str = "lru",
+    monitor_cycles: int = 256,
+    history_weight: int = 192,
+    current_weight: int = 64,
 ) -> CacheConfig:
     return CacheConfig(
         id="slc0",
@@ -33,6 +36,10 @@ def _config(
         fill_buffer_entries=fill_entries,
         merge_same_line_misses=merge,
         replacement_policy=replacement,
+        clock_mhz=1000,
+        monitor_period_cycles=monitor_cycles,
+        history_weight=history_weight,
+        current_weight=current_weight,
     )
 
 
@@ -210,3 +217,45 @@ def test_lru_evicts_oldest_eligible_line() -> None:
     kernel.run(kernel.now_ns + 2)
     assert evicted_second.cache_hit is False
     assert misses[-1] is evicted_second
+
+
+def test_l3_control_reads_only_published_filtered_sample() -> None:
+    kernel, cache, _, _ = _cache(
+        _config(
+            sets=8,
+            ways=2,
+            monitor_cycles=8,
+            history_weight=0,
+            current_weight=256,
+        )
+    )
+    request = _request(1, 0, partid=3)
+    cache._allocate_fill(request)
+
+    assert cache._sampled_owner_counts()[3] == 1
+    assert cache._control_owner_counts().get(3, 0) == 0
+    kernel.run(8)
+    assert cache._raw_sampled_counts[3] == 1
+    assert cache._control_owner_counts()[3] == 1
+
+
+def test_l3_monitor_exposes_physical_sample_error() -> None:
+    kernel, cache, _, _ = _cache(
+        _config(
+            sets=8,
+            ways=2,
+            monitor_cycles=8,
+            history_weight=0,
+            current_weight=256,
+        )
+    )
+    non_sampled = _request(1, 64, partid=4)
+    cache._allocate_fill(non_sampled)
+    kernel.run(8)
+
+    values = cache.monitor_snapshot(8).payload["per_partid"]["4"]
+
+    assert values["actual_occupancy_bytes"] == 64
+    assert values["raw_occupancy_bytes"] == 0
+    assert values["filtered_occupancy_bytes"] == 0
+    assert values["monitor_error_bytes"] == -64

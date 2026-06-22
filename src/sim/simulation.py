@@ -329,15 +329,11 @@ class Simulation:
         requester_id: str,
         address: int,
     ) -> str:
-        requester = self.config.requester_by_id[requester_id]
-        cache_id = self.config.core_to_cache.get(
-            requester.core or "",
-            self.config.caches[0].id,
-        )
-        line_size = self.config.cache_by_id[cache_id].line_size
-        index = (
-            address // max(1, line_size)
-        ) % len(self.config.memory_controllers)
+        interleave = self.config.address_interleave
+        line = address // interleave.granularity_bytes
+        if interleave.mode == "xor":
+            line ^= address >> interleave.xor_shift
+        index = line % len(self.config.memory_controllers)
         return self.config.memory_controllers[index].id
 
     def _requester_cache_id(self, requester_id: str) -> str:

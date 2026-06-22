@@ -61,9 +61,9 @@ examples/
 3. Implement a deterministic discrete-event simulation kernel.
 4. Implement traffic generators and request metadata.
 5. Implement MPAM PARTID/PMG tagging, per-MSC settings tables, and monitors using `docs/MPAM_MSC_Behavior.md` as the behavior contract.
-6. Implement memory-controller token bucket and independent 3-bit QoS scheduler.
-7. Implement NoC latency, queueing, neutral arbitration, and credit/backpressure hooks.
-8. Implement cache/SLC capacity approximation; defer exact way-mask replacement.
+6. Implement the shared-buffer memory-controller scheduler and monitor-driven BMIN/BMAX.
+7. Implement the three bidirectional bufferless rings and endpoint backpressure.
+8. Implement explicit L3 set/tag/way, MSHR/fill, sampled monitoring, and CPBM/CMIN/CMAX.
 9. Implement baseline policies: no control, static MPAM, bandwidth cap, MC QoS control, closed-loop QoS.
 10. Add CSV/JSON output, report generation, and regression tests for mechanism behavior.
 
@@ -117,6 +117,10 @@ The authoritative Chinese architecture and implementation specification is
 implementation status, migration constraints, configuration, monitoring, and
 verification contracts. Update it through the OpenSpec workflow when behavior
 changes.
+
+For AI continuation, follow `docs/AI_Continuation_Plan.md` in order. The
+repo-local `.codex/skills/soc-flow-mpam/SKILL.md` records the architecture
+invariants, evidence rules, and completion checklist.
 
 ## OpenSpec Workflow
 

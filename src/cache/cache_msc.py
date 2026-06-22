@@ -106,7 +106,7 @@ class CacheMSC(Component):
     incompatible_capabilities = ("probabilistic_cache_hit",)
     approximations = (
         "sparse allocation of untouched all-invalid sets",
-        "CMIN/CMAX still use current sampled occupancy until filtered monitor migration",
+        "one sampled set per eight-set monitor group",
     )
 
     def __init__(
@@ -148,6 +148,31 @@ class CacheMSC(Component):
         self._interval_groups: DefaultDict[
             Tuple[int, int], Dict[str, float]
         ] = defaultdict(_cache_counters)
+        self._monitor_sampled_bytes: DefaultDict[int, int] = defaultdict(int)
+        self._raw_sampled_counts: DefaultDict[int, float] = defaultdict(float)
+        self._filtered_sampled_counts: DefaultDict[
+            int, float
+        ] = defaultdict(float)
+        self._raw_sampled_bandwidth_gbps: DefaultDict[
+            int, float
+        ] = defaultdict(float)
+        self._filtered_sampled_bandwidth_gbps: DefaultDict[
+            int, float
+        ] = defaultdict(float)
+        self._monitor_updates: DefaultDict[int, int] = defaultdict(int)
+        self.kernel.schedule(
+            self.monitor_period_ns,
+            self._publish_mpam_monitor,
+            f"l3-monitor:{self.component_id}",
+        )
+
+    @property
+    def monitor_period_ns(self) -> float:
+        return (
+            self.config.monitor_period_cycles
+            * 1000.0
+            / self.config.clock_mhz
+        )
 
     @property
     def mshr_occupancy(self) -> int:
@@ -272,6 +297,9 @@ class CacheMSC(Component):
                 request,
                 "sampled_bytes",
                 request.size_bytes,
+            )
+            self._monitor_sampled_bytes[request.partid] += (
+                request.size_bytes
             )
         self._interval_lookup_busy_ns += latency
         self.kernel.schedule(
@@ -455,7 +483,7 @@ class CacheMSC(Component):
         if not eligible:
             return None
         setting = self.settings.lookup(partid)
-        owner_counts = self._sampled_owner_counts()
+        owner_counts = self._control_owner_counts()
         current_count = owner_counts.get(partid, 0)
         cmax = self._quota_lines(
             self._effective_max_percent(setting),
@@ -498,7 +526,10 @@ class CacheMSC(Component):
                 self._effective_min_percent(owner_setting),
                 round_up=True,
             )
-            if owner_counts.get(owner, 0) > owner_cmin:
+            if (
+                owner_cmin <= 0
+                or owner_counts.get(owner, 0) > owner_cmin
+            ):
                 candidates.append(index)
             else:
                 self._interval[partid][
@@ -710,6 +741,9 @@ class CacheMSC(Component):
     def _sampled_owner_counts(self) -> Dict[int, int]:
         return self._owner_counts(sampled_only=True)
 
+    def _control_owner_counts(self) -> Dict[int, float]:
+        return dict(self._filtered_sampled_counts)
+
     def _actual_owner_counts(self) -> Dict[int, int]:
         return self._owner_counts(sampled_only=False)
 
@@ -730,6 +764,56 @@ class CacheMSC(Component):
                         (line.owner_partid, line.owner_pmg)
                     ] += 1
         return dict(counts)
+
+    def _known_monitor_partids(self) -> List[int]:
+        return sorted(
+            {partid for partid, _ in self.settings.items()}
+            | set(self._monitor_sampled_bytes)
+            | set(self._sampled_owner_counts())
+            | set(self._filtered_sampled_counts)
+        )
+
+    def _publish_mpam_monitor(self) -> None:
+        raw_counts = self._sampled_owner_counts()
+        period_ns = self.monitor_period_ns
+        weight_sum = (
+            self.config.history_weight
+            + self.config.current_weight
+        )
+        sample_scale = self.config.monitor_group_sets
+        for partid in self._known_monitor_partids():
+            raw_count = float(raw_counts.get(partid, 0))
+            previous_count = self._filtered_sampled_counts[partid]
+            filtered_count = (
+                self.config.history_weight * previous_count
+                + self.config.current_weight * raw_count
+            ) / weight_sum
+            raw_bandwidth = (
+                self._monitor_sampled_bytes[partid]
+                * sample_scale
+                * 8.0
+                / period_ns
+            )
+            previous_bandwidth = (
+                self._filtered_sampled_bandwidth_gbps[partid]
+            )
+            filtered_bandwidth = (
+                self.config.history_weight * previous_bandwidth
+                + self.config.current_weight * raw_bandwidth
+            ) / weight_sum
+            self._raw_sampled_counts[partid] = raw_count
+            self._filtered_sampled_counts[partid] = filtered_count
+            self._raw_sampled_bandwidth_gbps[partid] = raw_bandwidth
+            self._filtered_sampled_bandwidth_gbps[partid] = (
+                filtered_bandwidth
+            )
+            self._monitor_sampled_bytes[partid] = 0
+            self._monitor_updates[partid] += 1
+        self.kernel.schedule(
+            period_ns,
+            self._publish_mpam_monitor,
+            f"l3-monitor:{self.component_id}",
+        )
 
     def monitor_snapshot(self, interval_ns: float):
         total_requests = sum(
@@ -754,6 +838,10 @@ class CacheMSC(Component):
             setting = self.settings.lookup(partid)
             sampled_bytes = values["sampled_bytes"]
             sampled_count = sampled_counts.get(partid, 0)
+            raw_sampled_count = self._raw_sampled_counts[partid]
+            filtered_sampled_count = (
+                self._filtered_sampled_counts[partid]
+            )
             actual_count = actual_counts.get(partid, 0)
             estimated_occupancy = (
                 sampled_count
@@ -762,6 +850,16 @@ class CacheMSC(Component):
             )
             actual_occupancy = (
                 actual_count * self.config.line_size
+            )
+            raw_occupancy = (
+                raw_sampled_count
+                * sample_scale
+                * self.config.line_size
+            )
+            filtered_occupancy = (
+                filtered_sampled_count
+                * sample_scale
+                * self.config.line_size
             )
             cmin_percent = self._effective_min_percent(setting)
             cmax_percent = self._effective_max_percent(setting)
@@ -775,21 +873,40 @@ class CacheMSC(Component):
                     / max(interval_ns, 1e-9)
                 ),
                 "sampled_way_count": sampled_count,
+                "raw_sampled_way_count": raw_sampled_count,
+                "filtered_sampled_way_count": filtered_sampled_count,
                 "actual_line_count": actual_count,
                 "estimated_occupancy_bytes": estimated_occupancy,
+                "raw_occupancy_bytes": raw_occupancy,
+                "filtered_occupancy_bytes": filtered_occupancy,
                 "actual_occupancy_bytes": actual_occupancy,
                 "monitor_error_bytes": (
-                    estimated_occupancy - actual_occupancy
+                    filtered_occupancy - actual_occupancy
                 ),
                 "monitor_error_percent": (
-                    (estimated_occupancy - actual_occupancy)
+                    (filtered_occupancy - actual_occupancy)
                     * 100.0
                     / max(1, actual_occupancy)
                 ),
+                "raw_bandwidth_gbps": (
+                    self._raw_sampled_bandwidth_gbps[partid]
+                ),
+                "filtered_bandwidth_gbps": (
+                    self._filtered_sampled_bandwidth_gbps[partid]
+                ),
+                "monitor_updates": self._monitor_updates[partid],
                 "allowed_capacity_bytes": self.allowed_capacity_bytes(partid),
                 "cache_capacity_bytes": self.config.size_bytes,
                 "occupancy_share": (
                     sampled_count
+                    / max(1, self.sampled_capacity_lines)
+                ),
+                "raw_occupancy_share": (
+                    raw_sampled_count
+                    / max(1, self.sampled_capacity_lines)
+                ),
+                "filtered_occupancy_share": (
+                    filtered_sampled_count
                     / max(1, self.sampled_capacity_lines)
                 ),
                 "actual_occupancy_share": (
@@ -919,6 +1036,11 @@ class CacheMSC(Component):
             "sets": self.config.sets,
             "ways_per_set": self.config.ways,
             "monitor_group_sets": self.config.monitor_group_sets,
+            "clock_mhz": self.config.clock_mhz,
+            "monitor_period_cycles": self.config.monitor_period_cycles,
+            "monitor_period_ns": self.monitor_period_ns,
+            "history_weight": self.config.history_weight,
+            "current_weight": self.config.current_weight,
             "instantiated_set_count": len(self._sets),
             "sampled_set_count": sum(
                 int(self._is_sample_set(set_index))
@@ -941,4 +1063,7 @@ class CacheMSC(Component):
             self.kernel.now_ns,
             interval_ns,
             row,
+            local_cycle=int(
+                self.kernel.now_ns * self.config.clock_mhz / 1000.0
+            ),
         )
