@@ -241,6 +241,20 @@
         <div><span>完成率</span><strong id="kpiCompletion">--</strong><small>%</small></div>
       </section>
 
+      <section class="evidence-toolbar-top">
+        <div class="partid-selector" id="partidSelector" aria-label="PARTID 选择">
+          <span class="selector-label">PARTID</span>
+          <span class="partid-chips" id="partidChips"></span>
+          <button id="partidAllBtn" class="small-btn active">全部</button>
+        </div>
+        <div class="resource-selector" id="resourceSelector">
+          <span class="selector-label">资源</span>
+          <select id="resourceSelect">
+            <option value="l3">L3 Cache</option>
+            <option value="mc" selected>Memory Controller</option>
+          </select>
+        </div>
+      </section>
       <section class="timeline-toolbar">
         <button id="playButton" class="icon-button" title="播放时间线" aria-label="播放时间线">▶</button>
         <input id="timeSlider" type="range" min="0" max="100" value="100" aria-label="仿真时间">
@@ -269,22 +283,16 @@
 
       <section class="data-section">
         <div class="result-tabs">
-          <button class="result-tab active" data-result-tab="resource-monitor">资源监控</button>
-          <button class="result-tab" data-result-tab="control-effect">控制效果</button>
-          <button class="result-tab" data-result-tab="experiment">对照实验</button>
+          <button class="result-tab active" data-result-tab="control-effect">控制效果</button>
+          <button class="result-tab" data-result-tab="resource-monitor">资源监控</button>
           <button class="result-tab" data-result-tab="verification">算法验证</button>
-          <button class="result-tab" data-result-tab="causal">因果时间线</button>
-          <button class="result-tab" data-result-tab="partid">PARTID</button>
-          <button class="result-tab" data-result-tab="monitor-group">监控组</button>
-          <button class="result-tab" data-result-tab="mpam-monitor">MPAM 监控</button>
-          <button class="result-tab" data-result-tab="msc">MSC</button>
           <button class="result-tab" data-result-tab="controls">控制记录</button>
         </div>
-        <div class="result-view" data-result-view="control-effect">
+        <div class="result-view active" data-result-view="control-effect">
           <div class="evidence-toolbar">
             <div>
               <strong data-algorithm="effect-view">目标与实际控制效果</strong>
-              <span>16 PARTID 总览；选中一个 PARTID 查看完整仿真时间变化</span>
+              <span>选中 PARTID 查看完整仿真时间变化；颜色=PARTID，线型=信号类型</span>
             </div>
             <label>PARTID
               <select id="effectPartid"></select>
@@ -296,6 +304,10 @@
             <article><h3 data-algorithm="mc-qos">MC Base / Effective QoS</h3><canvas id="effectQosChart"></canvas></article>
             <article><h3>P99 实际 / 目标</h3><canvas id="effectP99Chart"></canvas></article>
           </div>
+          <div class="evidence-timeline" id="evidenceTimeline">
+            <div class="chart-title"><h3>控制事件时间线</h3></div>
+            <canvas id="evEventCanvas"></canvas>
+          </div>
           <div class="resource-table-wrap">
             <table class="effect-overview-table">
               <thead><tr>
@@ -304,16 +316,6 @@
                 <th>QoS Base / Eff</th><th>P99 Target / Actual</th><th>Overall</th>
               </tr></thead>
               <tbody id="effectOverviewTable"><tr><td colspan="10" class="empty-cell">运行仿真后显示控制效果</td></tr></tbody>
-            </table>
-          </div>
-          <div class="resource-table-wrap">
-            <table class="effect-timeline-table">
-              <thead><tr>
-                <th>Time</th><th>L3 %</th><th>CMIN / CMAX</th><th>MC BW</th>
-                <th>BMIN / BMAX</th><th>QoS Base / Eff</th><th>CBusy / OSTD</th>
-                <th>P99 / Throughput</th><th>Control Events</th>
-              </tr></thead>
-              <tbody id="effectTimelineTable"><tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr></tbody>
             </table>
           </div>
         </div>

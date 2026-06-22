@@ -1541,6 +1541,7 @@ function renderAll() {
   renderCharts();
   renderResourceMonitor();
   renderControlEffect();
+  renderEvidenceTimeline();
   renderExperiment();
   renderControlVerification();
   renderCausalTimeline();
@@ -2443,6 +2444,41 @@ function renderControlEffect() {
         ).join("") : '<span class="muted">无更新</span>'}</td>
       </tr>`).join("")
     : '<tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr>';
+}
+
+function renderEvidenceTimeline() {
+  const canvas = document.getElementById('evEventCanvas');
+  if (!canvas) return;
+  const events = collector.control_rows;
+  if (!events || events.length === 0) {
+    canvas.style.display = 'none';
+    return;
+  }
+  canvas.style.display = 'block';
+  canvas.width = canvas.parentElement.clientWidth;
+  canvas.height = 100;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const maxTime = state.totalTimeNs || 1;
+  const colors = { setting_applied: '#2563eb', cbusy_update: '#ea580c', feedback_delivered: '#7c3aed' };
+  const yPos = { setting_applied: 20, cbusy_update: 50, feedback_delivered: 78 };
+  const partidColors = ['#2563eb','#ea580c','#16a34a','#d97706','#7c3aed','#db2777','#0891b2','#4f46e5',
+    '#65a30d','#c026d3','#0284c7','#b45309','#059669','#be185d','#1d4ed8','#854d0e'];
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '9px system-ui';
+  ctx.fillText('控制事件', 4, 10);
+
+  for (const evt of events) {
+    const x = (evt.time_ns / maxTime) * w;
+    if (x < 0 || x > w) continue;
+    const color = partidColors[evt.partid % 16] || '#64748b';
+    const y = yPos[evt.event_type] || 35;
+    ctx.fillStyle = color;
+    ctx.fillRect(x - 1, y - 1, 3, 3);
+  }
 }
 
 function renderPartidTable() {
