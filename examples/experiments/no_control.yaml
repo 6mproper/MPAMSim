@@ -1,0 +1,5 @@
+# No-control baseline experiment
+description: "Baseline — all MPAM controls disabled"
+policies:
+  - name: no_control
+duration_ns: 500000

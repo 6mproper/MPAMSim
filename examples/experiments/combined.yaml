@@ -1,0 +1,5 @@
+# Combined control experiment
+description: "Combined L3 + MC + CBusy control"
+policies:
+  - name: closed_loop_comprehensive
+duration_ns: 500000

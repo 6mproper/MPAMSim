@@ -1,0 +1,5 @@
+# Static MPAM experiment
+description: "Static MPAM partitioning"
+policies:
+  - name: static_mpam
+duration_ns: 500000

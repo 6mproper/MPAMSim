@@ -1,0 +1,8 @@
+# Closed-loop QoS experiment
+description: "Closed-loop QoS bandwidth management"
+policies:
+  - name: closed_loop_qos
+    params:
+      update_interval: 10000
+      kp: 0.5
+duration_ns: 500000
