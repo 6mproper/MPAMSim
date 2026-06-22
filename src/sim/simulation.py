@@ -474,32 +474,32 @@ class Simulation:
             mc = self.memory_controllers[request.memory_controller_id]
             cbusy = request.carry_cbusy_level
             cap = mc._cbusy_cap(request.partid, cbusy)
-            for requester in self.requesters.values():
-                if request.partid in requester.configured_partids:
-                    old_level = requester.cbusy_level(
-                        request.partid,
-                        request.memory_controller_id,
-                    )
-                    requester.set_cbusy(
-                        request.memory_controller_id,
-                        request.partid,
-                        cbusy,
-                        cap,
-                    )
-                    if cbusy != old_level:
-                        self.collector.record_control(
-                            self._control_event(
-                                resource_id=request.memory_controller_id,
-                                partid=request.partid,
-                                event_type="cbusy_update",
-                                field="cbusy_level",
-                                old_state=old_level,
-                                new_state=cbusy,
-                                policy="mc_cbusy",
-                                reason=f"carried on return, OSTD cap {cap}",
-                                details={"carry_level": cbusy, "ostd_cap": cap},
-                            )
+            requester = self.requesters.get(request.requester_id)
+            if requester is not None and request.partid in requester.configured_partids:
+                old_level = requester.cbusy_level(
+                    request.partid,
+                    request.memory_controller_id,
+                )
+                requester.set_cbusy(
+                    request.memory_controller_id,
+                    request.partid,
+                    cbusy,
+                    cap,
+                )
+                if cbusy != old_level:
+                    self.collector.record_control(
+                        self._control_event(
+                            resource_id=request.memory_controller_id,
+                            partid=request.partid,
+                            event_type="cbusy_update",
+                            field="cbusy_level",
+                            old_state=old_level,
+                            new_state=cbusy,
+                            policy="mc_cbusy",
+                            reason=f"carried on return to {request.requester_id}, OSTD cap {cap}",
+                            details={"carry_level": cbusy, "ostd_cap": cap},
                         )
+                    )
         self.collector.on_complete(request, self.kernel.now_ns)
 
     def _control_interval(self) -> None:
@@ -612,14 +612,20 @@ class Simulation:
 
     def _watchdog_check(self) -> None:
         current = self.collector.total_completed
+        pending = self.kernel.pending_events
         if current == self._watchdog_last_completed and self.kernel.now_ns < self._run_until_ns:
             self._watchdog_stall_count += 1
             if self._watchdog_stall_count > 10:
-                raise RuntimeError(
-                    f"Watchdog: no progress for {self._watchdog_stall_count} checks "
-                    f"({self.collector.total_completed} completed, "
-                    f"{self.kernel.pending_events} pending events)"
-                )
+                if pending == 0:
+                    raise RuntimeError(
+                        f"Watchdog: internal stall — no events pending and no progress "
+                        f"({self.collector.total_completed} completed)"
+                    )
+                elif self._watchdog_stall_count > 100:
+                    raise RuntimeError(
+                        f"Watchdog: prolonged stall with {pending} pending events "
+                        f"({self.collector.total_completed} completed)"
+                    )
         else:
             self._watchdog_stall_count = 0
         self._watchdog_last_completed = current
@@ -649,6 +655,7 @@ class Simulation:
         monitor_sample_id: str = "",
         decision_id: str = "",
         observation_id: str = "",
+        action_id: str = "",
         cause_id: Optional[str] = None,
         action_effective_time_ns: Optional[float] = None,
         pmg: Optional[int] = None,
@@ -669,6 +676,7 @@ class Simulation:
             policy=policy,
             reason=reason,
             observation_id=observation_id,
+            action_id=action_id or f"action:{decision_id}",
             cause_id=cause_id,
             monitor_sample_id=monitor_sample_id,
             decision_id=decision_id,

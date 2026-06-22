@@ -178,6 +178,11 @@ class MemoryControllerMSC(Component):
             self._publish_bandwidth_monitor,
             f"mc-monitor:{self.component_id}",
         )
+        self.kernel.schedule(
+            self.config.cbusy_sample_ns,
+            self._evaluate_cbusy_queue,
+            f"cbusy-fast:{self.component_id}",
+        )
         if self.config.aging_mode == "per_partid_service_deficit":
             self.kernel.schedule(
                 self.aging_quantum_ns,
@@ -508,11 +513,14 @@ class MemoryControllerMSC(Component):
         self._monitor_service_bytes[request.partid] += request.size_bytes
         self._sample_queue()
 
-        request.carry_cbusy_level = self._cbusy_level[request.partid]
+        def complete_with_cbusy(req: Request, partid: int) -> None:
+            self._sample_cbusy(partid)
+            req.carry_cbusy_level = self._cbusy_level[partid]
+            self.on_complete(req)
 
         self.kernel.schedule(
             service_delay,
-            lambda: self.on_complete(request),
+            lambda p=request.partid, r=request: complete_with_cbusy(r, p),
             f"mc-complete:{self.component_id}",
         )
         self._schedule_dispatch(serialization_ns)
@@ -583,7 +591,7 @@ class MemoryControllerMSC(Component):
 
     def _publish_bandwidth_monitor(self) -> None:
         period_ns = self.monitor_period_ns
-        self._local_cycle += 1
+        self._local_cycle += self.config.monitor_period_cycles
         weight_sum = (
             self.config.history_weight
             + self.config.current_weight
@@ -766,6 +774,51 @@ class MemoryControllerMSC(Component):
         if self._hard_block[partid]:
             level = max(level, 2)
         return level
+
+    def _evaluate_cbusy_queue(self) -> None:
+        sample_ns = self.config.cbusy_sample_ns
+        for partid in self._known_partids():
+            setting = self.settings.lookup(partid)
+            if not self.enforce_controls or not setting.cbusy_enable:
+                continue
+            queue_ratio = (
+                self._partid_buffer_count(partid)
+                / max(1, self.config.queue_depth)
+            )
+            current = self._cbusy_level[partid]
+            queue_thresholds = (
+                self.config.cbusy_l1_queue_ratio,
+                self.config.cbusy_l2_queue_ratio,
+                self.config.cbusy_l3_queue_ratio,
+            )
+            q_level = 0
+            for candidate in range(1, 4):
+                if queue_ratio >= queue_thresholds[candidate - 1]:
+                    q_level = candidate
+            new_level = current
+            if q_level > current:
+                new_level = q_level
+                self._cbusy_release_samples[partid] = 0
+            elif q_level < current:
+                self._cbusy_release_samples[partid] += 1
+                if (
+                    self._cbusy_release_samples[partid]
+                    >= self.config.cbusy_release_hold_samples
+                ):
+                    new_level = current - 1
+                    self._cbusy_release_samples[partid] = 0
+            else:
+                self._cbusy_release_samples[partid] = 0
+            if new_level != current:
+                self._cbusy_level[partid] = new_level
+                self._cbusy_interval_transitions[partid] += 1
+                if new_level > current:
+                    self._cbusy_interval_assertions[partid] += 1
+        self.kernel.schedule(
+            sample_ns,
+            self._evaluate_cbusy_queue,
+            f"cbusy-fast:{self.component_id}",
+        )
 
     def _sample_cbusy(self, partid: int) -> int:
         setting = self.settings.lookup(partid)

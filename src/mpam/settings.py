@@ -107,7 +107,9 @@ class SoftwareGroup:
     tasks: List[str] = field(default_factory=list)
 
     def applies_to_cpu(self, cpu_id: int) -> bool:
-        return not self.cpus or cpu_id in self.cpus
+        if not self.cpus:
+            return False
+        return cpu_id in self.cpus
 
 
 @dataclass

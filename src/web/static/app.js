@@ -2449,9 +2449,9 @@ function renderControlEffect() {
 function renderEvidenceTimeline() {
   const canvas = document.getElementById('evEventCanvas');
   if (!canvas) return;
-  const events = collector.control_rows;
+  const events = state.result?.controls || state.partial.controls || [];
   if (!events || events.length === 0) {
-    canvas.style.display = 'none';
+    if (canvas) canvas.style.display = 'none';
     return;
   }
   canvas.style.display = 'block';
@@ -2461,7 +2461,7 @@ function renderEvidenceTimeline() {
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  const maxTime = state.totalTimeNs || 1;
+  const maxTime = Number(state.result?.summary?.simulation_time_ns || state.partial.time_ns || 1);
   const colors = { setting_applied: '#2563eb', cbusy_update: '#ea580c', feedback_delivered: '#7c3aed' };
   const yPos = { setting_applied: 20, cbusy_update: 50, feedback_delivered: 78 };
   const partidColors = ['#2563eb','#ea580c','#16a34a','#d97706','#7c3aed','#db2777','#0891b2','#4f46e5',
@@ -3073,10 +3073,45 @@ function bindEvents() {
   }));
 }
 
+function initPartidChips() {
+  const container = document.getElementById('partidChips');
+  if (!container) return;
+  container.innerHTML = '';
+  for (let p = 0; p < 16; p++) {
+    const chip = document.createElement('span');
+    chip.className = 'partid-chip active';
+    chip.textContent = p;
+    chip.dataset.partid = p;
+    chip.addEventListener('click', function () {
+      this.classList.toggle('active');
+      if (!document.querySelector('.partid-chip.active')) {
+        this.classList.add('active');
+      }
+      renderAll();
+    });
+    container.appendChild(chip);
+  }
+  const allBtn = document.getElementById('partidAllBtn');
+  if (allBtn) {
+    allBtn.addEventListener('click', function () {
+      const allActive = container.querySelectorAll('.partid-chip.active').length === 16;
+      container.querySelectorAll('.partid-chip').forEach(c => c.classList.toggle('active', allActive));
+      renderAll();
+    });
+  }
+}
+
+function selectedPartids() {
+  const chips = document.querySelectorAll('.partid-chip.active');
+  if (chips.length === 0) return [];
+  return Array.from(chips).map(c => parseInt(c.dataset.partid));
+}
+
 async function init() {
   bindEvents();
   try {
     await loadDefaults();
+    initPartidChips();
     applyContextHelp();
     setStatus("ready", "调整参数后运行仿真", 0);
     renderConfigDiagnostics();

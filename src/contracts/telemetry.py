@@ -274,6 +274,7 @@ class ControlEvent:
     monitor_sample_id: str = ""
     decision_id: str = ""
     observation_id: str = ""
+    action_id: str = ""
     cause_id: Optional[str] = None
     action_effective_time_ns: Optional[float] = None
     pmg: Optional[int] = None
@@ -300,6 +301,7 @@ class ControlEvent:
             "monitor_sample_id": self.monitor_sample_id,
             "decision_id": self.decision_id,
             "observation_id": self.observation_id,
+            "action_id": self.action_id or f"action:{self.decision_id}",
             "cause_id": self.cause_id,
             "action_effective_time_ns": self.action_effective_time_ns,
             "details": dict(self.details or {}),

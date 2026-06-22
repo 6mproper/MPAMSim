@@ -524,6 +524,8 @@ def _parse_stimulus_configs(
                 "read_ratio": read_ratio,
                 "working_set_mb": working_set_mb,
                 "target_p99_ns": target_p99,
+                "dependency_mode": str(raw.get("dependency_mode", "independent")),
+                "source_queue_depth": int(raw.get("source_queue_depth", 1)),
             }
         )
     if seen != set(range(16)):
@@ -554,6 +556,8 @@ def _build_workloads(
             "request_size_bytes": row["request_size_bytes"],
             "injection_scope": "per_requester",
             "read_ratio": row["read_ratio"],
+            "dependency_mode": row.get("dependency_mode", "independent"),
+            "source_queue_depth": row.get("source_queue_depth", 1),
             "working_set_bytes": (
                 row["working_set_mb"] * 1024 * 1024
             ),

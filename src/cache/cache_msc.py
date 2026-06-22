@@ -782,7 +782,7 @@ class CacheMSC(Component):
     def _publish_mpam_monitor(self) -> None:
         raw_counts = self._sampled_owner_counts()
         period_ns = self.monitor_period_ns
-        self._local_cycle += 1
+        self._local_cycle += self.config.monitor_period_cycles
         weight_sum = (
             self.config.history_weight
             + self.config.current_weight

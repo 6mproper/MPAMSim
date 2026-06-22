@@ -86,6 +86,8 @@ def _load_workload(item: Dict[str, Any], simulation_time_ns: int) -> WorkloadCon
         burst_length=int(injection.get("burst_length", item.get("burst_length", 1))),
         burst_period_ns=_optional_float(injection.get("burst_period_ns", item.get("burst_period_ns"))),
         address_distribution=str(address.get("distribution", item.get("address_distribution", "auto"))),
+        dependency_mode=str(item.get("dependency_mode", "independent")),
+        source_queue_depth=int(item.get("source_queue_depth", 1)),
         locality=str(address.get("locality", item.get("locality", "auto"))),
         start_ns=int(item.get("start_ns", 0)),
         stop_ns=int(item.get("stop_ns", simulation_time_ns)),
