@@ -187,11 +187,12 @@ class Simulation:
         self._request_id = 0
         self._interval_index = 0
         self._control_event_sequence = 0
+        self._delivered_cbusy_levels: Dict[
+            tuple, int
+        ] = {}
         self._progress_callback: Optional[
             Callable[[float, MetricsCollector], None]
         ] = None
-        self._watchdog_last_completed = 0
-        self._watchdog_stall_count = 0
 
         controls = config.controls_by_msc
         no_control = len(config.policies) == 1 and config.policies[0].name == "no_control"
@@ -234,7 +235,6 @@ class Simulation:
                 self.settings_tables[mc.id],
                 self._memory_service_complete,
                 enforce_controls=self.enforce_controls,
-                local_sample_callback=self.collector.record_local_sample,
             )
             for mc in config.memory_controllers
         }
@@ -247,7 +247,6 @@ class Simulation:
                 self._cache_hit_complete,
                 self._cache_miss,
                 enforce_controls=self.enforce_controls,
-                local_sample_callback=self.collector.record_local_sample,
             )
             for index, cache in enumerate(config.caches)
         }
@@ -269,6 +268,10 @@ class Simulation:
         }
         self.policies = build_policies(config.policies, targets, mc_tables)
         self.generators = self._build_generators()
+        self._generator_by_request = {
+            (generator.requester.config.id, generator.workload.name): generator
+            for generator in self.generators
+        }
 
     @classmethod
     def from_config(cls, config: ProjectConfig) -> "Simulation":
@@ -470,37 +473,77 @@ class Simulation:
             request.partid,
             request.memory_controller_id,
         )
-        if request.memory_controller_id:
-            mc = self.memory_controllers[request.memory_controller_id]
-            cbusy = request.carry_cbusy_level
-            cap = mc._cbusy_cap(request.partid, cbusy)
-            requester = self.requesters.get(request.requester_id)
-            if requester is not None and request.partid in requester.configured_partids:
-                old_level = requester.cbusy_level(
-                    request.partid,
-                    request.memory_controller_id,
-                )
-                requester.set_cbusy(
-                    request.memory_controller_id,
-                    request.partid,
-                    cbusy,
-                    cap,
-                )
-                if cbusy != old_level:
-                    self.collector.record_control(
-                        self._control_event(
-                            resource_id=request.memory_controller_id,
-                            partid=request.partid,
-                            event_type="cbusy_update",
-                            field="cbusy_level",
-                            old_state=old_level,
-                            new_state=cbusy,
-                            policy="mc_cbusy",
-                            reason=f"carried on return to {request.requester_id}, OSTD cap {cap}",
-                            details={"carry_level": cbusy, "ostd_cap": cap},
-                        )
-                    )
+        generator = self._generator_by_request.get(
+            (request.requester_id, request.workload_name)
+        )
+        if generator is not None:
+            generator.on_complete(request)
         self.collector.on_complete(request, self.kernel.now_ns)
+        if request.return_cbusy_source:
+            mc_config = self.config.mc_by_id.get(
+                request.return_cbusy_source
+            )
+            feedback_delay = (
+                mc_config.cbusy_feedback_latency_ns
+                if mc_config is not None
+                else 0.0
+            )
+            self.kernel.schedule(
+                feedback_delay,
+                lambda request=request: self._deliver_return_cbusy(
+                    request
+                ),
+                (
+                    "cbusy-return-sideband:"
+                    f"{request.return_cbusy_source}:"
+                    f"p{request.partid}:"
+                    f"{request.requester_id}"
+                ),
+            )
+
+    def _deliver_return_cbusy(self, request: Request) -> None:
+        msc_id = request.return_cbusy_source
+        partid = request.partid
+        level = max(0, min(3, int(request.return_cbusy_level)))
+        cap = int(request.return_cbusy_ostd_cap or 0)
+        requester = self.requesters[request.requester_id]
+        key = (request.requester_id, msc_id, partid)
+        old_level = self._delivered_cbusy_levels.get(key, 0)
+        old_cap = requester.effective_max_outstanding(partid, msc_id)
+        self._delivered_cbusy_levels[key] = level
+        requester.set_cbusy(
+            msc_id,
+            partid,
+            level,
+            cap if level > 0 else requester.config.max_outstanding,
+        )
+        self.collector.record_control(
+            self._control_event(
+                resource_id=msc_id,
+                partid=partid,
+                event_type="return_sideband_delivered",
+                field="cbusy_level",
+                old_state=old_level,
+                new_state=level,
+                policy="mc_cbusy",
+                reason=f"effective OSTD cap {cap}",
+                details={
+                    "requester_id": request.requester_id,
+                    "transaction_id": request.transaction_id,
+                    "sample_time_ns": (
+                        request.return_cbusy_sample_time_ns
+                    ),
+                    "old_effective_ostd_cap": old_cap,
+                    "effective_ostd_cap": (
+                        requester.effective_max_outstanding(
+                            partid,
+                            msc_id,
+                        )
+                    ),
+                    "transport": "rsp_dat_sideband",
+                },
+            )
+        )
 
     def _control_interval(self) -> None:
         self._interval_index += 1
@@ -513,15 +556,13 @@ class Simulation:
         for policy in self.policies:
             updates = policy.on_interval(self._interval_index, self.kernel.now_ns, metrics)
             for update_index, update in enumerate(updates):
-                decision_id = (
-                    f"decision:{self._interval_index}:"
-                    f"{policy.name}:{update_index}"
-                )
                 decision = update.with_context(
-                    decision_id=decision_id,
+                    decision_id=(
+                        f"decision:{self._interval_index}:"
+                        f"{policy.name}:{update_index}"
+                    ),
                     monitor_sample_id=self.collector.last_capture_id,
                     action_effective_time_ns=self.kernel.now_ns,
-                    observation_id=self.collector.last_capture_id,
                 )
                 table = self.settings_tables.get(
                     decision.target_resource_id
@@ -548,8 +589,6 @@ class Simulation:
                             decision.monitor_sample_id
                         ),
                         decision_id=decision.decision_id,
-                        observation_id=decision.observation_id,
-                        cause_id=decision.monitor_sample_id,
                         action_effective_time_ns=(
                             decision.action_effective_time_ns
                         ),
@@ -581,12 +620,6 @@ class Simulation:
         )
         if first_interval > 0:
             self.kernel.schedule_at(first_interval, self._control_interval, "control-interval")
-        watchdog_interval = max(1000.0, float(self.config.simulation.control_interval_ns))
-        self.kernel.schedule_at(
-            watchdog_interval,
-            self._watchdog_check,
-            "watchdog",
-        )
         self.kernel.run(self._run_until_ns)
         if self.collector.last_capture_ns < self._run_until_ns:
             self.collector.capture_interval(
@@ -610,32 +643,6 @@ class Simulation:
             ),
         )
 
-    def _watchdog_check(self) -> None:
-        current = self.collector.total_completed
-        pending = self.kernel.pending_events
-        if current == self._watchdog_last_completed and self.kernel.now_ns < self._run_until_ns:
-            self._watchdog_stall_count += 1
-            if self._watchdog_stall_count > 10:
-                if pending == 0:
-                    raise RuntimeError(
-                        f"Watchdog: internal stall — no events pending and no progress "
-                        f"({self.collector.total_completed} completed)"
-                    )
-                elif self._watchdog_stall_count > 100:
-                    raise RuntimeError(
-                        f"Watchdog: prolonged stall with {pending} pending events "
-                        f"({self.collector.total_completed} completed)"
-                    )
-        else:
-            self._watchdog_stall_count = 0
-        self._watchdog_last_completed = current
-        if self.kernel.now_ns < self._run_until_ns:
-            self.kernel.schedule_at(
-                self.kernel.now_ns + max(1000.0, float(self.config.simulation.control_interval_ns)),
-                self._watchdog_check,
-                "watchdog",
-            )
-
     def _resource_type(self, resource_id: str) -> str:
         for descriptor in self.component_registry.descriptors():
             if descriptor.component_id == resource_id:
@@ -654,9 +661,6 @@ class Simulation:
         reason: str,
         monitor_sample_id: str = "",
         decision_id: str = "",
-        observation_id: str = "",
-        action_id: str = "",
-        cause_id: Optional[str] = None,
         action_effective_time_ns: Optional[float] = None,
         pmg: Optional[int] = None,
         details: Optional[Dict[str, object]] = None,
@@ -675,9 +679,6 @@ class Simulation:
             field=field,
             policy=policy,
             reason=reason,
-            observation_id=observation_id,
-            action_id=action_id or f"action:{decision_id}",
-            cause_id=cause_id,
             monitor_sample_id=monitor_sample_id,
             decision_id=decision_id,
             action_effective_time_ns=(

@@ -109,6 +109,7 @@ class Transaction:
     source_node: str
     core_id: str = ""
     thread_id: int = 0
+    stimulus_chain_id: int = 0
     parent_transaction_id: Optional[int] = None
     line_address: Optional[int] = None
     request_class: Optional[RequestClass] = None
@@ -122,8 +123,11 @@ class Transaction:
     mc_arbitration: McArbitrationState = field(
         default_factory=McArbitrationState
     )
+    return_cbusy_source: str = ""
+    return_cbusy_level: int = 0
+    return_cbusy_ostd_cap: int = 0
+    return_cbusy_sample_time_ns: Optional[float] = None
     cache_hit: bool = False
-    carry_cbusy_level: int = 0
 
     def __setattr__(self, name: str, value: object) -> None:
         declared = name in getattr(type(self), "__dataclass_fields__", {})

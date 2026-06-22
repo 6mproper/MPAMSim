@@ -54,6 +54,10 @@ const configHeaderFields = {
     PID: "partid",
     PMG: "pmg",
     Type: "workload_type",
+    Addr: "address_pattern",
+    Dep: "dependency_mode",
+    Issue: "issue_selection",
+    SrcQ: "source_queue_depth",
     Rate: "rate_value",
     Unit: "rate_unit",
     Bytes: "request_size_bytes",
@@ -195,18 +199,18 @@ function formatFieldHelp(group, key, selectedOption = null) {
   if (!metadata) return "";
   const lines = [
     metadata.title,
-    `${metadata.summary}（${metadata.unit}）`,
-    `位置：${metadata.location}`,
-    `影响：${metadata.effect}`,
-    `约束：${metadata.constraints}`,
-    `例：${metadata.example}`,
+    `含义：${metadata.summary}`,
+    `单位：${metadata.unit}`,
+    `作用位置：${metadata.location}`,
+    `模型影响：${metadata.effect}`,
+    `约束/边界：${metadata.constraints}`,
+    `示例：${metadata.example}`,
+    `模型状态：${metadata.model_status}`,
   ];
-  if (metadata.model_status !== "当前模型已实现") {
-    lines.push(`状态：${metadata.model_status}`);
-  }
   const options = state.uiMetadata?.options?.[key];
   if (options) {
     lines.push(
+      "可选值：",
       ...Object.entries(options).map(
         ([value, description]) =>
           `${String(value) === String(selectedOption) ? "→" : "•"} ${value}：${description}`,
@@ -384,6 +388,21 @@ function renderStimulusConfig(rows) {
     ["mixed_rw", "mixed"],
     ["bursty_dma", "burst"],
   ];
+  const addressOptions = [
+    ["sequential", "seq"],
+    ["uniform_random", "rand"],
+    ["pointer_chase", "ptr"],
+    ["stride", "stride"],
+    ["hotset", "hot"],
+  ];
+  const dependencyOptions = [
+    ["independent", "indep"],
+    ["pointer_chain", "chain"],
+  ];
+  const issueOptions = [
+    ["fifo", "fifo"],
+    ["eligible_scan", "scan"],
+  ];
   $("#stimulusConfigTable").innerHTML = state.stimulusConfigs.map((row) => `
     <tr data-stimulus-row="${row.slot}">
       <td><span class="thread-chip">${escapeHtml(row.requester)}</span></td>
@@ -391,6 +410,10 @@ function renderStimulusConfig(rows) {
       <td><select data-stimulus-field="partid" ${configHelpAttributes("stimulus", "partid", row.partid)}>${selectOptions(partidOptions, row.partid)}</select></td>
       <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${row.pmg}"></td>
       <td><select data-stimulus-field="workload_type" ${configHelpAttributes("stimulus", "workload_type", row.workload_type)}>${selectOptions(typeOptions, row.workload_type)}</select></td>
+      <td><select data-stimulus-field="address_pattern" ${configHelpAttributes("stimulus", "address_pattern", row.address_pattern)}>${selectOptions(addressOptions, row.address_pattern || "sequential")}</select></td>
+      <td><select data-stimulus-field="dependency_mode" ${configHelpAttributes("stimulus", "dependency_mode", row.dependency_mode)}>${selectOptions(dependencyOptions, row.dependency_mode || "independent")}</select></td>
+      <td><select data-stimulus-field="issue_selection" ${configHelpAttributes("stimulus", "issue_selection", row.issue_selection)}>${selectOptions(issueOptions, row.issue_selection || "fifo")}</select></td>
+      <td><input data-stimulus-field="source_queue_depth" ${configHelpAttributes("stimulus", "source_queue_depth")} type="number" min="1" max="4096" step="1" value="${row.source_queue_depth || 1}"></td>
       <td><input data-stimulus-field="rate_value" ${configHelpAttributes("stimulus", "rate_value")} type="number" min="0" max="4096" step="0.1" value="${row.rate_value}"></td>
       <td><select data-stimulus-field="rate_unit" ${configHelpAttributes("stimulus", "rate_unit", row.rate_unit)}>${selectOptions([["gbps", "Gbps"], ["mrps", "MRPS"]], row.rate_unit)}</select></td>
       <td><input data-stimulus-field="request_size_bytes" ${configHelpAttributes("stimulus", "request_size_bytes")} type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
@@ -412,6 +435,11 @@ function collectStimulusConfigs() {
       partid: Number(value("partid").value),
       pmg: Number(value("pmg").value),
       workload_type: value("workload_type").value,
+      address_pattern: value("address_pattern").value,
+      dependency_mode: value("dependency_mode").value,
+      issue_selection: value("issue_selection").value,
+      source_queue_depth: Number(value("source_queue_depth").value),
+      eligible_scan_depth: Number(value("source_queue_depth").value),
       rate_value: Number(value("rate_value").value),
       rate_unit: value("rate_unit").value,
       request_size_bytes: Number(value("request_size_bytes").value),
@@ -1541,7 +1569,6 @@ function renderAll() {
   renderCharts();
   renderResourceMonitor();
   renderControlEffect();
-  renderEvidenceTimeline();
   renderExperiment();
   renderControlVerification();
   renderCausalTimeline();
@@ -2446,41 +2473,6 @@ function renderControlEffect() {
     : '<tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr>';
 }
 
-function renderEvidenceTimeline() {
-  const canvas = document.getElementById('evEventCanvas');
-  if (!canvas) return;
-  const events = state.result?.controls || state.partial.controls || [];
-  if (!events || events.length === 0) {
-    if (canvas) canvas.style.display = 'none';
-    return;
-  }
-  canvas.style.display = 'block';
-  canvas.width = canvas.parentElement.clientWidth;
-  canvas.height = 100;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-
-  const maxTime = Number(state.result?.summary?.simulation_time_ns || state.partial.time_ns || 1);
-  const colors = { setting_applied: '#2563eb', cbusy_update: '#ea580c', feedback_delivered: '#7c3aed' };
-  const yPos = { setting_applied: 20, cbusy_update: 50, feedback_delivered: 78 };
-  const partidColors = ['#2563eb','#ea580c','#16a34a','#d97706','#7c3aed','#db2777','#0891b2','#4f46e5',
-    '#65a30d','#c026d3','#0284c7','#b45309','#059669','#be185d','#1d4ed8','#854d0e'];
-
-  ctx.fillStyle = '#94a3b8';
-  ctx.font = '9px system-ui';
-  ctx.fillText('控制事件', 4, 10);
-
-  for (const evt of events) {
-    const x = (evt.time_ns / maxTime) * w;
-    if (x < 0 || x > w) continue;
-    const color = partidColors[evt.partid % 16] || '#64748b';
-    const y = yPos[evt.event_type] || 35;
-    ctx.fillStyle = color;
-    ctx.fillRect(x - 1, y - 1, 3, 3);
-  }
-}
-
 function renderPartidTable() {
   const rows = latestBy(state.partial.metrics, "partid")
     .filter((row) => isPartidVisible(row.partid));
@@ -3073,45 +3065,10 @@ function bindEvents() {
   }));
 }
 
-function initPartidChips() {
-  const container = document.getElementById('partidChips');
-  if (!container) return;
-  container.innerHTML = '';
-  for (let p = 0; p < 16; p++) {
-    const chip = document.createElement('span');
-    chip.className = 'partid-chip active';
-    chip.textContent = p;
-    chip.dataset.partid = p;
-    chip.addEventListener('click', function () {
-      this.classList.toggle('active');
-      if (!document.querySelector('.partid-chip.active')) {
-        this.classList.add('active');
-      }
-      renderAll();
-    });
-    container.appendChild(chip);
-  }
-  const allBtn = document.getElementById('partidAllBtn');
-  if (allBtn) {
-    allBtn.addEventListener('click', function () {
-      const allActive = container.querySelectorAll('.partid-chip.active').length === 16;
-      container.querySelectorAll('.partid-chip').forEach(c => c.classList.toggle('active', allActive));
-      renderAll();
-    });
-  }
-}
-
-function selectedPartids() {
-  const chips = document.querySelectorAll('.partid-chip.active');
-  if (chips.length === 0) return [];
-  return Array.from(chips).map(c => parseInt(c.dataset.partid));
-}
-
 async function init() {
   bindEvents();
   try {
     await loadDefaults();
-    initPartidChips();
     applyContextHelp();
     setStatus("ready", "调整参数后运行仿真", 0);
     renderConfigDiagnostics();

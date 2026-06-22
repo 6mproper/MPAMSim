@@ -102,6 +102,7 @@ class MetricsCollector:
                         "requester_id": request.requester_id,
                         "core_id": request.core_id,
                         "thread_id": request.thread_id,
+                        "stimulus_chain_id": request.stimulus_chain_id,
                         "operation": request.operation.value,
                         "request_class": request.request_class.value,
                         "line_address": request.line_address,
@@ -125,6 +126,18 @@ class MetricsCollector:
                         ),
                         "mc_soft_demoted": (
                             request.mc_arbitration.soft_demoted
+                        ),
+                        "return_cbusy_source": (
+                            request.return_cbusy_source
+                        ),
+                        "return_cbusy_level": (
+                            request.return_cbusy_level
+                        ),
+                        "return_cbusy_ostd_cap": (
+                            request.return_cbusy_ostd_cap
+                        ),
+                        "return_cbusy_sample_time_ns": (
+                            request.return_cbusy_sample_time_ns
                         ),
                         "noc_delay_ns": request.noc_delay_ns,
                         "req_ring_delay_ns": (
@@ -219,9 +232,6 @@ class MetricsCollector:
         self.last_interval_metrics = current
         self.last_capture_ns = time_ns
         return current
-
-    def record_local_sample(self, sample: MonitorSample) -> None:
-        self.monitor_sample_rows.append(sample.to_row())
 
     def record_control(self, event: ControlEvent) -> None:
         self.control_events.append(event)

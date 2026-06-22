@@ -141,6 +141,52 @@ def _thread_requester(slot: int) -> str:
     return f"cpu{slot // 2}.t{slot % 2}"
 
 
+def _stimulus_defaults_for_type(workload_type: str) -> Dict[str, object]:
+    mapping = {
+        "stream": {
+            "address_pattern": "sequential",
+            "operation_mix": "read",
+            "dependency_mode": "independent",
+            "arrival_mode": "fixed",
+            "issue_selection": "fifo",
+            "independent_chains": 1,
+        },
+        "pointer_chase": {
+            "address_pattern": "pointer_chase",
+            "operation_mix": "read",
+            "dependency_mode": "pointer_chain",
+            "arrival_mode": "fixed",
+            "issue_selection": "fifo",
+            "independent_chains": 1,
+        },
+        "random_read": {
+            "address_pattern": "uniform_random",
+            "operation_mix": "read",
+            "dependency_mode": "independent",
+            "arrival_mode": "fixed",
+            "issue_selection": "fifo",
+            "independent_chains": 1,
+        },
+        "mixed_rw": {
+            "address_pattern": "uniform_random",
+            "operation_mix": "mixed",
+            "dependency_mode": "independent",
+            "arrival_mode": "fixed",
+            "issue_selection": "eligible_scan",
+            "independent_chains": 1,
+        },
+        "bursty_dma": {
+            "address_pattern": "sequential",
+            "operation_mix": "mixed",
+            "dependency_mode": "independent",
+            "arrival_mode": "burst",
+            "issue_selection": "fifo",
+            "independent_chains": 1,
+        },
+    }
+    return dict(mapping.get(workload_type, mapping["stream"]))
+
+
 def _default_stimulus_configs() -> List[Dict[str, object]]:
     rows = []
     workload_types = [
@@ -151,6 +197,7 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
     ]
     for slot in range(16):
         workload_type = workload_types[slot % len(workload_types)]
+        type_defaults = _stimulus_defaults_for_type(workload_type)
         row = {
             "slot": slot,
             "enabled": True,
@@ -158,6 +205,17 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
             "partid": slot,
             "pmg": slot,
             "workload_type": workload_type,
+            **type_defaults,
+            "source_queue_depth": (
+                4
+                if type_defaults["issue_selection"] == "eligible_scan"
+                else 1
+            ),
+            "eligible_scan_depth": (
+                4
+                if type_defaults["issue_selection"] == "eligible_scan"
+                else 1
+            ),
             "rate_value": 6.0,
             "rate_unit": "gbps",
             "request_size_bytes": 64,
@@ -470,6 +528,34 @@ def _parse_stimulus_configs(
             raise ParameterError(
                 f"Stimulus {slot}: unsupported workload type"
             )
+        type_defaults = _stimulus_defaults_for_type(workload_type)
+        address_pattern = str(
+            raw.get(
+                "address_pattern",
+                type_defaults["address_pattern"],
+            )
+        )
+        operation_mix = str(
+            raw.get(
+                "operation_mix",
+                type_defaults["operation_mix"],
+            )
+        )
+        dependency_mode = str(
+            raw.get(
+                "dependency_mode",
+                type_defaults["dependency_mode"],
+            )
+        )
+        arrival_mode = str(
+            raw.get("arrival_mode", type_defaults["arrival_mode"])
+        )
+        issue_selection = str(
+            raw.get(
+                "issue_selection",
+                type_defaults["issue_selection"],
+            )
+        )
         rate_unit = str(raw.get("rate_unit", "gbps")).lower()
         if rate_unit not in {"mrps", "gbps"}:
             raise ParameterError(
@@ -481,6 +567,21 @@ def _parse_stimulus_configs(
             read_ratio = float(raw.get("read_ratio", 1.0))
             working_set_mb = int(raw.get("working_set_mb", 64))
             target_p99 = float(raw.get("target_p99_ns", 0.0) or 0.0)
+            source_queue_depth = int(
+                raw.get("source_queue_depth", 1)
+            )
+            independent_chains = int(
+                raw.get(
+                    "independent_chains",
+                    type_defaults["independent_chains"],
+                )
+            )
+            eligible_scan_depth = int(
+                raw.get(
+                    "eligible_scan_depth",
+                    min(4, source_queue_depth),
+                )
+            )
         except (TypeError, ValueError) as exc:
             raise ParameterError(
                 f"Stimulus {slot}: numeric field is invalid"
@@ -510,6 +611,48 @@ def _parse_stimulus_configs(
             raise ParameterError(
                 f"Stimulus {slot}: target P99 must be 0..1000000 ns"
             )
+        if address_pattern not in {
+            "sequential",
+            "uniform_random",
+            "pointer_chase",
+            "stride",
+            "hotset",
+        }:
+            raise ParameterError(
+                f"Stimulus {slot}: unsupported address pattern"
+            )
+        if operation_mix not in {"read", "write", "mixed"}:
+            raise ParameterError(
+                f"Stimulus {slot}: operation mix must be read, write, or mixed"
+            )
+        if dependency_mode not in {"independent", "pointer_chain"}:
+            raise ParameterError(
+                f"Stimulus {slot}: dependency mode must be independent or pointer_chain"
+            )
+        if arrival_mode not in {"fixed", "poisson", "burst"}:
+            raise ParameterError(
+                f"Stimulus {slot}: arrival mode must be fixed, poisson, or burst"
+            )
+        if issue_selection not in {"fifo", "eligible_scan"}:
+            raise ParameterError(
+                f"Stimulus {slot}: issue selection must be fifo or eligible_scan"
+            )
+        if not 1 <= independent_chains <= 1024:
+            raise ParameterError(
+                f"Stimulus {slot}: independent chains must be 1..1024"
+            )
+        if not 1 <= source_queue_depth <= 4096:
+            raise ParameterError(
+                f"Stimulus {slot}: source queue depth must be 1..4096"
+            )
+        if not 1 <= eligible_scan_depth <= source_queue_depth:
+            raise ParameterError(
+                f"Stimulus {slot}: eligible scan depth must be in [1, source_queue_depth]"
+            )
+        if dependency_mode == "pointer_chain" and operation_mix == "write":
+            raise ParameterError(
+                f"Stimulus {slot}: pointer_chain requires read traffic"
+            )
         parsed.append(
             {
                 "slot": slot,
@@ -518,14 +661,20 @@ def _parse_stimulus_configs(
                 "partid": partid,
                 "pmg": pmg,
                 "workload_type": workload_type,
+                "address_pattern": address_pattern,
+                "operation_mix": operation_mix,
+                "dependency_mode": dependency_mode,
+                "independent_chains": independent_chains,
+                "arrival_mode": arrival_mode,
+                "issue_selection": issue_selection,
+                "source_queue_depth": source_queue_depth,
+                "eligible_scan_depth": eligible_scan_depth,
                 "rate_value": rate_value,
                 "rate_unit": rate_unit,
                 "request_size_bytes": request_size,
                 "read_ratio": read_ratio,
                 "working_set_mb": working_set_mb,
                 "target_p99_ns": target_p99,
-                "dependency_mode": str(raw.get("dependency_mode", "independent")),
-                "source_queue_depth": int(raw.get("source_queue_depth", 1)),
             }
         )
     if seen != set(range(16)):
@@ -556,8 +705,14 @@ def _build_workloads(
             "request_size_bytes": row["request_size_bytes"],
             "injection_scope": "per_requester",
             "read_ratio": row["read_ratio"],
-            "dependency_mode": row.get("dependency_mode", "independent"),
-            "source_queue_depth": row.get("source_queue_depth", 1),
+            "address_pattern": row["address_pattern"],
+            "operation_mix": row["operation_mix"],
+            "dependency_mode": row["dependency_mode"],
+            "independent_chains": row["independent_chains"],
+            "arrival_mode": row["arrival_mode"],
+            "issue_selection": row["issue_selection"],
+            "source_queue_depth": row["source_queue_depth"],
+            "eligible_scan_depth": row["eligible_scan_depth"],
             "working_set_bytes": (
                 row["working_set_mb"] * 1024 * 1024
             ),

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
 
 from src.config.schema import MemoryControllerConfig
-from src.contracts.telemetry import MonitorSample, MetricSemantic, _metric_unit
 from src.mpam.settings import SettingsTable
 from src.sim.component import Component
 from src.sim.kernel import SimulationKernel
@@ -96,9 +95,6 @@ class MemoryControllerMSC(Component):
         settings: SettingsTable,
         on_complete: Callable[[Request], None],
         enforce_controls: bool = True,
-        local_sample_callback: Optional[
-            Callable[["MonitorSample"], None]
-        ] = None,
     ) -> None:
         super().__init__(config.id, "memory_controller")
         self.kernel = kernel
@@ -106,8 +102,6 @@ class MemoryControllerMSC(Component):
         self.settings = settings
         self.on_complete = on_complete
         self.enforce_controls = enforce_controls
-        self._local_sample_callback = local_sample_callback
-        self._local_cycle = 0
 
         self._buffer: List[Optional[BufferEntry]] = [
             None
@@ -178,17 +172,17 @@ class MemoryControllerMSC(Component):
             self._publish_bandwidth_monitor,
             f"mc-monitor:{self.component_id}",
         )
-        self.kernel.schedule(
-            self.config.cbusy_sample_ns,
-            self._evaluate_cbusy_queue,
-            f"cbusy-fast:{self.component_id}",
-        )
         if self.config.aging_mode == "per_partid_service_deficit":
             self.kernel.schedule(
                 self.aging_quantum_ns,
                 self._update_service_deficit,
                 f"mc-deficit:{self.component_id}",
             )
+        self.kernel.schedule(
+            self.config.cbusy_sample_ns,
+            self._evaluate_cbusy,
+            f"cbusy-sample:{self.component_id}",
+        )
 
     @property
     def total_bandwidth_gbps(self) -> float:
@@ -295,9 +289,6 @@ class MemoryControllerMSC(Component):
                 return True
         return False
 
-    def _dram_ready(self, slot: int) -> bool:
-        return True
-
     def _ready_entries(self) -> List[BufferEntry]:
         ready: List[BufferEntry] = []
         for entry in self._buffer:
@@ -309,7 +300,7 @@ class MemoryControllerMSC(Component):
                 and self._hard_block[request.partid]
             )
             request.mc_arbitration.hard_blocked = hard
-            if hard or self._ordering_blocked(entry) or not self._dram_ready(entry.slot):
+            if hard or self._ordering_blocked(entry):
                 continue
             ready.append(entry)
         return ready
@@ -513,17 +504,24 @@ class MemoryControllerMSC(Component):
         self._monitor_service_bytes[request.partid] += request.size_bytes
         self._sample_queue()
 
-        def complete_with_cbusy(req: Request, partid: int) -> None:
-            self._sample_cbusy(partid)
-            req.carry_cbusy_level = self._cbusy_level[partid]
-            self.on_complete(req)
-
         self.kernel.schedule(
             service_delay,
-            lambda p=request.partid, r=request: complete_with_cbusy(r, p),
+            lambda: self._complete_request(request),
             f"mc-complete:{self.component_id}",
         )
         self._schedule_dispatch(serialization_ns)
+
+    def _complete_request(self, request: Request) -> None:
+        level = self._cbusy_level[request.partid]
+        request.return_cbusy_source = self.component_id
+        request.return_cbusy_level = level
+        request.return_cbusy_ostd_cap = (
+            self._cbusy_cap(request.partid, level)
+            if level > 0
+            else 0
+        )
+        request.return_cbusy_sample_time_ns = self.kernel.now_ns
+        self.on_complete(request)
 
     def _configured_partids(self) -> set[int]:
         return {partid for partid, _ in self.settings.items()}
@@ -591,7 +589,6 @@ class MemoryControllerMSC(Component):
 
     def _publish_bandwidth_monitor(self) -> None:
         period_ns = self.monitor_period_ns
-        self._local_cycle += self.config.monitor_period_cycles
         weight_sum = (
             self.config.history_weight
             + self.config.current_weight
@@ -634,57 +631,12 @@ class MemoryControllerMSC(Component):
                         group["hardlimit_block_events"] += 1
                         group["throttle_delay_ns"] += period_ns
             self._monitor_service_bytes[partid] = 0
-            self._sample_cbusy(partid)
-            if self._local_sample_callback is not None:
-                self._emit_local_samples(partid, raw, filtered)
         self._schedule_dispatch(0.0)
         self.kernel.schedule(
             period_ns,
             self._publish_bandwidth_monitor,
             f"mc-monitor:{self.component_id}",
         )
-
-    def _emit_local_samples(
-        self,
-        partid: int,
-        raw_gbps: float,
-        filtered_gbps: float,
-    ) -> None:
-        setting = self.settings.lookup(partid)
-        time_ns = self.kernel.now_ns
-        rid = self.component_id
-        base_id = f"obs:{rid}:{self._local_cycle}"
-        metrics: Dict[str, object] = {
-            "raw_bandwidth_gbps": raw_gbps,
-            "filtered_bandwidth_gbps": filtered_gbps,
-            "buffer_entries": self._partid_buffer_count(partid),
-            "cbusy_level": self._cbusy_level[partid],
-            "hard_block": self._hard_block[partid],
-        }
-        for metric, value in sorted(metrics.items()):
-            semantic = (
-                MetricSemantic.CONTROL_STATE
-                if metric
-                in {"cbusy_level", "hard_block"}
-                else MetricSemantic.FILTERED_MONITOR
-                if metric.startswith("filtered")
-                else MetricSemantic.RAW_MONITOR
-            )
-            sample = MonitorSample(
-                time_ns=time_ns,
-                resource_type="memory_controller",
-                resource_id=rid,
-                local_cycle=self._local_cycle,
-                partid=partid,
-                pmg=None,
-                metric=metric,
-                value=value if partid in self._configured_partids() else None,
-                unit=_metric_unit(metric),
-                semantic=semantic,
-                sample_id=f"{base_id}:p{partid}:{metric}",
-                observation_id=f"{base_id}:p{partid}:{metric}",
-            )
-            self._local_sample_callback(sample)  # type: ignore[misc]
 
     def _update_service_deficit(self) -> None:
         max_counter = (1 << self.config.aging_counter_bits) - 1
@@ -775,31 +727,41 @@ class MemoryControllerMSC(Component):
             level = max(level, 2)
         return level
 
-    def _evaluate_cbusy_queue(self) -> None:
+    def _evaluate_cbusy(self) -> None:
         sample_ns = self.config.cbusy_sample_ns
         for partid in self._known_partids():
             setting = self.settings.lookup(partid)
-            if not self.enforce_controls or not setting.cbusy_enable:
-                continue
+            bandwidth_ratio = (
+                self._filtered_bandwidth_gbps[partid]
+                / setting.bw_max_gbps
+                if (
+                    setting.bmax_enable
+                    and setting.bw_max_gbps is not None
+                    and setting.bw_max_gbps > 0
+                )
+                else 0.0
+            )
             queue_ratio = (
                 self._partid_buffer_count(partid)
                 / max(1, self.config.queue_depth)
             )
-            current = self._cbusy_level[partid]
-            queue_thresholds = (
-                self.config.cbusy_l1_queue_ratio,
-                self.config.cbusy_l2_queue_ratio,
-                self.config.cbusy_l3_queue_ratio,
+            detected = self._detected_cbusy_level(
+                partid,
+                bandwidth_ratio,
+                queue_ratio,
             )
-            q_level = 0
-            for candidate in range(1, 4):
-                if queue_ratio >= queue_thresholds[candidate - 1]:
-                    q_level = candidate
+            current = self._cbusy_level[partid]
             new_level = current
-            if q_level > current:
-                new_level = q_level
+            if (
+                not self.enforce_controls
+                or not setting.cbusy_enable
+            ):
+                new_level = 0
                 self._cbusy_release_samples[partid] = 0
-            elif q_level < current:
+            elif detected > current:
+                new_level = detected
+                self._cbusy_release_samples[partid] = 0
+            elif detected < current:
                 self._cbusy_release_samples[partid] += 1
                 if (
                     self._cbusy_release_samples[partid]
@@ -809,78 +771,30 @@ class MemoryControllerMSC(Component):
                     self._cbusy_release_samples[partid] = 0
             else:
                 self._cbusy_release_samples[partid] = 0
+
+            if current > 0:
+                self._cbusy_interval_active_ns[partid] += sample_ns
+            self._cbusy_last_bw_ratio[partid] = bandwidth_ratio
+            self._cbusy_last_queue_ratio[partid] = queue_ratio
+            self._cbusy_interval_peak_bw_ratio[partid] = max(
+                self._cbusy_interval_peak_bw_ratio[partid],
+                bandwidth_ratio,
+            )
+            self._cbusy_interval_peak_queue_ratio[partid] = max(
+                self._cbusy_interval_peak_queue_ratio[partid],
+                queue_ratio,
+            )
             if new_level != current:
                 self._cbusy_level[partid] = new_level
                 self._cbusy_interval_transitions[partid] += 1
                 if new_level > current:
                     self._cbusy_interval_assertions[partid] += 1
+
         self.kernel.schedule(
             sample_ns,
-            self._evaluate_cbusy_queue,
-            f"cbusy-fast:{self.component_id}",
+            self._evaluate_cbusy,
+            f"cbusy-sample:{self.component_id}",
         )
-
-    def _sample_cbusy(self, partid: int) -> int:
-        setting = self.settings.lookup(partid)
-        bandwidth_ratio = (
-            self._filtered_bandwidth_gbps[partid]
-            / setting.bw_max_gbps
-            if (
-                setting.bmax_enable
-                and setting.bw_max_gbps is not None
-                and setting.bw_max_gbps > 0
-            )
-            else 0.0
-        )
-        queue_ratio = (
-            self._partid_buffer_count(partid)
-            / max(1, self.config.queue_depth)
-        )
-        detected = self._detected_cbusy_level(
-            partid,
-            bandwidth_ratio,
-            queue_ratio,
-        )
-        current = self._cbusy_level[partid]
-        new_level = current
-        if (
-            not self.enforce_controls
-            or not setting.cbusy_enable
-        ):
-            new_level = 0
-            self._cbusy_release_samples[partid] = 0
-        elif detected > current:
-            new_level = detected
-            self._cbusy_release_samples[partid] = 0
-        elif detected < current:
-            self._cbusy_release_samples[partid] += 1
-            if (
-                self._cbusy_release_samples[partid]
-                >= self.config.cbusy_release_hold_samples
-            ):
-                new_level = current - 1
-                self._cbusy_release_samples[partid] = 0
-        else:
-            self._cbusy_release_samples[partid] = 0
-
-        if current > 0:
-            self._cbusy_interval_active_ns[partid] += self.monitor_period_ns
-        self._cbusy_last_bw_ratio[partid] = bandwidth_ratio
-        self._cbusy_last_queue_ratio[partid] = queue_ratio
-        self._cbusy_interval_peak_bw_ratio[partid] = max(
-            self._cbusy_interval_peak_bw_ratio[partid],
-            bandwidth_ratio,
-        )
-        self._cbusy_interval_peak_queue_ratio[partid] = max(
-            self._cbusy_interval_peak_queue_ratio[partid],
-            queue_ratio,
-        )
-        if new_level != current:
-            self._cbusy_level[partid] = new_level
-            self._cbusy_interval_transitions[partid] += 1
-            if new_level > current:
-                self._cbusy_interval_assertions[partid] += 1
-        return new_level
 
     def monitor_snapshot(self, interval_ns: float):
         utilization = min(

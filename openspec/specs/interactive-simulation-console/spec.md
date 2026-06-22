@@ -54,13 +54,18 @@ MC或requester私有字段。
 
 ### Requirement: 每线程激励控制
 
-每行 MUST 配置enable、PARTID、PMG、type、rate、unit、size、read ratio、
-working set和可选P99 target。
+每行 MUST 配置enable、PARTID、PMG、type、地址模式、依赖模式、发射选择、源队列深度、
+rate、unit、size、read ratio、working set和可选P99 target。
 
 #### Scenario: 独立修改
 
 - **WHEN** 修改一行
 - **THEN** 不隐式修改其他行
+
+#### Scenario: 指向依赖字段
+
+- **WHEN** 用户指向Dep、Issue或SrcQ列
+- **THEN** 控制台说明pointer chain、eligible scan和源队列深度的行为边界
 
 ### Requirement: 稳定参考拓扑
 

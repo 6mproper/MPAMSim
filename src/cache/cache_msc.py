@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Callable, DefaultDict, Deque, Dict, List, Optional, Tuple
 
 from src.config.schema import CacheConfig
-from src.contracts.telemetry import MonitorSample, MetricSemantic, _metric_unit
 from src.mpam.settings import MPAMSetting, SettingsTable
 from src.sim.component import Component
 from src.sim.kernel import SimulationKernel
@@ -119,9 +118,6 @@ class CacheMSC(Component):
         on_hit: Callable[[Request], None],
         on_miss: Callable[[Request], None],
         enforce_controls: bool = True,
-        local_sample_callback: Optional[
-            Callable[["MonitorSample"], None]
-        ] = None,
     ) -> None:
         super().__init__(config.id, "cache")
         self.kernel = kernel
@@ -130,8 +126,6 @@ class CacheMSC(Component):
         self.on_hit = on_hit
         self.on_miss = on_miss
         self.enforce_controls = enforce_controls
-        self._local_sample_callback = local_sample_callback
-        self._local_cycle = 0
         self._queue: Deque[Request] = deque()
         self._active_lookups = 0
         self._interval_lookup_busy_ns = 0.0
@@ -411,6 +405,18 @@ class CacheMSC(Component):
                 delay = max(
                     0.0,
                     self.kernel.now_ns - waiter.joined_time_ns,
+                )
+                waiter.request.return_cbusy_source = (
+                    entry.owner_request.return_cbusy_source
+                )
+                waiter.request.return_cbusy_level = (
+                    entry.owner_request.return_cbusy_level
+                )
+                waiter.request.return_cbusy_ostd_cap = (
+                    entry.owner_request.return_cbusy_ostd_cap
+                )
+                waiter.request.return_cbusy_sample_time_ns = (
+                    entry.owner_request.return_cbusy_sample_time_ns
                 )
             waiter.request.timing.mshr_fill_delay_ns += delay
             waiter.request.cache_delay_ns += self.config.fill_latency_ns
@@ -782,7 +788,6 @@ class CacheMSC(Component):
     def _publish_mpam_monitor(self) -> None:
         raw_counts = self._sampled_owner_counts()
         period_ns = self.monitor_period_ns
-        self._local_cycle += self.config.monitor_period_cycles
         weight_sum = (
             self.config.history_weight
             + self.config.current_weight
@@ -816,58 +821,11 @@ class CacheMSC(Component):
             )
             self._monitor_sampled_bytes[partid] = 0
             self._monitor_updates[partid] += 1
-            if self._local_sample_callback is not None:
-                self._emit_local_samples(
-                    partid,
-                    raw_count,
-                    filtered_count,
-                    raw_bandwidth,
-                    filtered_bandwidth,
-                )
         self.kernel.schedule(
             period_ns,
             self._publish_mpam_monitor,
             f"l3-monitor:{self.component_id}",
         )
-
-    def _emit_local_samples(
-        self,
-        partid: int,
-        raw_count: float,
-        filtered_count: float,
-        raw_bw: float,
-        filtered_bw: float,
-    ) -> None:
-        time_ns = self.kernel.now_ns
-        rid = self.component_id
-        base_id = f"obs:{rid}:{self._local_cycle}"
-        metrics: Dict[str, object] = {
-            "raw_sampled_occupancy": raw_count,
-            "filtered_sampled_occupancy": filtered_count,
-            "raw_sampled_bandwidth_gbps": raw_bw,
-            "filtered_sampled_bandwidth_gbps": filtered_bw,
-        }
-        for metric, value in sorted(metrics.items()):
-            semantic = (
-                MetricSemantic.FILTERED_MONITOR
-                if metric.startswith("filtered")
-                else MetricSemantic.RAW_MONITOR
-            )
-            sample = MonitorSample(
-                time_ns=time_ns,
-                resource_type="cache",
-                resource_id=rid,
-                local_cycle=self._local_cycle,
-                partid=partid,
-                pmg=None,
-                metric=metric,
-                value=value if partid in {p for p, _ in self.settings.items()} else None,
-                unit=_metric_unit(metric),
-                semantic=semantic,
-                sample_id=f"{base_id}:p{partid}:{metric}",
-                observation_id=f"{base_id}:p{partid}:{metric}",
-            )
-            self._local_sample_callback(sample)  # type: ignore[misc]
 
     def monitor_snapshot(self, interval_ns: float):
         total_requests = sum(

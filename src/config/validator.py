@@ -289,6 +289,58 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Workload {workload.name} injection scope must be aggregate or per_requester"
             )
+        if workload.address_pattern not in {
+            "auto",
+            "sequential",
+            "stream",
+            "uniform_random",
+            "random",
+            "pointer_chase",
+            "stride",
+            "hotset",
+        }:
+            raise ConfigError(
+                f"Workload {workload.name} address_pattern is unsupported"
+            )
+        if workload.operation_mix not in {"auto", "read", "write", "mixed"}:
+            raise ConfigError(
+                f"Workload {workload.name} operation_mix must be read, write, or mixed"
+            )
+        if workload.dependency_mode not in {
+            "independent",
+            "pointer_chain",
+            "chained",
+        }:
+            raise ConfigError(
+                f"Workload {workload.name} dependency_mode must be independent or pointer_chain"
+            )
+        if workload.arrival_mode not in {"fixed", "poisson", "burst"}:
+            raise ConfigError(
+                f"Workload {workload.name} arrival_mode must be fixed, poisson, or burst"
+            )
+        if workload.issue_selection not in {"fifo", "eligible_scan"}:
+            raise ConfigError(
+                f"Workload {workload.name} issue_selection must be fifo or eligible_scan"
+            )
+        if workload.independent_chains <= 0:
+            raise ConfigError(
+                f"Workload {workload.name} independent_chains must be positive"
+            )
+        if workload.source_queue_depth <= 0:
+            raise ConfigError(
+                f"Workload {workload.name} source_queue_depth must be positive"
+            )
+        if workload.eligible_scan_depth <= 0:
+            raise ConfigError(
+                f"Workload {workload.name} eligible_scan_depth must be positive"
+            )
+        if (
+            workload.dependency_mode in {"pointer_chain", "chained"}
+            and workload.operation_mix == "write"
+        ):
+            raise ConfigError(
+                f"Workload {workload.name} pointer_chain requires read-capable traffic"
+            )
 
     valid_msc_ids = cache_ids | set(config.mc_by_id) | {"noc"}
     for entry in config.msc_controls:

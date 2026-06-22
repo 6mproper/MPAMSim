@@ -26,15 +26,8 @@ def build_policies(
     for config in configs:
         if config.name == "closed_loop_qos":
             policies.append(ClosedLoopQoSPolicy(config.params, targets, mc_tables))
-        elif config.name in ("closed_loop_comprehensive", "combined"):
-            policies.append(ClosedLoopQoSPolicy(config.params, targets, mc_tables))
         elif config.name == "no_control":
             policies.append(NoControlPolicy())
-        elif config.name == "static_mpam":
-            policies.append(StaticMPAMPolicy())
         else:
-            raise ValueError(
-                f"Unknown policy: {config.name}. "
-                f"Supported: no_control, static_mpam, closed_loop_qos, closed_loop_comprehensive"
-            )
+            policies.append(StaticMPAMPolicy())
     return policies

@@ -69,24 +69,76 @@ def _load_requesters(raw: Dict[str, Any], clusters: List[ClusterConfig], threads
 def _load_workload(item: Dict[str, Any], simulation_time_ns: int) -> WorkloadConfig:
     injection = item.get("injection", {})
     address = item.get("address", {})
+    workload_type = str(item.get("type", "stream"))
+    arrival_mode = str(
+        item.get(
+            "arrival_mode",
+            injection.get(
+                "mode",
+                item.get("injection_mode", "fixed"),
+            ),
+        )
+    )
+    address_pattern = str(
+        item.get(
+            "address_pattern",
+            address.get(
+                "pattern",
+                item.get("address_distribution", "auto"),
+            ),
+        )
+    )
+    if address_pattern == "auto":
+        address_pattern = {
+            "stream": "sequential",
+            "pointer_chase": "pointer_chase",
+            "random_read": "uniform_random",
+            "mixed_rw": "uniform_random",
+            "bursty_dma": "sequential",
+        }.get(workload_type, "uniform_random")
+    dependency_mode = str(
+        item.get(
+            "dependency_mode",
+            "pointer_chain"
+            if workload_type == "pointer_chase"
+            else "independent",
+        )
+    )
+    read_ratio = float(item.get("read_ratio", 1.0))
+    operation_mix = str(item.get("operation_mix", "auto"))
+    if operation_mix == "auto":
+        if read_ratio >= 1.0:
+            operation_mix = "read"
+        elif read_ratio <= 0.0:
+            operation_mix = "write"
+        else:
+            operation_mix = "mixed"
     return WorkloadConfig(
         name=str(item["name"]),
-        type=str(item.get("type", "stream")),
+        type=workload_type,
         requesters=[str(value) for value in item.get("requesters", [])],
         partid=int(item.get("partid", 0)),
         pmg=int(item.get("pmg", 0)),
         request_size_bytes=int(item.get("request_size_bytes", 64)),
-        read_ratio=float(item.get("read_ratio", 1.0)),
+        read_ratio=read_ratio,
         working_set_bytes=int(item.get("working_set_bytes", address.get("working_set_bytes", 1 << 20))),
         target_p99_ns=float(item["target_p99_ns"]) if item.get("target_p99_ns") is not None else None,
         injection_rate_mrps=_optional_float(item.get("injection_rate_mrps", injection.get("rate_mrps"))),
         injection_rate_gbps=_optional_float(item.get("injection_rate_gbps", injection.get("rate_gbps"))),
-        injection_mode=str(injection.get("mode", item.get("injection_mode", "fixed"))),
+        injection_mode=arrival_mode,
         rate_scope=str(injection.get("scope", item.get("injection_scope", "aggregate"))),
         burst_length=int(injection.get("burst_length", item.get("burst_length", 1))),
         burst_period_ns=_optional_float(injection.get("burst_period_ns", item.get("burst_period_ns"))),
         address_distribution=str(address.get("distribution", item.get("address_distribution", "auto"))),
-        dependency_mode=str(item.get("dependency_mode", "independent")),
+        address_pattern=address_pattern,
+        operation_mix=operation_mix,
+        dependency_mode=dependency_mode,
+        independent_chains=int(
+            item.get("independent_chains", item.get("pointer_chains", 1))
+        ),
+        arrival_mode=arrival_mode,
+        issue_selection=str(item.get("issue_selection", "fifo")),
+        eligible_scan_depth=int(item.get("eligible_scan_depth", 1)),
         source_queue_depth=int(item.get("source_queue_depth", 1)),
         locality=str(address.get("locality", item.get("locality", "auto"))),
         start_ns=int(item.get("start_ns", 0)),

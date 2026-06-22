@@ -84,8 +84,6 @@ class MonitorSample:
     unit: str
     semantic: MetricSemantic
     sample_id: str
-    observation_id: str = ""
-    cause_id: Optional[str] = None
 
     def to_row(self) -> Dict[str, object]:
         return {
@@ -100,8 +98,6 @@ class MonitorSample:
             "unit": self.unit,
             "semantic": self.semantic.value,
             "sample_id": self.sample_id,
-            "observation_id": self.observation_id,
-            "cause_id": self.cause_id,
         }
 
 
@@ -235,7 +231,6 @@ class ControlDecision:
     pmg: Optional[int] = None
     decision_id: str = ""
     monitor_sample_id: str = ""
-    observation_id: str = ""
     action_effective_time_ns: Optional[float] = None
 
     @property
@@ -247,14 +242,12 @@ class ControlDecision:
         decision_id: str,
         monitor_sample_id: str,
         action_effective_time_ns: float,
-        observation_id: str = "",
     ) -> "ControlDecision":
         return replace(
             self,
             decision_id=decision_id,
             monitor_sample_id=monitor_sample_id,
             action_effective_time_ns=action_effective_time_ns,
-            observation_id=observation_id,
         )
 
 
@@ -273,9 +266,6 @@ class ControlEvent:
     reason: str
     monitor_sample_id: str = ""
     decision_id: str = ""
-    observation_id: str = ""
-    action_id: str = ""
-    cause_id: Optional[str] = None
     action_effective_time_ns: Optional[float] = None
     pmg: Optional[int] = None
     details: Optional[Mapping[str, object]] = None
@@ -300,9 +290,6 @@ class ControlEvent:
             "reason": self.reason,
             "monitor_sample_id": self.monitor_sample_id,
             "decision_id": self.decision_id,
-            "observation_id": self.observation_id,
-            "action_id": self.action_id or f"action:{self.decision_id}",
-            "cause_id": self.cause_id,
             "action_effective_time_ns": self.action_effective_time_ns,
             "details": dict(self.details or {}),
         }

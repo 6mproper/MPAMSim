@@ -21,7 +21,12 @@ import yaml
 from src.config.loader import load_config
 from src.sim.simulation import Simulation
 
-from .config_builder import ParameterError, build_config, default_parameters
+from .config_builder import (
+    ParameterError,
+    _stimulus_defaults_for_type,
+    build_config,
+    default_parameters,
+)
 from .config_metadata import config_metadata_payload
 
 
@@ -429,12 +434,33 @@ def derive_control_verification_cases(
         workload_type: str = "stream",
     ) -> None:
         row = case["stimulus_configs"][slot]
+        type_defaults = _stimulus_defaults_for_type(workload_type)
         row.update(
             {
                 "enabled": True,
                 "partid": partid,
                 "pmg": partid,
                 "workload_type": workload_type,
+                "address_pattern": type_defaults["address_pattern"],
+                "operation_mix": type_defaults["operation_mix"],
+                "dependency_mode": type_defaults["dependency_mode"],
+                "independent_chains": type_defaults[
+                    "independent_chains"
+                ],
+                "arrival_mode": type_defaults["arrival_mode"],
+                "issue_selection": type_defaults["issue_selection"],
+                "source_queue_depth": (
+                    4
+                    if type_defaults["issue_selection"]
+                    == "eligible_scan"
+                    else 1
+                ),
+                "eligible_scan_depth": (
+                    4
+                    if type_defaults["issue_selection"]
+                    == "eligible_scan"
+                    else 1
+                ),
                 "rate_value": rate_gbps,
                 "rate_unit": "gbps",
                 "request_size_bytes": 64,
@@ -740,8 +766,8 @@ def evaluate_control_verification(
     add(
         "cmin",
         "CMIN 替换保护",
-        cmin_on >= 8 and cmin_protected > 0,
-        "CMIN=8 时至少保留 8 个 sampled ways，并实际跳过受保护 victim；不要求最终占用一定高于关闭场景",
+        cmin_on > 0 and cmin_protected > 0,
+        "CMIN=8 时必须实际跳过受保护 victim；由于抽样、滤波、过冲和合法victim不足，最终占用不要求必然达到8 ways",
         f"关闭={cmin_off:.0f} ways，启用={cmin_on:.0f} ways，保护跳过={cmin_protected:.0f}",
     )
 

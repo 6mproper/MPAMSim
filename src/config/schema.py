@@ -84,8 +84,6 @@ class MemoryControllerConfig:
     bmin_qos_promote: int = 2
     softlimit_qos_demote: int = 2
     cbusy_sample_ns: float = 1_000.0
-    # Deprecated: CBusy now carried on RSP/DAT return sideband.
-    # Retained for schema compatibility; value is not read by MC.
     cbusy_feedback_latency_ns: float = 50.0
     cbusy_release_hold_samples: int = 3
     cbusy_l1_bw_ratio: float = 1.0
@@ -168,7 +166,13 @@ class WorkloadConfig:
     burst_length: int = 1
     burst_period_ns: Optional[float] = None
     address_distribution: str = "auto"
+    address_pattern: str = "auto"
+    operation_mix: str = "auto"
     dependency_mode: str = "independent"
+    independent_chains: int = 1
+    arrival_mode: str = "fixed"
+    issue_selection: str = "fifo"
+    eligible_scan_depth: int = 1
     source_queue_depth: int = 1
     locality: str = "auto"
     start_ns: int = 0

@@ -475,14 +475,15 @@ MC0拥塞不得默认限制同一PARTID发往MC1的请求。
 ### TRAFFIC-001：正交激励参数
 
 ```yaml
-address_pattern: sequential | random | pointer_chase
-operation_pattern: read | write | mixed
+address_pattern: sequential | uniform_random | pointer_chase | stride | hotset
+operation_mix: read | write | mixed
 read_ratio:
-dependency_mode: independent | chained
+dependency_mode: independent | pointer_chain
 independent_chains:
 arrival_mode: fixed | poisson | burst
 burst_length:
 issue_selection: fifo | eligible_scan
+source_queue_depth:
 eligible_scan_depth:
 working_set_bytes:
 ```
@@ -498,11 +499,13 @@ working_set_bytes:
 ```
 
 一条链最多一个依赖请求；`independent_chains`决定链间并行度。
+当前实现中，`workload_type=pointer_chase`会兼容映射为
+`address_pattern=pointer_chase`和`dependency_mode=pointer_chain`。
 
 ### TRAFFIC-003：Eligible scan
 
-它是发射策略，不是激励类型。可以在前N个已生成、彼此独立的请求中，
-选择第一个满足准入条件的请求，但不得越过依赖和顺序约束。
+它是发射策略，不是激励类型。可以在前`eligible_scan_depth`个已生成请求中，
+选择第一个满足OSTD和REQ Ring准入条件的请求，但不得越过pointer chain依赖。
 
 ### CPU-007：监控
 
@@ -1018,17 +1021,14 @@ hard_block
 队列阈值直接配置为entry数；带宽比例在配置阶段转换成固定阈值。
 硬件路径只做整数或定点比较。
 
-### CBUSY-004：评估时序
+### CBUSY-004：双时间尺度
 
-当前实现每MC监控周期（256拍）评估所有PARTID的queue和bandwidth level：
+每MC周期计算queue level；每256拍更新bandwidth level：
 
 ```text
 detected_level =
 max(queue_level, bandwidth_level, hard_block_min_level)
 ```
-
-Queue level使用当前buffer占用；bandwidth level使用上一周期发布的filtered BW。
-更细粒度的每周期queue-only评估为未来硬件近似优化预留。
 
 ### CBUSY-005：状态机
 
@@ -1045,9 +1045,12 @@ Queue level使用当前buffer占用；bandwidth level使用上一周期发布的
 source_mc_id
 partid
 cbusy_level
+effective_ostd_cap
+sample_time_ns
 ```
 
 不同RN可能因返回流量和Ring拥塞暂时看到不同等级，这是低PPA反馈代价。
+没有返回流量时，RN保持旧等级，不存在独立广播控制网络。
 
 ### CBUSY-007：RN动作
 
@@ -1390,11 +1393,12 @@ validation_level: basic | full
 - 类型化`Transaction`、路由、延迟和MC仲裁状态；
 - 类型化监控快照、样本、控制决策和控制事件；
 - 组件能力声明、注册和兼容性校验；
-- `EndpointPort`等接口协议族。
 - 8核16线程的Thread/Core两级OSTD；
 - `shared`、`static_partition`和`reserve_borrow` Core策略；
 - 按`(PARTID, home MC)`保存CBusy反馈、准入计数和stall；
 - `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。
+- 源端支持`source_queue_depth`、`pointer_chain`和`eligible_scan`；
+- pointer chain在终端返回后才生成下一地址，独立流量可使用多个源队列候选；
 - REQ、RSP、DAT三条独立双向bufferless ring；
 - 最短方向、固定tie、逐hop移动、目的端拒绝绕行和DAT重组；
 - Ring按channel、方向、link、node和PARTID导出flit及反压证据；
@@ -1412,44 +1416,24 @@ validation_level: basic | full
 - 每256个MC本地拍发布raw/filtered带宽，BMIN/BMAX读取上一发布值；
 - BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
 - 可选每PARTID饱和service-deficit计数器；
-- CBusy读取每PARTID buffer占用、filtered BW和hard状态。
-- CBusy经RSP/DAT返回旁带携带到RN，消除独立反馈通路；每MC监控周期评估所有PARTID档位。
-- L3和MC每本地监控周期离散发布所有16个PARTID的MonitorSample，带observation_id和local_cycle。
-- MC可插拔`_dram_ready(slot)`接口（默认全ready），not-ready entry保留在buffer但不参与QoS。
-- 激励`dependency_mode`字段支持independent和pointer_chain，pointer_chain下串行生成依赖请求。
-- Transaction根据operation显式设置completion_condition（READ_DATA/WRITE_RESPONSE）。
-- ControlDecision和ControlEvent贯通observation_id、decision_id和cause_id因果链。
-- SoftwareGroup/SoftwareGroupConfig支持CTRL_MON和MON组的PARTID/PMG解析，任务优先于CPU默认。
-- 仿真progress watchdog检测停滞（10次检查无进展→MODEL_ERROR）。
-- 四个实验模板：no_control、static_mpam、closed_loop、combined。
-- 结果面板顶部PARTID选择器、控制事件时间线canvas、4核心页签替代原10个等权页签。
+- CBusy读取每PARTID buffer占用、filtered BW和hard状态；
+- MC服务完成时把当前CBusy采样为RSP/DAT返回旁带，RN只更新收到返回的
+  `requester_id`、目标MC和PARTID反馈表。
 
-### 17.2 已完成（2026-06-22后续实现）
+### 17.2 仍需替换或补全
 
-| 模块 | 原状态 | 已完成 |
+| 模块 | 当前原型 | 目标 |
 | --- | --- | --- |
-| CBusy | 独立延迟事件送达 | RSP/DAT旁带反馈，carry_cbusy_level随事务返回，每监控周期评估所有PARTID |
-| 监控 | 按全局导出周期保存快照 | 每L3/MC本地监控周期离散发布所有16个PARTID的MonitorSample，带observation_id和local_cycle |
-| MC | 无DRAM readiness | 可插拔`_dram_ready(slot)`接口，默认全ready |
-| 激励 | type混合维度 | `dependency_mode`（independent/pointer_chain）和`source_queue_depth`字段 |
-| UI | 10个等权页签 | 4个核心页签，顶部PARTID选择器，控制事件时间线canvas |
-| 事务 | completion_condition未使用 | 根据operation显式设置READ_DATA或WRITE_RESPONSE |
-| 控制 | cause_id未实现 | observation_id/decision_id/cause_id在ControlDecision和ControlEvent中贯通 |
-| 软件组 | 无 | SoftwareGroup/SoftwareGroupConfig（CTRL_MON和MON组解析） |
-| 验证 | 无watchdog | progress watchdog检测仿真停滞 |
-| 实验 | 无模板 | no_control/static_mpam/closed_loop/combined四个实验模板 |
+| CPU | 已实现两级OSTD、三种Core策略、目标MC限制、REQ Ring准入和可配源队列 | 后续补充OSTD lifetime直方图 |
+| 激励 | 已拆分地址、操作、依赖、到达和发射选择，并保留type兼容预设 | 后续增加可配stride、hotset比例和多链UI |
+| NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
+| L3 | 已实现真实set/tag/way、MSHR、fill、physical/raw/filtered抽样误差和上一256拍CMIN/CMAX输入 | 后续增加跨line child transaction和更完整本地监控事件导出 |
+| MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
+| CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的目标MC/PARTID状态 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
+| 监控 | L3/MC快照已包含actual/raw/filtered和local cycle，但历史仍按全局导出周期保存 | 保存每个资源本地监控周期和稳定因果ID |
+| UI | 多页签和大表 | 配置驱动单工作区 |
 
-### 17.3 仍需替换或补全
-
-| 模块 | 当前状态 | 目标 |
-| --- | --- | --- |
-| CPU | 两级OSTD、三种Core策略、目标MC限制、REQ Ring准入、可配source_queue_depth | eligible scan issue选择策略 |
-| 激励 | 已拆分dependency_mode，address_distribution已有stream/random/hotspot | arrival_mode独立（已支持fixed/poisson/burst通过injection_mode），eligible_scan发射策略 |
-| NoC | 三条双向bufferless ring、绕行、DAT重组 | 完整CHI opcode/SNP（暂不实现） |
-| L3 | 真实set/tag/way、MSHR、fill、三平面抽样、上一256拍CMIN/CMAX输入、每本地周期离散采样 | 跨line child transaction |
-| MC | 共享buffer、全候选、同line顺序、rotating QoS、周期BMIN/BMAX、DRAM ready mask、RSP/DAT旁带CBusy | DRAM时序模型（channel/bank/row） |
-
-### 17.4 已被目标规格取代
+### 17.3 已被目标规格取代
 
 - 概率L3命中；
 - NoC priority heap；
@@ -1457,11 +1441,7 @@ validation_level: basic | full
 - BMIN/BMAX token bucket默认算法；
 - 同QoS oldest timestamp硬件调度；
 - 固定四场景对照作为主要验证方式；
-- 只看最终平均值判断控制效果；
-- CBusy独立定时反馈通路（已由RSP/DAT返回旁带取代）；
-- MC `on_cbusy`回调接口（已由Transaction.carry_cbusy_level取代）；
-- 10个等权结果页签（已由PARTID驱动的4核心视图取代）；
-- 仅全局导出周期的监控快照（已由每本地周期离散采样取代）。
+- 只看最终平均值判断控制效果。
 
 ---
 

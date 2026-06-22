@@ -44,6 +44,11 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert [workload.partid for workload in config.workloads] == list(range(16))
     assert config.workloads[0].injection_rate_gbps == 6.0
     assert config.workloads[1].injection_rate_mrps == 4.0
+    assert config.workloads[1].address_pattern == "pointer_chase"
+    assert config.workloads[1].dependency_mode == "pointer_chain"
+    assert config.workloads[3].address_pattern == "uniform_random"
+    assert config.workloads[0].issue_selection == "eligible_scan"
+    assert config.workloads[0].source_queue_depth == 4
     assert config.policies[0].params["protected_partids"] == [1]
     assert config.policies[0].params["background_partids"] == [
         0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
