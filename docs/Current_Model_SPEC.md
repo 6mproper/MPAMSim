@@ -1384,18 +1384,26 @@ validation_level: basic | full
 - 结果导出基础设施；
 - 每MSC独立settings table思想；
 - 现有测试框架。
+- 类型化`Transaction`、路由、延迟和MC仲裁状态；
+- 类型化监控快照、样本、控制决策和控制事件；
+- 组件能力声明、注册和兼容性校验；
+- `EndpointPort`等接口协议族。
+- 8核16线程的Thread/Core两级OSTD；
+- `shared`、`static_partition`和`reserve_borrow` Core策略；
+- 按`(PARTID, home MC)`保存CBusy反馈、准入计数和stall；
+- `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。
 
-### 17.2 必须替换
+### 17.2 仍需替换或补全
 
 | 模块 | 当前原型 | 目标 |
 | --- | --- | --- |
-| CPU | 独立requester，简单OSTD | 8核16线程共享OSTD和目标MC限制 |
+| CPU | 已实现两级OSTD、三种Core策略、目标MC限制；尚无源队列深度和REQ Ring许可 | 接入源队列、依赖链、eligible scan和Ring注入准入 |
 | 激励 | type混合多个维度 | 地址、操作、依赖、到达正交配置 |
 | NoC | 单FIFO/序列化链路 | 三条双向bufferless ring |
 | L3 | 概率命中和采样way状态 | 全set/tag/way、MSHR和fill |
 | MC | 每PARTID FIFO头、token bucket | 共享buffer全候选QoS和周期门控 |
-| CBusy | 直接延迟事件 | 双时间尺度、RSP/DAT旁带反馈 |
-| 监控 | interval聚合 | actual/raw/filtered和因果事件 |
+| CBusy | 已按目标MC隔离，但仍由直接延迟事件送达 | 双时间尺度、RSP/DAT旁带反馈 |
+| 监控 | interval聚合已接入类型化样本和因果事件，尚无完整raw/filtered时序 | actual/raw/filtered和因果事件 |
 | UI | 多页签和大表 | 配置驱动单工作区 |
 
 ### 17.3 已被目标规格取代

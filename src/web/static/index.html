@@ -38,7 +38,16 @@
             <label>随机种子<input data-param="seed" type="number" min="0" step="1"></label>
             <label>活跃核数<input data-param="active_cores" type="number" value="8" readonly></label>
             <label>每核线程<input data-param="threads_per_core" type="number" value="2" readonly></label>
-            <label>最大 outstanding<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
+            <label>Thread 最大 OSTD<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
+            <label>Core 最大 OSTD<input data-param="core_max_outstanding" type="number" min="1" max="2048" step="1"></label>
+            <label>Core OSTD 策略
+              <select data-param="core_ostd_policy">
+                <option value="shared">共享池</option>
+                <option value="static_partition">静态划分</option>
+                <option value="reserve_borrow">保留并借用</option>
+              </select>
+            </label>
+            <label>Thread 保留 OSTD<input data-param="thread_ostd_reserve" type="number" min="1" max="1024" step="1"></label>
           </div>
 
           <h2>L3 / SLC</h2>
@@ -277,7 +286,7 @@
         <div class="result-view active" data-result-view="resource-monitor">
           <div class="resource-monitor-toolbar">
             <div class="resource-tabs" role="tablist" aria-label="监控资源">
-              <button class="resource-tab active" data-resource-view="cpu" data-help="查看 requester 侧每个 PARTID 的 outstanding、发出/完成请求和源端背压。">CPU</button>
+              <button class="resource-tab active" data-resource-view="cpu" data-help="查看每个 PARTID 的 Thread OSTD、共享 Core 池、按目标 MC 分开的 OSTD/CBusy、完成和源端背压。">CPU</button>
               <button class="resource-tab" data-resource-view="l3" data-help="查看每个 PARTID 在所有 L3 实例上的抽样占用、带宽和缓存控制状态。">L3</button>
               <button class="resource-tab" data-resource-view="mc" data-help="查看每个 PARTID 在所有内存控制器上的带宽、排队、限速和调度状态。">MC</button>
             </div>

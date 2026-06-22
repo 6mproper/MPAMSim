@@ -113,6 +113,7 @@ class JobManager:
                         "time_ns": collector.last_capture_ns,
                         "metrics": list(collector.metrics_rows),
                         "cpu": list(collector.requester_rows),
+                        "cpu_mc": list(collector.requester_mc_rows),
                         "msc": _compact_msc_rows(collector.msc_rows),
                         "controls": list(collector.control_rows),
                     }
@@ -151,6 +152,7 @@ class JobManager:
                 },
                 "metrics": result.collector.metrics_rows,
                 "cpu": result.collector.requester_rows,
+                "cpu_mc": result.collector.requester_mc_rows,
                 "msc": _compact_msc_rows(result.collector.msc_rows),
                 "controls": result.collector.control_rows,
                 "timeline": result.collector.timeline_rows[-3000:],
@@ -167,6 +169,7 @@ class JobManager:
                     "time_ns": result.elapsed_ns,
                     "metrics": result.collector.metrics_rows,
                     "cpu": result.collector.requester_rows,
+                    "cpu_mc": result.collector.requester_mc_rows,
                     "msc": _compact_msc_rows(result.collector.msc_rows),
                     "controls": result.collector.control_rows,
                 }
@@ -388,6 +391,8 @@ def derive_control_verification_cases(
                 "channels_per_mc": 1,
                 "channel_bandwidth_gbps": 32,
                 "max_outstanding": 64,
+                "core_max_outstanding": 128,
+                "core_ostd_policy": "shared",
             }
         )
         for row in case.get("stimulus_configs", []):

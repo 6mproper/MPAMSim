@@ -61,6 +61,9 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.memory_controllers[0].token_bucket_window_ns == 100
     assert config.memory_controllers[0].bmin_qos_promote == 2
     assert config.memory_controllers[0].softlimit_qos_demote == 2
+    assert config.ostd.core_max_outstanding == 48
+    assert config.ostd.core_policy == "shared"
+    assert config.ostd.thread_reserve == 8
 
 
 def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:
@@ -99,6 +102,21 @@ def test_web_parameters_reject_unordered_cbusy_thresholds(tmp_path) -> None:
     parameters["cbusy_l1_queue_ratio"] = 0.8
     parameters["cbusy_l2_queue_ratio"] = 0.4
     with pytest.raises(ParameterError, match="queue ratios"):
+        build_config(parameters, str(tmp_path / "run"))
+
+
+def test_web_parameters_reject_impossible_thread_reserves(
+    tmp_path,
+) -> None:
+    parameters = default_parameters()
+    parameters.update(
+        {
+            "core_ostd_policy": "reserve_borrow",
+            "core_max_outstanding": 12,
+            "thread_ostd_reserve": 8,
+        }
+    )
+    with pytest.raises(ParameterError, match="reserve_borrow"):
         build_config(parameters, str(tmp_path / "run"))
 
 

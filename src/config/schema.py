@@ -81,6 +81,13 @@ class RequesterConfig:
 
 
 @dataclass
+class OstdConfig:
+    core_max_outstanding: int
+    core_policy: str = "shared"
+    thread_reserve: int = 1
+
+
+@dataclass
 class MPAMSettingConfig:
     partid: int
     cache_portion_bitmap: Optional[str] = None
@@ -157,6 +164,7 @@ class ProjectConfig:
     noc: NocConfig
     memory_controllers: List[MemoryControllerConfig]
     requesters: List[RequesterConfig]
+    ostd: OstdConfig
     partid_width: int
     pmg_width: int
     partitions: Dict[int, str]

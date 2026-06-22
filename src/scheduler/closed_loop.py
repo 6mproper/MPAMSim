@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List
 
-from src.mpam.control import ControlUpdate
+from src.contracts.telemetry import ControlDecision
 from src.mpam.settings import SettingsTable
 
 from .policy_base import PolicyBase
@@ -39,7 +39,7 @@ class ClosedLoopQoSPolicy(PolicyBase):
         interval_index: int,
         time_ns: float,
         metrics_by_partid: Dict[int, Dict[str, float]],
-    ) -> List[ControlUpdate]:
+    ) -> List[ControlDecision]:
         if interval_index - self._last_update_interval < self.min_hold_intervals:
             return []
 
@@ -73,8 +73,8 @@ class ClosedLoopQoSPolicy(PolicyBase):
             return updates
         return []
 
-    def _protect_updates(self, reason: str) -> List[ControlUpdate]:
-        updates: List[ControlUpdate] = []
+    def _protect_updates(self, reason: str) -> List[ControlDecision]:
+        updates: List[ControlDecision] = []
         for msc_id, table in self.mc_tables.items():
             for partid in self.protected:
                 setting = table.lookup(partid)
@@ -84,7 +84,14 @@ class ClosedLoopQoSPolicy(PolicyBase):
                 new_qos = min(self.qos_max, current + 1)
                 if new_qos != current:
                     updates.append(
-                        ControlUpdate(msc_id, partid, "mc_qos", new_qos, reason, self.name)
+                        ControlDecision(
+                            target_resource_id=msc_id,
+                            partid=partid,
+                            field="mc_qos",
+                            value=new_qos,
+                            reason=reason,
+                            policy=self.name,
+                        )
                     )
             for partid in self.background:
                 setting = table.lookup(partid)
@@ -96,12 +103,19 @@ class ClosedLoopQoSPolicy(PolicyBase):
                 new_cap = max(0.001, cap * (1.0 - self.max_step_percent / 100.0))
                 if abs(new_cap - cap) > 1e-9:
                     updates.append(
-                        ControlUpdate(msc_id, partid, "bw_max_gbps", new_cap, reason, self.name)
+                        ControlDecision(
+                            target_resource_id=msc_id,
+                            partid=partid,
+                            field="bw_max_gbps",
+                            value=new_cap,
+                            reason=reason,
+                            policy=self.name,
+                        )
                     )
         return updates
 
-    def _relax_updates(self, reason: str) -> List[ControlUpdate]:
-        updates: List[ControlUpdate] = []
+    def _relax_updates(self, reason: str) -> List[ControlDecision]:
+        updates: List[ControlDecision] = []
         for msc_id, table in self.mc_tables.items():
             for partid in self.background:
                 initial_cap = self._initial_caps.get((msc_id, partid))
@@ -113,6 +127,13 @@ class ClosedLoopQoSPolicy(PolicyBase):
                     continue
                 new_cap = min(initial_cap, current * (1.0 + self.max_step_percent / 100.0))
                 updates.append(
-                    ControlUpdate(msc_id, partid, "bw_max_gbps", new_cap, reason, self.name)
+                    ControlDecision(
+                        target_resource_id=msc_id,
+                        partid=partid,
+                        field="bw_max_gbps",
+                        value=new_cap,
+                        reason=reason,
+                        policy=self.name,
+                    )
                 )
         return updates

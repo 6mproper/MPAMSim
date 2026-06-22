@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from src.mpam.control import ControlUpdate
+from src.contracts.telemetry import ControlDecision
 
 
 class PolicyBase:
@@ -13,5 +13,5 @@ class PolicyBase:
         interval_index: int,
         time_ns: float,
         metrics_by_partid: Dict[int, Dict[str, float]],
-    ) -> List[ControlUpdate]:
+    ) -> List[ControlDecision]:
         return []

@@ -11,8 +11,26 @@ from src.traffic.request import Request
 
 
 class NocFabric(Component):
+    capabilities = (
+        "queued_noc_transport",
+        "neutral_request_arbitration",
+        "per_partid_monitoring",
+    )
+    required_monitors = (
+        "queue_occupancy",
+        "utilization",
+        "per_partid_delay",
+    )
+    actions = ("admit", "backpressure", "forward")
+    validation_hooks = ("queue_capacity", "deterministic_order")
+    incompatible_capabilities = ("bufferless_ring_transport",)
+    approximations = (
+        "single queued fabric instead of REQ/RSP/DAT rings",
+        "fixed average hop count",
+    )
+
     def __init__(self, kernel: SimulationKernel, config: NocConfig) -> None:
-        super().__init__("noc")
+        super().__init__("noc", "noc")
         self.kernel = kernel
         self.config = config
         self._queue: List[Tuple[int, int, Request, Callable[[Request], None]]] = []
@@ -73,7 +91,7 @@ class NocFabric(Component):
         self._queue_sample_sum += len(self._queue)
         self._queue_samples += 1
 
-    def monitor_snapshot(self, interval_ns: float) -> Dict[str, object]:
+    def monitor_snapshot(self, interval_ns: float):
         utilization = min(1.0, self._interval_busy_ns / max(interval_ns, 1e-9))
         row = {
             "msc_id": self.component_id,
@@ -90,4 +108,8 @@ class NocFabric(Component):
         self._queue_sample_sum = 0
         self._queue_samples = 0
         self._per_partid.clear()
-        return row
+        return self.build_monitor_snapshot(
+            self.kernel.now_ns,
+            interval_ns,
+            row,
+        )

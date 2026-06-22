@@ -39,6 +39,35 @@ def _cache_counters() -> Dict[str, float]:
 
 
 class CacheMSC(Component):
+    capabilities = (
+        "cache_lookup_pipeline",
+        "sampled_owner_monitoring",
+        "cpbm_control",
+        "cmin_control",
+        "cmax_control",
+    )
+    required_monitors = (
+        "sampled_occupancy",
+        "queue_occupancy",
+        "hit_miss",
+    )
+    actions = (
+        "admit",
+        "lookup",
+        "select_victim",
+        "allocate_sampled_owner",
+    )
+    validation_hooks = (
+        "queue_capacity",
+        "cpbm_reachability",
+        "cmin_cmax_order",
+    )
+    incompatible_capabilities = ("explicit_full_tag_array",)
+    approximations = (
+        "probabilistic hit decision",
+        "one sampled set per eight sets",
+    )
+
     def __init__(
         self,
         kernel: SimulationKernel,
@@ -49,7 +78,7 @@ class CacheMSC(Component):
         on_miss: Callable[[Request], None],
         enforce_controls: bool = True,
     ) -> None:
-        super().__init__(config.id)
+        super().__init__(config.id, "cache")
         self.kernel = kernel
         self.config = config
         self.settings = settings
@@ -99,6 +128,15 @@ class CacheMSC(Component):
         self._queue.append(request)
         self._sample_queue()
         self._dispatch()
+
+    def can_accept(self, request: Request) -> bool:
+        return len(self._queue) < self.config.queue_depth
+
+    def accept(self, request: Request) -> None:
+        self.receive(request)
+
+    def lookup(self, request: Request) -> None:
+        self.receive(request)
 
     def _dispatch(self) -> None:
         while (
@@ -403,7 +441,7 @@ class CacheMSC(Component):
                     ] += 1
         return dict(counts)
 
-    def monitor_snapshot(self, interval_ns: float) -> Dict[str, object]:
+    def monitor_snapshot(self, interval_ns: float):
         total_requests = sum(
             int(values["requests"]) for values in self._interval.values()
         )
@@ -551,4 +589,8 @@ class CacheMSC(Component):
         self._queue_samples = 0
         self._queue_peak = len(self._queue)
         self._active_peak = self._active_lookups
-        return row
+        return self.build_monitor_snapshot(
+            self.kernel.now_ns,
+            interval_ns,
+            row,
+        )

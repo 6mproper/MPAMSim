@@ -26,12 +26,13 @@ MPAM仿真，并规定16线程、16组PARTID、因果时间线和上下文帮助
 
 ### Requirement: MPAM结果可视化
 
-当前控制台 MUST 显示每PARTID延迟/带宽、MSC queue、延迟归因、控制更新和16行监控。
+控制台 MUST 只消费collector发布的类型化监控和控制事件投影，不直接读取NoC、L3、
+MC或requester私有字段。
 
-#### Scenario: 检查结果
+#### Scenario: 现有Web任务运行
 
-- **WHEN** 仿真完成
-- **THEN** 监控视图包含全部16个PARTID及L3/MC证据
+- **WHEN** 类型化契约接入当前数据通路
+- **THEN** 现有周期表格、控制记录和最终报告保持可用
 
 ### Requirement: 报告访问
 
@@ -242,3 +243,13 @@ PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBu
 
 - **WHEN** 用户选择一个PARTID
 - **THEN** 相关目标、实际值和控制事件按统一时间轴显示
+
+### Requirement: Core OSTD配置
+
+控制台 MUST 配置thread limit、core limit、core OSTD policy和thread reserve，并提供完整
+控制逻辑说明。
+
+#### Scenario: 查看Core OSTD说明
+
+- **WHEN** 用户指向任一Core OSTD配置
+- **THEN** 说明共享状态、策略、准入、恢复、前向进展和监控证据

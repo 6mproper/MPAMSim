@@ -112,6 +112,37 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(f"Requester {requester.id} max_outstanding must be positive")
         if requester.attach_node not in router_ids:
             raise ConfigError(f"Requester {requester.id} references unknown NoC node {requester.attach_node}")
+    if config.ostd.core_max_outstanding <= 0:
+        raise ConfigError("core_max_outstanding must be positive")
+    if config.ostd.core_policy not in {
+        "shared",
+        "static_partition",
+        "reserve_borrow",
+    }:
+        raise ConfigError(
+            "core_ostd_policy must be shared, static_partition, or reserve_borrow"
+        )
+    if not 1 <= config.ostd.thread_reserve <= config.ostd.core_max_outstanding:
+        raise ConfigError(
+            "thread_ostd_reserve must be in [1, core_max_outstanding]"
+        )
+    if (
+        config.ostd.core_policy == "reserve_borrow"
+        and (
+            any(
+                config.ostd.thread_reserve
+                > requester.max_outstanding
+                for requester in config.requesters
+            )
+            or config.ostd.thread_reserve
+            * max(1, config.threads_per_core)
+            > config.ostd.core_max_outstanding
+        )
+    ):
+        raise ConfigError(
+            "reserve_borrow requires thread_ostd_reserve <= each "
+            "thread max and total reserves <= core_max_outstanding"
+        )
 
     requester_ids = set(config.requester_by_id)
     for workload in config.workloads:

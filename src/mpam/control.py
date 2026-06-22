@@ -1,14 +1,7 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any
+from src.contracts.telemetry import ControlDecision
 
 
-@dataclass
-class ControlUpdate:
-    target_msc: str
-    partid: int
-    field: str
-    value: Any
-    reason: str
-    policy: str = ""
+# Compatibility import for policy modules created before the typed contract.
+ControlUpdate = ControlDecision
+
+__all__ = ["ControlDecision", "ControlUpdate"]

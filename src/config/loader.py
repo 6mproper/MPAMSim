@@ -12,6 +12,7 @@ from .schema import (
     MPAMSettingConfig,
     MSCControlConfig,
     NocConfig,
+    OstdConfig,
     OutputConfig,
     PolicyConfig,
     ProjectConfig,
@@ -208,6 +209,25 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
     ]
 
     requesters = _load_requesters(raw, clusters, threads_per_core)
+    requester_section = raw.get("requesters", {})
+    requester_defaults = requester_section.get("defaults", {})
+    default_thread_ostd = int(
+        requester_defaults.get("max_outstanding", 32)
+    )
+    ostd = OstdConfig(
+        core_max_outstanding=int(
+            requester_defaults.get(
+                "core_max_outstanding",
+                default_thread_ostd * max(1, threads_per_core),
+            )
+        ),
+        core_policy=str(
+            requester_defaults.get("core_ostd_policy", "shared")
+        ),
+        thread_reserve=int(
+            requester_defaults.get("thread_ostd_reserve", 1)
+        ),
+    )
 
     mpam = raw.get("mpam", {})
     partitions = {int(item["partid"]): str(item.get("name", item["partid"])) for item in mpam.get("partitions", [])}
@@ -294,6 +314,7 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
         noc=noc,
         memory_controllers=memory_controllers,
         requesters=requesters,
+        ostd=ostd,
         partid_width=int(mpam.get("partid_width", 8)),
         pmg_width=int(mpam.get("pmg_width", 8)),
         partitions=partitions,

@@ -6,6 +6,8 @@ from typing import Callable, Dict, List, Optional
 
 from src.cache.cache_msc import CacheMSC
 from src.config.schema import ProjectConfig
+from src.contracts.capabilities import ComponentRegistry
+from src.contracts.telemetry import ControlEvent
 from src.ddr.memctrl import MemoryControllerMSC
 from src.monitor.collector import MetricsCollector
 from src.monitor.exporter import write_csv, write_json
@@ -15,7 +17,7 @@ from src.noc.fabric import NocFabric
 from src.scheduler.factory import build_policies
 from src.traffic.generator import WorkloadGenerator
 from src.traffic.request import Request
-from src.traffic.requester import RequesterRuntime
+from src.traffic.requester import CoreOstdPool, RequesterRuntime
 
 from .kernel import SimulationKernel
 
@@ -28,6 +30,7 @@ class SimulationResult:
     issued_requests: int
     completed_requests: int
     events_executed: int
+    component_capabilities: List[Dict[str, object]]
 
     def export(self, output_dir: Optional[str] = None) -> Path:
         directory = Path(output_dir or self.config.outputs.dir)
@@ -62,12 +65,28 @@ class SimulationResult:
             self.collector.requester_rows,
         )
         write_csv(
+            directory / "per_cpu_partid_mc.csv",
+            self.collector.requester_mc_rows,
+        )
+        write_csv(
             directory / "per_partid_latency.csv",
             [{"partid": partid, **metrics} for partid, metrics in cumulative.items()],
         )
         write_csv(directory / "per_msc_utilization.csv", self.collector.msc_rows)
         write_csv(directory / "control_trace.csv", self.collector.control_rows)
+        write_csv(
+            directory / "control_events.csv",
+            self.collector.control_rows,
+        )
+        write_csv(
+            directory / "monitor_samples.csv",
+            self.collector.monitor_sample_rows,
+        )
         write_csv(directory / "timeline_trace.csv", self.collector.timeline_rows)
+        write_json(
+            directory / "component_capabilities.json",
+            self.component_capabilities,
+        )
         if self.config.outputs.generate_report:
             render_report(directory)
         return directory
@@ -128,19 +147,46 @@ class Simulation:
                 configured_partids_by_requester[requester_id].add(
                     workload.partid
                 )
+        requesters_by_core: Dict[str, List] = {}
+        for requester in config.requesters:
+            core_id = requester.core or requester.id
+            requesters_by_core.setdefault(core_id, []).append(
+                requester
+            )
+        self.core_ostd_pools = {
+            core_id: CoreOstdPool(
+                core_id=core_id,
+                max_outstanding=config.ostd.core_max_outstanding,
+                policy=config.ostd.core_policy,
+                thread_reserve=config.ostd.thread_reserve,
+                thread_limits={
+                    requester.id: requester.max_outstanding
+                    for requester in requesters
+                },
+            )
+            for core_id, requesters in requesters_by_core.items()
+        }
+        destination_mc_ids = tuple(
+            item.id for item in config.memory_controllers
+        )
         self.requesters = {
             item.id: RequesterRuntime(
-                item,
-                tuple(
+                config=item,
+                core_pool=self.core_ostd_pools[
+                    item.core or item.id
+                ],
+                configured_partids=tuple(
                     sorted(
                         configured_partids_by_requester[item.id]
                     )
                 ),
+                destination_mc_ids=destination_mc_ids,
             )
             for item in config.requesters
         }
         self._request_id = 0
         self._interval_index = 0
+        self._control_event_sequence = 0
         self._delivered_cbusy_levels: Dict[
             tuple, int
         ] = {}
@@ -190,6 +236,8 @@ class Simulation:
             *self.caches.values(),
             *self.memory_controllers.values(),
         ]
+        self.component_registry = ComponentRegistry()
+        self.component_registry.register_all(self.components)
         targets = {
             workload.partid: workload.target_p99_ns
             for workload in config.workloads
@@ -221,6 +269,13 @@ class Simulation:
                         seed=self.config.simulation.seed + 1000 + seed_offset,
                         next_request_id=self._next_request_id,
                         submit=self._submit,
+                        resolve_destination_mc=(
+                            lambda address, requester_id=requester_id:
+                            self._destination_mc_for(
+                                requester_id,
+                                address,
+                            )
+                        ),
                         default_priority=self._default_priority(workload.partid),
                     )
                 )
@@ -236,22 +291,49 @@ class Simulation:
         self._request_id += 1
         return self._request_id
 
+    def _destination_mc_for(
+        self,
+        requester_id: str,
+        address: int,
+    ) -> str:
+        requester = self.config.requester_by_id[requester_id]
+        cache_id = self.config.core_to_cache.get(
+            requester.core or "",
+            self.config.caches[0].id,
+        )
+        line_size = self.config.cache_by_id[cache_id].line_size
+        index = (
+            address // max(1, line_size)
+        ) % len(self.config.memory_controllers)
+        return self.config.memory_controllers[index].id
+
     def _submit(self, request: Request) -> None:
         requester = self.config.requester_by_id[request.requester_id]
         cache_id = self.config.core_to_cache.get(requester.core or "", self.config.caches[0].id)
         request.cache_id = cache_id
+        request.destination_node = cache_id
+        request.set_line_size(
+            self.config.cache_by_id[cache_id].line_size
+        )
         cache = self.caches[cache_id]
         self.noc.receive(request, cache.receive)
 
     def _cache_miss(self, request: Request) -> None:
-        line_size = self.config.cache_by_id[request.cache_id].line_size
-        index = (request.addr // max(1, line_size)) % len(self.config.memory_controllers)
-        mc_id = self.config.memory_controllers[index].id
+        mc_id = (
+            request.memory_controller_id
+            or self._destination_mc_for(
+                request.requester_id,
+                request.addr,
+            )
+        )
+        request.memory_controller_id = mc_id
+        request.destination_node = mc_id
         self.memory_controllers[mc_id].receive(request)
 
     def _complete(self, request: Request) -> None:
         self.requesters[request.requester_id].on_completion(
-            request.partid
+            request.partid,
+            request.memory_controller_id,
         )
         self.collector.on_complete(request, self.kernel.now_ns)
 
@@ -266,14 +348,17 @@ class Simulation:
         old_level = self._delivered_cbusy_levels.get(key, 0)
         self._delivered_cbusy_levels[key] = level
         self.collector.record_control(
-            self.kernel.now_ns,
-            "mc_cbusy",
-            msc_id,
-            partid,
-            "cbusy_level",
-            old_level,
-            level,
-            f"effective OSTD cap {cap}",
+            self._control_event(
+                resource_id=msc_id,
+                partid=partid,
+                event_type="feedback_delivered",
+                field="cbusy_level",
+                old_state=old_level,
+                new_state=level,
+                policy="mc_cbusy",
+                reason=f"effective OSTD cap {cap}",
+                details={"effective_ostd_cap": cap},
+            )
         )
         for requester in self.requesters.values():
             if partid in requester.configured_partids:
@@ -290,23 +375,48 @@ class Simulation:
             self.kernel.now_ns,
             self.components,
             self.requesters.values(),
+            capture_id=f"interval:{self._interval_index}",
         )
         for policy in self.policies:
             updates = policy.on_interval(self._interval_index, self.kernel.now_ns, metrics)
-            for update in updates:
-                table = self.settings_tables.get(update.target_msc)
+            for update_index, update in enumerate(updates):
+                decision = update.with_context(
+                    decision_id=(
+                        f"decision:{self._interval_index}:"
+                        f"{policy.name}:{update_index}"
+                    ),
+                    monitor_sample_id=self.collector.last_capture_id,
+                    action_effective_time_ns=self.kernel.now_ns,
+                )
+                table = self.settings_tables.get(
+                    decision.target_resource_id
+                )
                 if table is None:
                     continue
-                old_value = table.update(update.partid, update.field, update.value)
+                old_value = table.update(
+                    decision.partid,
+                    decision.field,
+                    decision.value,
+                )
                 self.collector.record_control(
-                    self.kernel.now_ns,
-                    update.policy or policy.name,
-                    update.target_msc,
-                    update.partid,
-                    update.field,
-                    old_value,
-                    update.value,
-                    update.reason,
+                    self._control_event(
+                        resource_id=decision.target_resource_id,
+                        partid=decision.partid,
+                        pmg=decision.pmg,
+                        event_type="setting_applied",
+                        field=decision.field,
+                        old_state=old_value,
+                        new_state=decision.value,
+                        policy=decision.policy or policy.name,
+                        reason=decision.reason,
+                        monitor_sample_id=(
+                            decision.monitor_sample_id
+                        ),
+                        decision_id=decision.decision_id,
+                        action_effective_time_ns=(
+                            decision.action_effective_time_ns
+                        ),
+                    )
                 )
         if self._progress_callback is not None:
             self._progress_callback(
@@ -340,6 +450,7 @@ class Simulation:
                 self._run_until_ns,
                 self.components,
                 self.requesters.values(),
+                capture_id=f"final:{self._run_until_ns:g}",
             )
         if self._progress_callback is not None:
             self._progress_callback(1.0, self.collector)
@@ -351,4 +462,53 @@ class Simulation:
             issued_requests=issued,
             completed_requests=self.collector.total_completed,
             events_executed=self.kernel.events_executed,
+            component_capabilities=(
+                self.component_registry.to_dicts()
+            ),
+        )
+
+    def _resource_type(self, resource_id: str) -> str:
+        for descriptor in self.component_registry.descriptors():
+            if descriptor.component_id == resource_id:
+                return descriptor.component_type
+        return "unknown"
+
+    def _control_event(
+        self,
+        resource_id: str,
+        partid: int,
+        event_type: str,
+        field: str,
+        old_state: object,
+        new_state: object,
+        policy: str,
+        reason: str,
+        monitor_sample_id: str = "",
+        decision_id: str = "",
+        action_effective_time_ns: Optional[float] = None,
+        pmg: Optional[int] = None,
+        details: Optional[Dict[str, object]] = None,
+    ) -> ControlEvent:
+        self._control_event_sequence += 1
+        return ControlEvent(
+            event_id=f"control-event:{self._control_event_sequence}",
+            event_time_ns=self.kernel.now_ns,
+            resource_type=self._resource_type(resource_id),
+            resource_id=resource_id,
+            partid=partid,
+            pmg=pmg,
+            event_type=event_type,
+            old_state=old_state,
+            new_state=new_state,
+            field=field,
+            policy=policy,
+            reason=reason,
+            monitor_sample_id=monitor_sample_id,
+            decision_id=decision_id,
+            action_effective_time_ns=(
+                self.kernel.now_ns
+                if action_effective_time_ns is None
+                else action_effective_time_ns
+            ),
+            details=details,
         )

@@ -220,6 +220,9 @@ def default_parameters() -> Dict[str, object]:
         "mc_bmin_qos_promote": 2,
         "mc_softlimit_qos_demote": 2,
         "max_outstanding": 32,
+        "core_max_outstanding": 48,
+        "core_ostd_policy": "shared",
+        "thread_ostd_reserve": 8,
         "cbusy_sample_ns": 1_000,
         "cbusy_feedback_latency_ns": 50,
         "cbusy_release_hold_samples": 3,
@@ -651,6 +654,35 @@ def build_config(
     max_outstanding = _integer(
         values, "max_outstanding", 32, 1, 1024
     )
+    core_max_outstanding = _integer(
+        values, "core_max_outstanding", 48, 1, 2048
+    )
+    core_ostd_policy = _choice(
+        values,
+        "core_ostd_policy",
+        "shared",
+        ["shared", "static_partition", "reserve_borrow"],
+    )
+    thread_ostd_reserve = _integer(
+        values,
+        "thread_ostd_reserve",
+        8,
+        1,
+        core_max_outstanding,
+    )
+    if (
+        core_ostd_policy == "reserve_borrow"
+        and (
+            thread_ostd_reserve > max_outstanding
+            or thread_ostd_reserve * threads_per_core
+            > core_max_outstanding
+        )
+    ):
+        raise ParameterError(
+            "reserve_borrow requires thread_ostd_reserve <= "
+            "max_outstanding and total reserves <= "
+            "core_max_outstanding"
+        )
     cbusy_sample_ns = _number(
         values, "cbusy_sample_ns", 1_000, 1, 1_000_000
     )
@@ -900,7 +932,10 @@ def build_config(
         "requesters": {
             "auto_expand_cpu_threads": True,
             "defaults": {
-                "max_outstanding": max_outstanding
+                "max_outstanding": max_outstanding,
+                "core_max_outstanding": core_max_outstanding,
+                "core_ostd_policy": core_ostd_policy,
+                "thread_ostd_reserve": thread_ostd_reserve,
             },
             "core_attach_nodes": core_attach_nodes,
             "explicit": [],

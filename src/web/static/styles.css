@@ -1324,6 +1324,11 @@ canvas {
   font-weight: 850;
 }
 
+.destination-ostd {
+  display: block;
+  white-space: nowrap;
+}
+
 .cbusy-level.level-1 {
   color: #6d5100;
   background: #fff5d7;

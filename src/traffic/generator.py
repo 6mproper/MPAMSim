@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import dataclass
 from typing import Callable
 
 from src.config.schema import WorkloadConfig
@@ -9,6 +10,14 @@ from src.sim.kernel import SimulationKernel
 
 from .request import Request
 from .requester import RequesterRuntime
+
+
+@dataclass(frozen=True)
+class PendingStimulus:
+    address: int
+    operation: str
+    locality: str
+    memory_controller_id: str
 
 
 class WorkloadGenerator:
@@ -21,6 +30,7 @@ class WorkloadGenerator:
         seed: int,
         next_request_id: Callable[[], int],
         submit: Callable[[Request], None],
+        resolve_destination_mc: Callable[[int], str],
         default_priority: int,
     ) -> None:
         self.kernel = kernel
@@ -28,12 +38,14 @@ class WorkloadGenerator:
         self.requester = requester
         self.next_request_id = next_request_id
         self.submit = submit
+        self.resolve_destination_mc = resolve_destination_mc
         self.default_priority = default_priority
         self.rng = random.Random(seed)
         self._stream_addr = 0
         self._interval_ns = self._calculate_interval_ns(max(1, requester_count))
         self._stop_ns = float(workload.stop_ns or 0)
         self._burst_remaining = max(1, workload.burst_length)
+        self._pending: PendingStimulus | None = None
 
     def start(self) -> None:
         jitter = self.rng.random() * min(self._interval_ns, 10.0)
@@ -78,40 +90,83 @@ class WorkloadGenerator:
 
     def _issue(self) -> None:
         if self.kernel.now_ns >= self._stop_ns:
-            return
-        if not self.requester.can_issue(self.workload.partid):
-            retry_ns = min(10.0, self._interval_ns)
-            self.requester.on_backpressure(
-                self.workload.partid,
-                retry_ns,
-                cbusy=self.requester.blocked_by_cbusy(
+            if self._pending is not None:
+                self.requester.on_pending_cancelled(
                     self.workload.partid
+                )
+                self._pending = None
+            return
+        if self._pending is None:
+            op = (
+                "read"
+                if self.rng.random() < self.workload.read_ratio
+                else "write"
+            )
+            locality = self.workload.locality
+            if locality == "auto":
+                locality = (
+                    "low"
+                    if self.workload.type in {"pointer_chase", "stream"}
+                    else "medium"
+                )
+            address = self._next_address()
+            self._pending = PendingStimulus(
+                address=address,
+                operation=op,
+                locality=locality,
+                memory_controller_id=self.resolve_destination_mc(
+                    address
                 ),
             )
-            self.kernel.schedule(retry_ns, self._issue, f"retry:{self.workload.name}")
+            self.requester.on_generated(self.workload.partid)
+
+        pending = self._pending
+        if not self.requester.can_issue(
+            self.workload.partid,
+            pending.memory_controller_id,
+        ):
+            retry_ns = min(10.0, self._interval_ns)
+            reason = self.requester.last_block_reason(
+                self.workload.partid,
+                pending.memory_controller_id,
+            )
+            self.requester.on_backpressure(
+                self.workload.partid,
+                pending.memory_controller_id,
+                retry_ns,
+                reason,
+            )
+            self.kernel.schedule(
+                retry_ns,
+                self._issue,
+                f"retry:{self.workload.name}",
+            )
             return
 
-        op = "read" if self.rng.random() < self.workload.read_ratio else "write"
-        locality = self.workload.locality
-        if locality == "auto":
-            locality = "low" if self.workload.type in {"pointer_chase", "stream"} else "medium"
         request = Request(
-            request_id=self.next_request_id(),
+            transaction_id=self.next_request_id(),
             workload_name=self.workload.name,
             workload_type=self.workload.type,
             requester_id=self.requester.config.id,
             partid=self.workload.partid,
             pmg=self.workload.pmg,
-            addr=self._next_address(),
+            address=pending.address,
             size_bytes=self.workload.request_size_bytes,
-            op=op,
+            operation=pending.operation,
             issue_time_ns=self.kernel.now_ns,
             working_set_bytes=self.workload.working_set_bytes,
-            locality=locality,
-            source_attach_node=self.requester.config.attach_node,
+            locality=pending.locality,
+            source_node=self.requester.config.attach_node,
+            core_id=self.requester.config.core or "",
+            thread_id=int(self.requester.config.thread or 0),
             priority=self.default_priority,
         )
-        self.requester.on_issue(self.workload.partid)
+        request.memory_controller_id = pending.memory_controller_id
+        self.requester.on_issue(
+            self.workload.partid,
+            pending.memory_controller_id,
+        )
+        self._pending = None
         self.submit(request)
         next_time = self.kernel.now_ns + self._sample_interval()
         if math.isfinite(next_time) and next_time < self._stop_ns:

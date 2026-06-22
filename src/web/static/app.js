@@ -12,7 +12,14 @@ const state = {
   verification: null,
   verificationPartial: null,
   uiMetadata: {},
-  partial: { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 },
+  partial: {
+    metrics: [],
+    cpu: [],
+    cpu_mc: [],
+    msc: [],
+    controls: [],
+    time_ns: 0,
+  },
   selectedTime: 0,
   playing: false,
   playTimer: null,
@@ -78,6 +85,8 @@ const headerHelp = {
   "MC Requests": "最新采样周期内该监控组在 MC 完成调度的请求数。",
   "Throttle ns": "最新周期内 hard limit 等待累计时间。",
   "OSTD Current / Peak": "采样时刻当前 outstanding requests，以及该控制周期内观察到的峰值。",
+  "Core Pool / P OSTD": "该 PARTID 所在 Core 的共享池总占用/峰值/上限，以及 Core 内该 PARTID 的合计占用；共享池总占用包含其他 PARTID。",
+  "Home MC P OSTD": "按目标 MC 分开的 Core/PARTID outstanding、周期峰值、有效 CBusy cap 与等级；MC0 的反馈不限制发往 MC1 的请求。",
   "OSTD Util %": "当前 outstanding 除以该 PARTID 所关联 requester 的最大 outstanding 容量之和。",
   "Issued / Completed": "仿真开始以来该 PARTID 在 CPU requester 侧累计发出和完成的请求数。",
   "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
@@ -475,7 +484,14 @@ async function runSimulation() {
   state.partidConfigs = collectPartidConfigs();
   state.stimulusConfigs = collectStimulusConfigs();
   state.result = null;
-  state.partial = { metrics: [], cpu: [], msc: [], controls: [], time_ns: 0 };
+  state.partial = {
+    metrics: [],
+    cpu: [],
+    cpu_mc: [],
+    msc: [],
+    controls: [],
+    time_ns: 0,
+  };
   state.selectedTime = 0;
   $("#runButton").disabled = true;
   $("#experimentButton").disabled = true;
@@ -651,6 +667,7 @@ async function pollJob() {
       state.partial = {
         metrics: job.result.metrics,
         cpu: job.result.cpu,
+        cpu_mc: job.result.cpu_mc,
         msc: job.result.msc,
         controls: job.result.controls,
         time_ns: job.result.summary.simulation_time_ns,
@@ -768,9 +785,23 @@ function aggregateCpuResources() {
     issued: 0,
     completed: 0,
     backpressureNs: 0,
+    coreOutstanding: 0,
+    corePeakOutstanding: 0,
+    coreLimit: 0,
+    corePartidOutstanding: 0,
+    corePartidPeakOutstanding: 0,
+    corePolicies: new Set(),
+    cores: new Set(),
+    destinations: new Map(),
   }));
   const configured = collectStimulusConfigs().filter((row) => row.enabled);
-  configured.forEach((row) => result[row.partid].requesters.add(row.requester));
+  configured.forEach((row) => {
+    result[row.partid].requesters.add(row.requester);
+    result[row.partid].cores.add(
+      String(row.requester).replace(/\.t\d+$/, ""),
+    );
+  });
+  const seenCorePartid = result.map(() => new Set());
   latestByKeys(state.partial.cpu || [], ["requester_id", "partid"]).forEach((row) => {
     const partid = Number(row.partid);
     if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
@@ -791,8 +822,66 @@ function aggregateCpuResources() {
     target.issued += Number(row.issued || 0);
     target.completed += Number(row.completed || 0);
     target.backpressureNs += Number(row.backpressure_ns || 0);
+    const coreId = String(row.core_id || row.requester_id || "");
+    if (!seenCorePartid[partid].has(coreId)) {
+      seenCorePartid[partid].add(coreId);
+      target.coreOutstanding += Number(row.core_ostd || 0);
+      target.corePeakOutstanding += Number(row.core_ostd_peak || 0);
+      target.coreLimit += Number(row.core_ostd_limit || 0);
+      target.corePartidOutstanding += Number(
+        row.core_partid_ostd || 0,
+      );
+      target.corePartidPeakOutstanding += Number(
+        row.core_partid_ostd_peak || 0,
+      );
+      if (row.core_ostd_policy) {
+        target.corePolicies.add(String(row.core_ostd_policy));
+      }
+    }
+  });
+  const seenCorePartidMc = result.map(() => new Set());
+  latestByKeys(
+    state.partial.cpu_mc || [],
+    ["requester_id", "partid", "destination_mc"],
+  ).forEach((row) => {
+    const partid = Number(row.partid);
+    if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+    const target = result[partid];
+    const mcId = String(row.destination_mc || "-");
+    if (!target.destinations.has(mcId)) {
+      target.destinations.set(mcId, {
+        outstanding: 0,
+        peak: 0,
+        limit: 0,
+        cbusy: 0,
+      });
+    }
+    const destination = target.destinations.get(mcId);
+    const coreKey = `${row.core_id || row.requester_id}:${mcId}`;
+    if (!seenCorePartidMc[partid].has(coreKey)) {
+      seenCorePartidMc[partid].add(coreKey);
+      destination.outstanding += Number(
+        row.core_partid_mc_ostd ?? row.outstanding ?? 0,
+      );
+      destination.peak += Number(
+        row.core_partid_mc_ostd_peak ?? row.peak_outstanding ?? 0,
+      );
+      destination.limit += Number(
+        row.effective_max_outstanding || 0,
+      );
+    }
+    destination.cbusy = Math.max(
+      destination.cbusy,
+      Number(row.cbusy_level || 0),
+    );
   });
   const configuredMax = Number($('[data-param="max_outstanding"]')?.value || 0);
+  const configuredCoreMax = Number(
+    $('[data-param="core_max_outstanding"]')?.value || 0,
+  );
+  const configuredCorePolicy = String(
+    $('[data-param="core_ostd_policy"]')?.value || "shared",
+  );
   result.forEach((row) => {
     if (row.maxOutstanding === 0 && row.requesters.size) {
       row.maxOutstanding = row.requesters.size * configuredMax;
@@ -800,11 +889,21 @@ function aggregateCpuResources() {
     if (row.effectiveMaxOutstanding === 0 && row.requesters.size) {
       row.effectiveMaxOutstanding = row.maxOutstanding;
     }
+    if (row.coreLimit === 0 && row.cores.size) {
+      row.coreLimit = row.cores.size * configuredCoreMax;
+    }
+    if (!row.corePolicies.size && row.cores.size) {
+      row.corePolicies.add(configuredCorePolicy);
+    }
     row.outstandingUtilization = Math.min(
       1,
       row.outstanding / Math.max(1, row.effectiveMaxOutstanding),
     );
     row.completionRatio = row.completed / Math.max(1, row.issued);
+    row.coreUtilization = Math.min(
+      1,
+      row.coreOutstanding / Math.max(1, row.coreLimit),
+    );
   });
   return result;
 }
@@ -1186,7 +1285,8 @@ function renderResourceMonitor() {
   if (state.resourceView === "cpu") {
     headers = [
       "PARTID", "Control State", "Requester", "OSTD Current / Peak",
-      "OSTD Util %", "CBusy", "Issued / Completed",
+      "OSTD Util %", "Core Pool / P OSTD", "Home MC P OSTD",
+      "CBusy", "Issued / Completed",
       "Backpressure ns", "CBusy Stall ns",
     ];
     rows = visible(aggregateCpuResources()).map((row) => `
@@ -1196,6 +1296,8 @@ function renderResourceMonitor() {
         <td>${escapeHtml([...row.requesters].join(", ") || "-")}</td>
         <td><strong>${formatNumber(row.outstanding, 0)}</strong> / ${formatNumber(row.peakOutstanding, 0)} <small>eff ${formatNumber(row.effectiveMaxOutstanding, 0)} · cfg ${formatNumber(row.maxOutstanding, 0)}</small></td>
         <td>${utilizationCell(row.outstandingUtilization, partidColor(row.partid))}</td>
+        <td><strong>${formatNumber(row.coreOutstanding, 0)}</strong> / ${formatNumber(row.corePeakOutstanding, 0)} <small>limit ${formatNumber(row.coreLimit, 0)} · P ${formatNumber(row.corePartidOutstanding, 0)} / ${formatNumber(row.corePartidPeakOutstanding, 0)} · ${escapeHtml([...row.corePolicies].join(" / ") || "-")}</small></td>
+        <td>${[...row.destinations.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([mcId, values]) => `<span class="destination-ostd"><b>${escapeHtml(mcId)}</b> ${formatNumber(values.outstanding, 0)} / ${formatNumber(values.peak, 0)} <small>cap ${formatNumber(values.limit, 0)} · L${formatNumber(values.cbusy, 0)}</small></span>`).join("") || "-"}</td>
         <td><span class="cbusy-level level-${row.cbusyLevel}">L${row.cbusyLevel}</span> <small>cap ${formatNumber(row.effectiveMaxOutstanding, 0)} · ${formatNumber(row.cbusyTransitions, 0)} trans</small></td>
         <td>${formatNumber(row.issued, 0)} / ${formatNumber(row.completed, 0)} <small>${(row.completionRatio * 100).toFixed(1)}%</small></td>
         <td>${formatNumber(row.backpressureNs, 2)}</td>

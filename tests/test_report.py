@@ -23,6 +23,9 @@ def test_static_report_is_generated(base_config, config_writer, tmp_path) -> Non
     output = result.export(str(tmp_path / "run"))
     report = output / "report.html"
     assert report.exists()
+    assert (output / "monitor_samples.csv").exists()
+    assert (output / "control_events.csv").exists()
+    assert (output / "component_capabilities.json").exists()
     text = report.read_text(encoding="utf-8")
     assert "Modeled Flow" in text
     assert "P99 latency over time" in text

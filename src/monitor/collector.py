@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import DefaultDict, Dict, Iterable, List
 
+from src.contracts.telemetry import ControlEvent, MonitorSnapshot
 from src.sim.component import Component
 from src.traffic.request import Request
 from src.traffic.requester import RequesterRuntime
@@ -72,12 +73,18 @@ class MetricsCollector:
         self.metrics_rows: List[Dict[str, object]] = []
         self.msc_rows: List[Dict[str, object]] = []
         self.requester_rows: List[Dict[str, object]] = []
+        self.requester_mc_rows: List[Dict[str, object]] = []
         self.timeline_rows: List[Dict[str, object]] = []
         self.control_rows: List[Dict[str, object]] = []
+        self.monitor_sample_rows: List[Dict[str, object]] = []
+        self.monitor_snapshots: List[MonitorSnapshot] = []
+        self.control_events: List[ControlEvent] = []
         self.last_interval_metrics: Dict[int, Dict[str, float]] = {}
         self.last_capture_ns = 0.0
+        self.last_capture_id = ""
 
     def on_complete(self, request: Request, completion_time_ns: float) -> None:
+        request.mark_complete(completion_time_ns)
         self.total_completed += 1
         self.cumulative[request.partid].add(request, completion_time_ns)
         self.interval[request.partid].add(request, completion_time_ns)
@@ -90,9 +97,32 @@ class MetricsCollector:
                         "partid": request.partid,
                         "pmg": request.pmg,
                         "requester_id": request.requester_id,
+                        "core_id": request.core_id,
+                        "thread_id": request.thread_id,
+                        "operation": request.operation.value,
+                        "request_class": request.request_class.value,
+                        "line_address": request.line_address,
+                        "completion_condition": (
+                            request.completion_condition.value
+                        ),
                         "cache_id": request.cache_id,
                         "memory_controller_id": request.memory_controller_id,
                         "cache_hit": request.cache_hit,
+                        "mc_base_qos": (
+                            request.mc_arbitration.base_qos
+                        ),
+                        "mc_effective_qos": (
+                            request.mc_arbitration.effective_qos
+                        ),
+                        "mc_aging_steps": (
+                            request.mc_arbitration.aging_steps
+                        ),
+                        "mc_bmin_promoted": (
+                            request.mc_arbitration.bmin_promoted
+                        ),
+                        "mc_soft_demoted": (
+                            request.mc_arbitration.soft_demoted
+                        ),
                         "noc_delay_ns": request.noc_delay_ns,
                         "cache_delay_ns": request.cache_delay_ns,
                         "cache_queue_delay_ns": request.cache_queue_delay_ns,
@@ -108,13 +138,33 @@ class MetricsCollector:
         time_ns: float,
         components: Iterable[Component],
         requesters: Iterable[RequesterRuntime],
+        capture_id: str = "",
     ) -> Dict[int, Dict[str, float]]:
         elapsed = max(1.0, time_ns - self.last_capture_ns)
+        self.last_capture_id = capture_id or f"interval:{time_ns:g}"
         current: Dict[int, Dict[str, float]] = {}
         for partid, stats in sorted(self.interval.items()):
             metrics = stats.as_metrics(elapsed)
             current[partid] = metrics
             self.metrics_rows.append({"time_ns": time_ns, "partid": partid, **metrics})
+
+        policy_snapshot = MonitorSnapshot.from_payload(
+            time_ns=time_ns,
+            resource_type="system_metrics",
+            resource_id="collector",
+            interval_ns=elapsed,
+            sample_id=self.last_capture_id,
+            payload={
+                "per_partid": {
+                    str(partid): metrics
+                    for partid, metrics in current.items()
+                }
+            },
+        )
+        self.monitor_snapshots.append(policy_snapshot)
+        self.monitor_sample_rows.extend(
+            sample.to_row() for sample in policy_snapshot.samples
+        )
 
         requester_runtimes = list(requesters)
         requester_rows = {
@@ -131,38 +181,39 @@ class MetricsCollector:
                 self.requester_rows.append(
                     {"time_ns": time_ns, **row}
                 )
+            for row in requester.capture_partid_mc_rows():
+                self.requester_mc_rows.append(
+                    {"time_ns": time_ns, **row}
+                )
+        for core_pool in {
+            id(requester.core_pool): requester.core_pool
+            for requester in requester_runtimes
+        }.values():
+            core_pool.reset_interval_peak()
         for component in components:
             snapshot = component.monitor_snapshot(elapsed)
-            self.msc_rows.append({"time_ns": time_ns, **snapshot, "requesters": requester_rows})
+            self.monitor_snapshots.append(snapshot)
+            self.monitor_sample_rows.extend(
+                sample.to_row() for sample in snapshot.samples
+            )
+            self.msc_rows.append(
+                {
+                    "time_ns": time_ns,
+                    **snapshot.to_row(),
+                    "sample_id": snapshot.sample_id,
+                    "capture_id": self.last_capture_id,
+                    "requesters": requester_rows,
+                }
+            )
 
         self.interval.clear()
         self.last_interval_metrics = current
         self.last_capture_ns = time_ns
         return current
 
-    def record_control(
-        self,
-        time_ns: float,
-        policy: str,
-        target_msc: str,
-        partid: int,
-        field: str,
-        old_value: object,
-        new_value: object,
-        reason: str,
-    ) -> None:
-        self.control_rows.append(
-            {
-                "time_ns": time_ns,
-                "policy": policy,
-                "target_msc": target_msc,
-                "partid": partid,
-                "field": field,
-                "old_value": old_value,
-                "new_value": new_value,
-                "reason": reason,
-            }
-        )
+    def record_control(self, event: ControlEvent) -> None:
+        self.control_events.append(event)
+        self.control_rows.append(event.to_row())
 
     def cumulative_metrics(self, elapsed_ns: float) -> Dict[int, Dict[str, float]]:
         return {

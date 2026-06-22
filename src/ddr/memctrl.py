@@ -39,6 +39,38 @@ def _mc_counters() -> Dict[str, float]:
 
 
 class MemoryControllerMSC(Component):
+    capabilities = (
+        "memory_controller_service",
+        "token_bucket_bmin",
+        "token_bucket_bmax",
+        "three_bit_qos",
+        "four_level_cbusy",
+        "per_partid_monitoring",
+    )
+    required_monitors = (
+        "bandwidth",
+        "queue_occupancy",
+        "effective_qos",
+        "limit_events",
+    )
+    actions = (
+        "admit",
+        "select_candidate",
+        "dispatch",
+        "publish_cbusy",
+    )
+    validation_hooks = (
+        "queue_capacity",
+        "qos_range",
+        "bmin_bmax_order",
+    )
+    incompatible_capabilities = ("monitor_interval_bmax_gate",)
+    approximations = (
+        "per-PARTID FIFO head candidates",
+        "token bucket BMIN/BMAX",
+        "per-request timestamp aging",
+    )
+
     def __init__(
         self,
         kernel: SimulationKernel,
@@ -50,7 +82,7 @@ class MemoryControllerMSC(Component):
         ] = None,
         enforce_controls: bool = True,
     ) -> None:
-        super().__init__(config.id)
+        super().__init__(config.id, "memory_controller")
         self.kernel = kernel
         self.config = config
         self.settings = settings
@@ -132,6 +164,12 @@ class MemoryControllerMSC(Component):
         self._sample_queue()
         self._schedule_dispatch(0.0)
 
+    def can_accept(self, request: Request) -> bool:
+        return self.queue_length < self.config.queue_depth
+
+    def accept(self, request: Request) -> None:
+        self.receive(request)
+
     def _schedule_dispatch(self, delay_ns: float) -> None:
         if self._dispatch_pending:
             return
@@ -199,6 +237,7 @@ class MemoryControllerMSC(Component):
         )
 
     def _eligible(self, partid: int, request: Request) -> bool:
+        request.mc_arbitration.hard_blocked = False
         if not self.enforce_controls:
             return True
         setting = self.settings.lookup(partid)
@@ -212,6 +251,7 @@ class MemoryControllerMSC(Component):
             partid, request.size_bytes
         )
         if not available:
+            request.mc_arbitration.hard_blocked = True
             self._interval_per_partid[partid][
                 "hardlimit_block_events"
             ] += 1
@@ -338,18 +378,20 @@ class MemoryControllerMSC(Component):
             soft_over,
         ) = max(candidates)
         sequence, _ = self._queues[partid].popleft()
-        request._mc_base_qos = base_qos
-        request._mc_effective_qos = max(
+        request.mc_arbitration.base_qos = base_qos
+        request.mc_arbitration.effective_qos = max(
             0,
             min(
                 7,
                 base_qos + aging_steps + bmin_promote - soft_demote,
             ),
         )
-        request._mc_aging_steps = aging_steps
-        request._mc_under_bmin = bmin_promote > 0
-        request._mc_soft_demoted = soft_demote > 0
-        request._mc_soft_over = soft_over
+        request.mc_arbitration.aging_steps = aging_steps
+        request.mc_arbitration.bmin_promoted = bmin_promote > 0
+        request.mc_arbitration.soft_demoted = soft_demote > 0
+        request.mc_arbitration.soft_over_limit = soft_over
+        request.mc_arbitration.hard_blocked = False
+        request.mc_arbitration.selected_sequence = sequence
         return sequence, request
 
     def _consume_tokens(self, request: Request) -> None:
@@ -463,16 +505,16 @@ class MemoryControllerMSC(Component):
         group_counters["bytes"] += request.size_bytes
         group_counters["queue_delay_ns"] += queue_delay
         group_counters["service_delay_ns"] += service_delay
-        if getattr(request, "_mc_under_bmin", False):
+        if request.mc_arbitration.bmin_promoted:
             counters["bmin_priority_requests"] += 1
             group_counters["bmin_priority_requests"] += 1
-        if getattr(request, "_mc_soft_over", False):
+        if request.mc_arbitration.soft_over_limit:
             counters["softlimit_requests"] += 1
             counters["softlimit_bytes"] += request.size_bytes
             group_counters["softlimit_requests"] += 1
             group_counters["softlimit_bytes"] += request.size_bytes
-        effective_qos = int(getattr(request, "_mc_effective_qos", 0))
-        aging_steps = int(getattr(request, "_mc_aging_steps", 0))
+        effective_qos = request.mc_arbitration.effective_qos
+        aging_steps = request.mc_arbitration.aging_steps
         for target in (counters, group_counters):
             target["effective_qos_sum"] += effective_qos
             target["effective_qos_min"] = min(
@@ -482,13 +524,13 @@ class MemoryControllerMSC(Component):
                 target["effective_qos_max"], effective_qos
             )
             target["qos_promoted_requests"] += int(
-                getattr(request, "_mc_under_bmin", False)
+                request.mc_arbitration.bmin_promoted
             )
             target["qos_demoted_requests"] += int(
-                getattr(request, "_mc_soft_demoted", False)
+                request.mc_arbitration.soft_demoted
             )
             target["qos_aging_promotions"] += aging_steps
-        if getattr(request, "_mc_soft_demoted", False):
+        if request.mc_arbitration.soft_demoted:
             counters["softlimit_penalty_events"] += 1
             group_counters["softlimit_penalty_events"] += 1
 
@@ -656,7 +698,7 @@ class MemoryControllerMSC(Component):
             f"cbusy-sample:{self.component_id}",
         )
 
-    def monitor_snapshot(self, interval_ns: float) -> Dict[str, object]:
+    def monitor_snapshot(self, interval_ns: float):
         utilization = min(
             1.0,
             self._interval_busy_ns
@@ -869,4 +911,8 @@ class MemoryControllerMSC(Component):
         self._cbusy_interval_active_ns.clear()
         self._cbusy_interval_peak_bw_ratio.clear()
         self._cbusy_interval_peak_queue_ratio.clear()
-        return row
+        return self.build_monitor_snapshot(
+            self.kernel.now_ns,
+            interval_ns,
+            row,
+        )
