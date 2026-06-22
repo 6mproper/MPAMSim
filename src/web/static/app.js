@@ -2104,7 +2104,13 @@ function drawLineChart(canvas, series, options = {}) {
   const { ctx, width, height } = prepareCanvas(canvas);
   const pad = { left: 48, right: 15, top: 12, bottom: 28 };
   ctx.clearRect(0, 0, width, height);
-  const points = series.flatMap((entry) => entry.points);
+  const normalizedSeries = series.map((entry) => ({
+    ...entry,
+    points: (entry.points || []).filter(
+      (point) => Number.isFinite(point.x) && Number.isFinite(point.y),
+    ),
+  }));
+  const points = normalizedSeries.flatMap((entry) => entry.points);
   if (!points.length) {
     ctx.fillStyle = "#7b8790";
     ctx.font = "12px sans-serif";
@@ -2138,21 +2144,53 @@ function drawLineChart(canvas, series, options = {}) {
   ctx.stroke();
   ctx.fillText(formatTime(maxX), Math.max(pad.left, width - 78), height - 8);
 
-  series.forEach((entry) => {
+  (options.eventXs || []).forEach((eventX) => {
+    if (!Number.isFinite(eventX)) return;
+    ctx.save();
+    ctx.strokeStyle = options.eventColor || colors.amber;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x(eventX), pad.top);
+    ctx.lineTo(x(eventX), height - pad.bottom);
+    ctx.stroke();
+    ctx.restore();
+  });
+
+  normalizedSeries.forEach((entry) => {
     if (!entry.points.length) return;
+    ctx.save();
     ctx.strokeStyle = entry.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = entry.width || 2;
+    ctx.setLineDash(entry.dash || []);
     ctx.beginPath();
     entry.points.forEach((point, index) => {
       if (index === 0) ctx.moveTo(x(point.x), y(point.y));
-      else ctx.lineTo(x(point.x), y(point.y));
+      else if (entry.step) {
+        const previous = entry.points[index - 1];
+        ctx.lineTo(x(point.x), y(previous.y));
+        ctx.lineTo(x(point.x), y(point.y));
+      } else {
+        ctx.lineTo(x(point.x), y(point.y));
+      }
     });
     ctx.stroke();
-    const last = entry.points[entry.points.length - 1];
     ctx.fillStyle = entry.color;
-    ctx.beginPath();
-    ctx.arc(x(last.x), y(last.y), 3.5, 0, Math.PI * 2);
-    ctx.fill();
+    if (entry.marker === "points") {
+      const stride = Math.max(1, Math.ceil(entry.points.length / 28));
+      entry.points.forEach((point, index) => {
+        if (index % stride !== 0 && index !== entry.points.length - 1) return;
+        ctx.beginPath();
+        ctx.arc(x(point.x), y(point.y), entry.markerRadius || 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    } else if (entry.marker !== "none") {
+      const last = entry.points[entry.points.length - 1];
+      ctx.beginPath();
+      ctx.arc(x(last.x), y(last.y), entry.markerRadius || 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   });
 }
 
@@ -2210,22 +2248,73 @@ function metricSeries(key) {
   }));
 }
 
+function legendItem({ color, label, kind = "solid" }) {
+  if (kind === "dot") {
+    return `<span><i style="background:${escapeHtml(color)}"></i>${escapeHtml(label)}</span>`;
+  }
+  const classes = {
+    configured: "legend-line dotted",
+    effective: "legend-line dashed",
+    actual: "legend-line thin",
+    raw: "legend-line points",
+    filtered: "legend-line thick",
+    event: "legend-line dashed",
+    solid: "legend-line",
+  };
+  return `<span><i class="${classes[kind] || classes.solid}" style="--legend-color:${escapeHtml(color)}"></i>${escapeHtml(label)}</span>`;
+}
+
+function renderLegend(selector, entries) {
+  const target = $(selector);
+  if (!target) return;
+  target.innerHTML = entries.map(legendItem).join("");
+}
+
 function renderCharts() {
   const latencySeries = metricSeries("p99_latency_ns");
-  $("#latencyLegend").innerHTML = latencySeries.map((entry) =>
-    `<span><i style="background:${entry.color}"></i>P${entry.partid}</span>`
-  ).join("");
+  renderLegend(
+    "#latencyLegend",
+    latencySeries.map((entry) => ({
+      color: entry.color,
+      label: `P${entry.partid}`,
+      kind: "dot",
+    })),
+  );
   drawLineChart($("#latencyChart"), latencySeries);
-  drawLineChart($("#bandwidthChart"), metricSeries("throughput_gbps"));
+  const bandwidthSeries = metricSeries("throughput_gbps");
+  renderLegend(
+    "#bandwidthLegend",
+    bandwidthSeries.map((entry) => ({
+      color: entry.color,
+      label: `P${entry.partid}`,
+      kind: "dot",
+    })),
+  );
+  drawLineChart($("#bandwidthChart"), bandwidthSeries);
 
   const queueRows = visibleRows(state.partial.msc);
   const groups = new Map();
   queueRows.forEach((row) => {
     const id = String(row.msc_id);
-    if (!groups.has(id)) groups.set(id, { color: id === "noc" ? colors.green : colors.amber, points: [] });
+    if (!groups.has(id)) {
+      groups.set(id, {
+        label: id,
+        color: id === "noc" ? colors.green : colors.amber,
+        points: [],
+      });
+    }
     groups.get(id).points.push({ x: Number(row.time_ns), y: Number(row.queue_occupancy || 0) });
   });
-  drawLineChart($("#queueChart"), [...groups.values()]);
+  const queueSeries = [...groups.values()];
+  renderLegend(
+    "#queueLegend",
+    queueSeries.map((entry) => ({
+      color: entry.color,
+      label: entry.label,
+      kind: "solid",
+    })),
+  );
+  drawLineChart($("#queueChart"), queueSeries);
 
   const latest = latestBy(state.partial.metrics, "partid");
   const targetStimulus = collectStimulusConfigs().find(
@@ -2272,12 +2361,30 @@ function effectTarget(partid) {
 
 function buildEffectRows(partid) {
   const pid = Number(partid);
+  const configuredTarget = effectTarget(pid);
   const times = new Set();
   (state.partial.metrics || []).forEach((row) => {
     if (Number(row.partid) === pid) times.add(Number(row.time_ns));
   });
   (state.partial.msc || []).forEach((row) => times.add(Number(row.time_ns)));
   const controls = state.partial.controls || [];
+  const sumValues = (values, key, fallback = 0) => values.reduce(
+    (sum, row) => sum + Number(row[key] ?? fallback),
+    0,
+  );
+  const sharePercent = (bytes, capacity) => bytes * 100 / Math.max(1, capacity);
+  const weightedPercent = (values, key, fallback) => {
+    let weighted = 0;
+    let capacity = 0;
+    values.forEach((row) => {
+      const value = Number(row[key]);
+      const weight = Number(row.cache_capacity_bytes || 0);
+      if (!Number.isFinite(value) || weight <= 0) return;
+      weighted += value * weight;
+      capacity += weight;
+    });
+    return capacity > 0 ? weighted / capacity : fallback;
+  };
   let previousTime = -1;
   return [...times]
     .filter((timeNs) => timeNs <= state.selectedTime + 1e-9)
@@ -2302,16 +2409,46 @@ function buildEffectRows(partid) {
       const mcValues = mcRows.map(
         (row) => row.per_partid?.[String(pid)] || {},
       );
-      const occupancy = cacheValues.reduce(
-        (sum, row) => sum + Number(row.estimated_occupancy_bytes || 0),
+      const actualOccupancy = sumValues(cacheValues, "actual_occupancy_bytes");
+      const rawOccupancy = sumValues(cacheValues, "raw_occupancy_bytes");
+      const filteredOccupancy = cacheValues.reduce(
+        (sum, row) => sum + Number(
+          row.filtered_occupancy_bytes
+          ?? row.estimated_occupancy_bytes
+          ?? 0,
+        ),
         0,
       );
-      const cacheCapacity = cacheValues.reduce(
-        (sum, row) => sum + Number(row.cache_capacity_bytes || 0),
+      const cacheCapacity = sumValues(cacheValues, "cache_capacity_bytes");
+      const mcRequests = sumValues(mcValues, "requests");
+      const mcActualBandwidth = sumValues(mcValues, "achieved_bandwidth_gbps");
+      const mcRawBandwidth = sumValues(mcValues, "raw_bandwidth_gbps");
+      const mcFilteredBandwidth = sumValues(
+        mcValues,
+        "filtered_bandwidth_gbps",
+      );
+      const hasEffectiveBmin = mcValues.some(
+        (row) => row.bmin_gbps != null,
+      );
+      const hasEffectiveBmax = mcValues.some(
+        (row) => row.bmax_gbps != null,
+      );
+      const effectiveCmin = weightedPercent(
+        cacheValues,
+        "cmin_percent",
+        configuredTarget.cmin,
+      );
+      const effectiveCmax = weightedPercent(
+        cacheValues,
+        "cmax_percent",
+        configuredTarget.cmax,
+      );
+      const effectiveBmin = mcValues.reduce(
+        (sum, row) => sum + Number(row.bmin_gbps ?? 0),
         0,
       );
-      const mcRequests = mcValues.reduce(
-        (sum, row) => sum + Number(row.requests || 0),
+      const effectiveBmax = mcValues.reduce(
+        (sum, row) => sum + Number(row.bmax_gbps ?? 0),
         0,
       );
       const events = controls.filter(
@@ -2322,15 +2459,22 @@ function buildEffectRows(partid) {
       previousTime = timeNs;
       return {
         timeNs,
-        l3Share: occupancy * 100 / Math.max(1, cacheCapacity),
+        l3Share: sharePercent(filteredOccupancy, cacheCapacity),
+        l3ActualShare: sharePercent(actualOccupancy, cacheCapacity),
+        l3RawShare: sharePercent(rawOccupancy, cacheCapacity),
+        l3FilteredShare: sharePercent(filteredOccupancy, cacheCapacity),
+        l3EffectiveCmin: effectiveCmin,
+        l3EffectiveCmax: effectiveCmax,
         l3Contended: cacheValues.some(
           (row) => Number(row.allocation_denials || 0) > 0
             || Number(row.cmin_protected_evictions || 0) > 0,
         ),
-        mcBandwidth: mcValues.reduce(
-          (sum, row) => sum + Number(row.achieved_bandwidth_gbps || 0),
-          0,
-        ),
+        mcBandwidth: mcFilteredBandwidth,
+        mcActualBandwidth,
+        mcRawBandwidth,
+        mcFilteredBandwidth,
+        mcEffectiveBmin: hasEffectiveBmin ? effectiveBmin : configuredTarget.bmin,
+        mcEffectiveBmax: hasEffectiveBmax ? effectiveBmax : configuredTarget.bmax,
         mcContended: mcRows.some(
           (row) => Number(row.queue_occupancy || 0) > 1
             || Number(row.utilization || 0) > 0.8,
@@ -2414,24 +2558,73 @@ function renderControlEffect() {
   const targetSeries = (value) => value == null ? [] : selectedRows.map(
     (row) => ({ x: row.timeNs, y: Number(value) }),
   );
+  const rowSeries = (key) => selectedRows
+    .filter((row) => row[key] != null)
+    .map((row) => ({ x: row.timeNs, y: Number(row[key]) }));
+  const eventXs = selectedRows
+    .filter((row) => row.events.length)
+    .map((row) => row.timeNs);
+  const selectedColor = partidColor(state.effectPartid);
+
+  renderLegend("#effectL3Legend", [
+    { color: "#60717e", label: "物理实际", kind: "actual" },
+    { color: "#a66a00", label: "原始监控", kind: "raw" },
+    { color: selectedColor, label: "滤波监控", kind: "filtered" },
+    { color: "#2d7a4c", label: "配置CMIN", kind: "configured" },
+    { color: "#2d7a4c", label: "生效CMIN", kind: "effective" },
+    { color: "#b43a3a", label: "配置CMAX", kind: "configured" },
+    { color: "#b43a3a", label: "生效CMAX", kind: "effective" },
+    { color: colors.amber, label: "控制事件", kind: "event" },
+  ]);
   drawLineChart($("#effectL3Chart"), [
-    { color: partidColor(state.effectPartid), points: points("l3Share") },
-    { color: "#2d7a4c", points: targetSeries(target.cmin) },
-    { color: "#b43a3a", points: targetSeries(target.cmax) },
-  ], { yMax: 100 });
+    { color: "#60717e", width: 1.2, marker: "none", points: points("l3ActualShare") },
+    { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("l3RawShare") },
+    { color: selectedColor, width: 2.8, points: points("l3FilteredShare") },
+    { color: "#2d7a4c", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.cmin) },
+    { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("l3EffectiveCmin") },
+    { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.cmax) },
+    { color: "#b43a3a", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("l3EffectiveCmax") },
+  ], { yMax: 100, eventXs });
+
+  renderLegend("#effectBwLegend", [
+    { color: "#60717e", label: "服务实际", kind: "actual" },
+    { color: "#a66a00", label: "原始监控", kind: "raw" },
+    { color: selectedColor, label: "滤波监控", kind: "filtered" },
+    { color: "#2d7a4c", label: "配置BMIN", kind: "configured" },
+    { color: "#2d7a4c", label: "生效BMIN", kind: "effective" },
+    { color: "#b43a3a", label: "配置BMAX", kind: "configured" },
+    { color: "#b43a3a", label: "生效BMAX", kind: "effective" },
+    { color: colors.amber, label: "控制事件", kind: "event" },
+  ]);
   drawLineChart($("#effectBwChart"), [
-    { color: partidColor(state.effectPartid), points: points("mcBandwidth") },
-    { color: "#2d7a4c", points: targetSeries(target.bmin) },
-    { color: "#b43a3a", points: targetSeries(target.bmax) },
+    { color: "#60717e", width: 1.2, marker: "none", points: points("mcActualBandwidth") },
+    { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("mcRawBandwidth") },
+    { color: selectedColor, width: 2.8, points: points("mcFilteredBandwidth") },
+    { color: "#2d7a4c", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmin) },
+    { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmin") },
+    { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmax) },
+    { color: "#b43a3a", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmax") },
+  ], { eventXs });
+
+  renderLegend("#effectQosLegend", [
+    { color: "#697680", label: "配置QoS", kind: "configured" },
+    { color: selectedColor, label: "生效QoS", kind: "filtered" },
+    { color: colors.amber, label: "控制事件", kind: "event" },
   ]);
   drawLineChart($("#effectQosChart"), [
-    { color: "#697680", points: points("baseQos") },
-    { color: partidColor(state.effectPartid), points: points("effectiveQos") },
-  ], { yMax: 8 });
-  drawLineChart($("#effectP99Chart"), [
-    { color: partidColor(state.effectPartid), points: points("p99") },
-    { color: "#b43a3a", points: targetSeries(target.p99) },
+    { color: "#697680", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.qos) },
+    { color: selectedColor, width: 2.6, points: points("effectiveQos") },
+  ], { yMax: 8, eventXs });
+
+  renderLegend("#effectP99Legend", [
+    { color: selectedColor, label: "实际P99", kind: "filtered" },
+    { color: "#b43a3a", label: "目标P99", kind: "configured" },
+    { color: colors.amber, label: "控制事件", kind: "event" },
   ]);
+  drawLineChart($("#effectP99Chart"), [
+    { color: selectedColor, width: 2.6, points: points("p99") },
+    { color: "#b43a3a", width: 1.5, dash: [2, 3], marker: "none", points: targetSeries(target.p99) },
+  ], { eventXs });
 
   const overview = Array.from({ length: 16 }, (_, partid) => {
     const rows = buildEffectRows(partid);
@@ -2444,10 +2637,10 @@ function renderControlEffect() {
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(partid)}">${partid}</span></td>
         <td>${rowTarget.cmin == null ? "-" : `${formatNumber(rowTarget.cmin, 1)}%`} / ${rowTarget.cmax == null ? "-" : `${formatNumber(rowTarget.cmax, 1)}%`}</td>
-        <td>${latest ? `${formatNumber(latest.l3Share, 2)}%` : "-"}</td>
+        <td>${latest ? `${formatNumber(latest.l3FilteredShare, 2)}% <small>实际 ${formatNumber(latest.l3ActualShare, 2)}%</small>` : "-"}</td>
         <td>${stateBadge(rowState.l3)}</td>
         <td>${rowTarget.bmin == null ? "-" : formatNumber(rowTarget.bmin, 1)} / ${rowTarget.bmax == null ? "-" : formatNumber(rowTarget.bmax, 1)} <small>${escapeHtml(rowTarget.mode)}</small></td>
-        <td>${latest ? `${formatNumber(latest.mcBandwidth, 3)} Gbps` : "-"}</td>
+        <td>${latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps <small>实际 ${formatNumber(latest.mcActualBandwidth, 3)}</small>` : "-"}</td>
         <td>${stateBadge(rowState.bw)}</td>
         <td>${rowTarget.qos} / ${latest ? formatNumber(latest.effectiveQos, 2) : "-"}</td>
         <td>${rowTarget.p99 == null ? "-" : formatNumber(rowTarget.p99, 1)} / ${latest ? formatNumber(latest.p99, 1) : "-"}</td>
@@ -2459,10 +2652,10 @@ function renderControlEffect() {
     ? selectedRows.map((row) => `
       <tr>
         <td>${formatTime(row.timeNs)}</td>
-        <td>${formatNumber(row.l3Share, 2)}%</td>
-        <td>${target.cmin == null ? "-" : `${formatNumber(target.cmin, 1)}%`} / ${target.cmax == null ? "-" : `${formatNumber(target.cmax, 1)}%`} <small>${row.l3Contended ? "replacement pressure" : "no replacement pressure"}</small></td>
-        <td>${formatNumber(row.mcBandwidth, 3)} Gbps</td>
-        <td>${target.bmin == null ? "-" : formatNumber(target.bmin, 1)} / ${target.bmax == null ? "-" : formatNumber(target.bmax, 1)} <small>${row.mcContended ? "contended" : target.mode}</small></td>
+        <td>${formatNumber(row.l3FilteredShare, 2)}% <small>原始 ${formatNumber(row.l3RawShare, 2)} / 实际 ${formatNumber(row.l3ActualShare, 2)}</small></td>
+        <td>${target.cmin == null ? "-" : `${formatNumber(row.l3EffectiveCmin ?? target.cmin, 1)}%`} / ${target.cmax == null ? "-" : `${formatNumber(row.l3EffectiveCmax ?? target.cmax, 1)}%`} <small>${row.l3Contended ? "替换竞争" : "无替换竞争"}</small></td>
+        <td>${formatNumber(row.mcFilteredBandwidth, 3)} Gbps <small>原始 ${formatNumber(row.mcRawBandwidth, 3)} / 实际 ${formatNumber(row.mcActualBandwidth, 3)}</small></td>
+        <td>${target.bmin == null ? "-" : formatNumber(row.mcEffectiveBmin ?? target.bmin, 1)} / ${target.bmax == null ? "-" : formatNumber(row.mcEffectiveBmax ?? target.bmax, 1)} <small>${row.mcContended ? "竞争" : target.mode}</small></td>
         <td>${formatNumber(row.baseQos, 0)} / ${formatNumber(row.effectiveQos, 2)}</td>
         <td>L${row.cbusy} / ${formatNumber(row.outstanding, 0)} of ${formatNumber(row.ostdCap, 0)}</td>
         <td>${formatNumber(row.p99, 2)} ns / ${formatNumber(row.throughput, 3)} Gbps</td>

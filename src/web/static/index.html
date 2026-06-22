@@ -151,6 +151,15 @@
             </div>
             <button id="resetPartidButton" type="button" class="small-command" data-help="把16组PARTID控制和监控字段恢复为服务端默认配置；不会自动启动仿真。">重置 16 组</button>
           </div>
+          <div class="algorithm-guide" aria-label="MPAM控制算法">
+            <button type="button" data-algorithm="l3-cpbm">CPBM</button>
+            <button type="button" data-algorithm="l3-cmin">CMIN</button>
+            <button type="button" data-algorithm="l3-cmax">CMAX</button>
+            <button type="button" data-algorithm="mc-bmin">BMIN</button>
+            <button type="button" data-algorithm="mc-bmax">BMAX</button>
+            <button type="button" data-algorithm="mc-qos">MC QoS</button>
+            <button type="button" data-algorithm="mc-cbusy">CBusy</button>
+          </div>
           <div class="mpam-config-wrap">
             <table class="mpam-config-table">
               <thead>
@@ -179,6 +188,12 @@
             <label><input type="radio" name="policy" value="no_control" data-param="policy"><span>无控制</span></label>
             <label><input type="radio" name="policy" value="static_mpam" data-param="policy"><span>静态 MPAM</span></label>
             <label><input type="radio" name="policy" value="closed_loop_qos" data-param="policy"><span>闭环 QoS</span></label>
+          </div>
+          <div class="algorithm-guide" aria-label="闭环与快反馈算法">
+            <button type="button" data-algorithm="policy-mode">P99闭环</button>
+            <button type="button" data-algorithm="mc-qos">3-bit QoS</button>
+            <button type="button" data-algorithm="mc-cbusy">CBusy反馈</button>
+            <button type="button" data-algorithm="address-interleave">地址交织</button>
           </div>
           <h2>闭环参数</h2>
           <div class="field-grid">
@@ -258,11 +273,11 @@
           <canvas id="latencyChart"></canvas>
         </article>
         <article class="chart-panel">
-          <div class="chart-title"><h3>有效带宽</h3><span>Gbps</span></div>
+          <div class="chart-title"><h3>有效带宽</h3><div id="bandwidthLegend" class="legend"></div></div>
           <canvas id="bandwidthChart"></canvas>
         </article>
         <article class="chart-panel">
-          <div class="chart-title"><h3>MSC 队列占用</h3><span>entries</span></div>
+          <div class="chart-title"><h3>MSC 队列占用</h3><div id="queueLegend" class="legend"></div></div>
           <canvas id="queueChart"></canvas>
         </article>
         <article class="chart-panel">
@@ -290,22 +305,41 @@
               <strong data-algorithm="effect-view">目标与实际控制效果</strong>
               <span>16 PARTID 总览；选中一个 PARTID 查看完整仿真时间变化</span>
             </div>
+            <div class="algorithm-guide compact" aria-label="控制算法">
+              <button type="button" data-algorithm="l3-cmin">L3 CMIN</button>
+              <button type="button" data-algorithm="l3-cmax">L3 CMAX</button>
+              <button type="button" data-algorithm="mc-bmin">MC BMIN</button>
+              <button type="button" data-algorithm="mc-bmax">MC BMAX</button>
+              <button type="button" data-algorithm="mc-qos">QoS</button>
+            </div>
             <label>PARTID
               <select id="effectPartid"></select>
             </label>
           </div>
           <div class="effect-chart-grid">
-            <article><h3 data-algorithm="l3-cmin">L3 占用比例 / CMIN / CMAX</h3><canvas id="effectL3Chart"></canvas></article>
-            <article><h3 data-algorithm="mc-bmax">MC 带宽 / BMIN / BMAX</h3><canvas id="effectBwChart"></canvas></article>
-            <article><h3 data-algorithm="mc-qos">MC Base / Effective QoS</h3><canvas id="effectQosChart"></canvas></article>
-            <article><h3>P99 实际 / 目标</h3><canvas id="effectP99Chart"></canvas></article>
+            <article>
+              <div class="effect-chart-title"><h3 data-algorithm="l3-cmin">L3 占用比例 / CMIN / CMAX</h3><div id="effectL3Legend" class="legend semantic-legend"></div></div>
+              <canvas id="effectL3Chart"></canvas>
+            </article>
+            <article>
+              <div class="effect-chart-title"><h3 data-algorithm="mc-bmax">MC 带宽 / BMIN / BMAX</h3><div id="effectBwLegend" class="legend semantic-legend"></div></div>
+              <canvas id="effectBwChart"></canvas>
+            </article>
+            <article>
+              <div class="effect-chart-title"><h3 data-algorithm="mc-qos">MC Base / Effective QoS</h3><div id="effectQosLegend" class="legend semantic-legend"></div></div>
+              <canvas id="effectQosChart"></canvas>
+            </article>
+            <article>
+              <div class="effect-chart-title"><h3 data-algorithm="policy-mode">P99 实际 / 目标</h3><div id="effectP99Legend" class="legend semantic-legend"></div></div>
+              <canvas id="effectP99Chart"></canvas>
+            </article>
           </div>
           <div class="resource-table-wrap">
             <table class="effect-overview-table">
               <thead><tr>
-                <th>PARTID</th><th>L3 Target</th><th>L3 Actual</th><th>L3 State</th>
-                <th>BW Target</th><th>BW Actual</th><th>BW State</th>
-                <th>QoS Base / Eff</th><th>P99 Target / Actual</th><th>Overall</th>
+                <th>PARTID</th><th>L3目标</th><th>L3监控/实际</th><th>L3状态</th>
+                <th>带宽目标</th><th>带宽监控/实际</th><th>带宽状态</th>
+                <th>QoS配置/生效</th><th>P99目标/实际</th><th>总体</th>
               </tr></thead>
               <tbody id="effectOverviewTable"><tr><td colspan="10" class="empty-cell">运行仿真后显示控制效果</td></tr></tbody>
             </table>
@@ -313,9 +347,9 @@
           <div class="resource-table-wrap">
             <table class="effect-timeline-table">
               <thead><tr>
-                <th>Time</th><th>L3 %</th><th>CMIN / CMAX</th><th>MC BW</th>
-                <th>BMIN / BMAX</th><th>QoS Base / Eff</th><th>CBusy / OSTD</th>
-                <th>P99 / Throughput</th><th>Control Events</th>
+                <th>时间</th><th>L3滤波/实际</th><th>CMIN / CMAX</th><th>MC滤波/实际</th>
+                <th>BMIN / BMAX</th><th>QoS配置/生效</th><th>CBusy / OSTD</th>
+                <th>P99 / 吞吐</th><th>控制事件</th>
               </tr></thead>
               <tbody id="effectTimelineTable"><tr><td colspan="9" class="empty-cell">选择 PARTID 后显示完整时间线</td></tr></tbody>
             </table>
