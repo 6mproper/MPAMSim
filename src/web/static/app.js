@@ -195,18 +195,18 @@ function formatFieldHelp(group, key, selectedOption = null) {
   if (!metadata) return "";
   const lines = [
     metadata.title,
-    `含义：${metadata.summary}`,
-    `单位：${metadata.unit}`,
-    `作用位置：${metadata.location}`,
-    `模型影响：${metadata.effect}`,
-    `约束/边界：${metadata.constraints}`,
-    `示例：${metadata.example}`,
-    `模型状态：${metadata.model_status}`,
+    `${metadata.summary}（${metadata.unit}）`,
+    `位置：${metadata.location}`,
+    `影响：${metadata.effect}`,
+    `约束：${metadata.constraints}`,
+    `例：${metadata.example}`,
   ];
+  if (metadata.model_status !== "当前模型已实现") {
+    lines.push(`状态：${metadata.model_status}`);
+  }
   const options = state.uiMetadata?.options?.[key];
   if (options) {
     lines.push(
-      "可选值：",
       ...Object.entries(options).map(
         ([value, description]) =>
           `${String(value) === String(selectedOption) ? "→" : "•"} ${value}：${description}`,
