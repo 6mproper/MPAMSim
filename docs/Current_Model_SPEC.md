@@ -796,13 +796,15 @@ eligible_ways = CPBM中置1的way
 
 ### L3-CTRL-002：控制时序
 
-周期`k`内的CMIN/CMAX使用：
+L3使用双缓冲监控时序。周期`k`内的CMIN/CMAX只读取本地监控边界锁存的
+`control_input[k]`：
 
 ```text
 control_input[k] = filtered_occupancy[k-1]
 ```
 
-周期末发布`filtered[k]`，供下一个周期使用。
+周期末发布`filtered[k]`供UI、导出和证据链使用；该值不得在同一监控边界立即驱动
+CMIN/CMAX，最早在下一次L3本地监控边界被锁存为新的`control_input`。
 
 ### L3-CTRL-003：CMIN
 
@@ -942,13 +944,15 @@ raw_bw = serviced_bytes * 8 / monitor_period_ns
 
 ### MC-CTRL-001：上一周期输入
 
-BMIN/BMAX在周期`k`使用：
+BMIN/BMAX使用双缓冲监控时序。周期`k`内的控制只读取本地监控边界锁存的
+`control_input[k]`：
 
 ```text
 filtered_bw[k-1]
 ```
 
-不允许暗中使用当前瞬时带宽。
+本周期刚计算出的`filtered_bw[k]`只作为监控发布值和下一次边界的候选输入；
+不允许暗中使用当前瞬时带宽或同一边界刚发布的filtered值。
 
 ### MC-CTRL-002：滞回
 
@@ -1252,16 +1256,18 @@ details
 
 ### MON-003：更新顺序
 
-每个资源监控边界：
+每个资源监控边界使用双缓冲更新顺序：
 
-1. 关闭当前周期计数；
-2. 读取raw样本；
-3. 计算filtered值；
-4. 发布监控状态；
-5. 执行监控驱动控制；
-6. 发布并应用动作；
-7. 清空当前周期计数；
-8. 保留filtered历史。
+1. 关闭刚结束窗口的raw计数；
+2. 将上一已发布filtered值锁存为新控制窗口的`control_input`；
+3. 基于`control_input`和授权硬件状态更新控制状态、决策和动作；
+4. 读取刚关闭窗口的raw样本；
+5. 计算并发布新的filtered监控值；
+6. 清空刚关闭窗口计数；
+7. 保留新filtered历史，作为下一次监控边界的锁存候选。
+
+本边界新计算的filtered值可以立即用于UI、导出和证据链，但不得在同一边界驱动
+CMIN/CMAX、BMIN/BMAX、hard block、soft demotion或CBusy带宽项。
 
 ---
 
@@ -1551,8 +1557,8 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 | P0条件 | 当前代码审视 |
 | --- | --- |
 | 独立微测试 | `tests/test_web_config.py`覆盖控制验证套件；`tests/test_explicit_l3.py`覆盖L3 filtered输入和采样误差；`tests/test_shared_mc.py`覆盖hard/soft BMAX、全候选、轮询和deficit；`tests/qos/test_mpam_16_partid.py`覆盖CBusy/BMAX隔离与组合 |
-| 授权actual隔离 | L3控制路径读取`_filtered_sampled_counts`，`actual_occupancy`只在snapshot导出；MC控制状态由`_filtered_bandwidth_gbps`、buffer和CBusy detector驱动 |
-| 非零周期时序 | L3和MC都按本地monitor period发布filtered状态；hard BMAX有上一周期门控测试；L3控制读取上一发布filtered样本 |
+| 授权actual隔离 | L3控制路径读取锁存的`_control_sampled_counts`，`actual_occupancy`只在snapshot导出；MC控制状态由锁存的`_control_bandwidth_gbps`、buffer和CBusy detector驱动 |
+| 非零周期时序 | L3和MC都按本地monitor period发布filtered状态，并用双缓冲control input防止同边界filtered立即控制；hard BMAX和L3控制都有延迟锁存测试 |
 | L3因果链 | cache行保存owner，导出miss/fill、eviction、allocation denial/bypass、raw/filtered/actual和误差 |
 | MC/CPU因果链 | typed `ControlDecision`和`ControlEvent`保存monitor sample、decision和action ID；CBusy通过RSP/DAT返回旁带更新对应requester的目标MC/PARTID OSTD |
 | 失败继续运行 | 控制验证check失败应作为检查结果展示；目标未达、饱和、过冲和吞吐恶化不抛出仿真异常 |

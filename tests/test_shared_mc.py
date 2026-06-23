@@ -147,12 +147,19 @@ def test_hard_bmax_uses_previous_period_and_releases_by_period() -> None:
 
     kernel.run(8.1)
     assert mc._raw_bandwidth_gbps[0] == 64
+    assert mc._filtered_bandwidth_gbps[0] == 64
+    assert mc._control_bandwidth_gbps[0] == 0
+    assert mc._hard_block[0] is False
+    assert mc.queue_length == 2
+
+    kernel.run(16.1)
+    assert mc._control_bandwidth_gbps[0] == 64
     assert mc._hard_block[0] is True
     blocked_depth = mc.queue_length
 
-    kernel.run(15.9)
+    kernel.run(31.9)
     assert mc.queue_length == blocked_depth
-    kernel.run(16.1)
+    kernel.run(32.1)
     assert mc._hard_block[0] is False
 
 

@@ -153,6 +153,9 @@ class CacheMSC(Component):
         self._filtered_sampled_counts: DefaultDict[
             int, float
         ] = defaultdict(float)
+        self._control_sampled_counts: DefaultDict[
+            int, float
+        ] = defaultdict(float)
         self._raw_sampled_bandwidth_gbps: DefaultDict[
             int, float
         ] = defaultdict(float)
@@ -760,7 +763,7 @@ class CacheMSC(Component):
         return self._owner_counts(sampled_only=True)
 
     def _control_owner_counts(self) -> Dict[int, float]:
-        return dict(self._filtered_sampled_counts)
+        return dict(self._control_sampled_counts)
 
     def _actual_owner_counts(self) -> Dict[int, int]:
         return self._owner_counts(sampled_only=False)
@@ -789,6 +792,7 @@ class CacheMSC(Component):
             | set(self._monitor_sampled_bytes)
             | set(self._sampled_owner_counts())
             | set(self._filtered_sampled_counts)
+            | set(self._control_sampled_counts)
         )
 
     def _publish_mpam_monitor(self) -> None:
@@ -800,6 +804,9 @@ class CacheMSC(Component):
         )
         sample_scale = self.config.monitor_group_sets
         for partid in self._known_monitor_partids():
+            self._control_sampled_counts[partid] = (
+                self._filtered_sampled_counts[partid]
+            )
             raw_count = float(raw_counts.get(partid, 0))
             previous_count = self._filtered_sampled_counts[partid]
             filtered_count = (
@@ -860,6 +867,7 @@ class CacheMSC(Component):
             filtered_sampled_count = (
                 self._filtered_sampled_counts[partid]
             )
+            control_sampled_count = self._control_sampled_counts[partid]
             actual_count = actual_counts.get(partid, 0)
             estimated_occupancy = (
                 sampled_count
@@ -893,10 +901,16 @@ class CacheMSC(Component):
                 "sampled_way_count": sampled_count,
                 "raw_sampled_way_count": raw_sampled_count,
                 "filtered_sampled_way_count": filtered_sampled_count,
+                "control_sampled_way_count": control_sampled_count,
                 "actual_line_count": actual_count,
                 "estimated_occupancy_bytes": estimated_occupancy,
                 "raw_occupancy_bytes": raw_occupancy,
                 "filtered_occupancy_bytes": filtered_occupancy,
+                "control_occupancy_bytes": (
+                    control_sampled_count
+                    * sample_scale
+                    * self.config.line_size
+                ),
                 "actual_occupancy_bytes": actual_occupancy,
                 "monitor_error_bytes": (
                     filtered_occupancy - actual_occupancy

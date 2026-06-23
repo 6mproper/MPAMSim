@@ -117,6 +117,9 @@ class MemoryControllerMSC(Component):
         self._filtered_bandwidth_gbps: DefaultDict[int, float] = defaultdict(
             float
         )
+        self._control_bandwidth_gbps: DefaultDict[int, float] = defaultdict(
+            float
+        )
         self._under_bmin: DefaultDict[int, bool] = defaultdict(bool)
         self._over_bmax: DefaultDict[int, bool] = defaultdict(bool)
         self._hard_block: DefaultDict[int, bool] = defaultdict(bool)
@@ -552,6 +555,7 @@ class MemoryControllerMSC(Component):
             | pending
             | set(self._monitor_service_bytes)
             | set(self._filtered_bandwidth_gbps)
+            | set(self._control_bandwidth_gbps)
             | set(self._cbusy_level)
         )
 
@@ -608,21 +612,11 @@ class MemoryControllerMSC(Component):
             self.config.history_weight
             + self.config.current_weight
         )
-        for partid in self._known_partids():
-            raw = (
-                self._monitor_service_bytes[partid]
-                * 8.0
-                / period_ns
-            )
-            previous = self._filtered_bandwidth_gbps[partid]
-            filtered = (
-                self.config.history_weight * previous
-                + self.config.current_weight * raw
-            ) / weight_sum
-            self._raw_bandwidth_gbps[partid] = raw
-            self._filtered_bandwidth_gbps[partid] = filtered
-            self._monitor_updates[partid] += 1
-            self._update_limit_states(partid, filtered)
+        partids = self._known_partids()
+        for partid in partids:
+            control_bandwidth = self._filtered_bandwidth_gbps[partid]
+            self._control_bandwidth_gbps[partid] = control_bandwidth
+            self._update_limit_states(partid, control_bandwidth)
             if self._hard_block[partid]:
                 blocked = [
                     entry
@@ -645,6 +639,21 @@ class MemoryControllerMSC(Component):
                         ]
                         group["hardlimit_block_events"] += 1
                         group["throttle_delay_ns"] += period_ns
+
+        for partid in partids:
+            raw = (
+                self._monitor_service_bytes[partid]
+                * 8.0
+                / period_ns
+            )
+            previous = self._filtered_bandwidth_gbps[partid]
+            filtered = (
+                self.config.history_weight * previous
+                + self.config.current_weight * raw
+            ) / weight_sum
+            self._raw_bandwidth_gbps[partid] = raw
+            self._filtered_bandwidth_gbps[partid] = filtered
+            self._monitor_updates[partid] += 1
             self._monitor_service_bytes[partid] = 0
         self._schedule_dispatch(0.0)
         self.kernel.schedule(
@@ -757,7 +766,7 @@ class MemoryControllerMSC(Component):
             )
             setting = self.settings.lookup(partid)
             bandwidth_ratio = (
-                self._filtered_bandwidth_gbps[partid]
+                self._control_bandwidth_gbps[partid]
                 / setting.bw_max_gbps
                 if (
                     setting.bmax_enable
@@ -830,6 +839,7 @@ class MemoryControllerMSC(Component):
             self._configured_partids()
             | set(self._interval_per_partid)
             | set(self._filtered_bandwidth_gbps)
+            | set(self._control_bandwidth_gbps)
         )
         per_partid = {}
         for partid in partids:
@@ -861,6 +871,9 @@ class MemoryControllerMSC(Component):
                 "raw_bandwidth_gbps": self._raw_bandwidth_gbps[partid],
                 "filtered_bandwidth_gbps": (
                     self._filtered_bandwidth_gbps[partid]
+                ),
+                "control_bandwidth_gbps": (
+                    self._control_bandwidth_gbps[partid]
                 ),
                 "bmax_gbps": bmax,
                 "bmin_gbps": bmin,
@@ -974,6 +987,9 @@ class MemoryControllerMSC(Component):
                 "raw_bandwidth_gbps": self._raw_bandwidth_gbps[partid],
                 "filtered_bandwidth_gbps": (
                     self._filtered_bandwidth_gbps[partid]
+                ),
+                "control_bandwidth_gbps": (
+                    self._control_bandwidth_gbps[partid]
                 ),
                 "controller_bandwidth_gbps": self.total_bandwidth_gbps,
                 "bandwidth_utilization": min(

@@ -236,6 +236,9 @@ def test_l3_control_reads_only_published_filtered_sample() -> None:
     assert cache._control_owner_counts().get(3, 0) == 0
     kernel.run(8)
     assert cache._raw_sampled_counts[3] == 1
+    assert cache._filtered_sampled_counts[3] == 1
+    assert cache._control_owner_counts().get(3, 0) == 0
+    kernel.run(16)
     assert cache._control_owner_counts()[3] == 1
 
 

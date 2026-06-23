@@ -154,12 +154,30 @@ aging cap、BMIN promotion和soft-limit demotion。
 
 ### Requirement: 上一滤波周期驱动BMIN和BMAX
 
-周期k的BMIN/BMAX MUST 只读取周期k-1发布的滤波带宽，不得读取当前瞬时服务字节。
+周期k的BMIN/BMAX MUST 只读取本地监控边界锁存的周期k-1发布滤波带宽，不得读取当前瞬时服务字节。
 
 #### Scenario: Hard BMAX过冲
 
 - **WHEN** 当前周期服务使raw带宽超过BMAX
 - **THEN** 请求可在本周期继续服务，hard block从下一周期生效
+
+#### Scenario: BMAX发布不立即控制
+
+- **WHEN** 当前窗口服务字节使本边界发布的filtered bandwidth超过BMAX
+- **THEN** 该PARTID在本边界之后的同timestamp调度 MUST NOT 因这个刚发布值立即hard block或soft demote
+- **AND** hard/soft控制最早在下一次本地监控边界锁存该filtered值后生效
+
+#### Scenario: BMAX释放延迟
+
+- **WHEN** hard block后的窗口不再服务该PARTID并发布低于释放阈值的filtered bandwidth
+- **THEN** hard block MUST 在下一次本地监控边界锁存该低filtered值后释放
+- **AND** 释放延迟和过冲 MUST 记录为可观察控制结果，不得中止仿真
+
+#### Scenario: CBusy带宽输入
+
+- **WHEN** CBusy detector使用带宽比例判断等级
+- **THEN** 带宽比例 MUST 基于锁存的`control_bandwidth / BMAX`
+- **AND** queue比例仍 MAY 基于当前授权buffer状态
 
 ### Requirement: Work-Conserving Soft控制
 
