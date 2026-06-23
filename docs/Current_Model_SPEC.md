@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档状态 | 已确认的目标架构与实现基线 |
-| 文档日期 | 2026-06-22 |
-| 当前代码基线 | `943494c`之后的原位迁移实现 |
+| 文档日期 | 2026-06-23 |
+| 当前代码基线 | `4237166`之后的P0机制可信性审视 |
 | 仿真方法 | 确定性离散事件仿真 |
 | 参考拓扑 | 8核、每核2线程、16个硬件线程、16个PARTID |
 | 研究重点 | 系统流控、MPAM监控与控制、控制动态和PPA折中 |
@@ -39,6 +39,22 @@
 4. 每个控制逻辑必须说明底层状态、更新周期、动作点、饱和和恢复。
 5. 控制效果必须能沿时间轴被用户观察和解释。
 6. 新特性通过模块接口和策略扩展，不在主仿真流程堆积特例。
+
+### 0.4 P0完成定义
+
+P0是**机制可信性验收**，不是**控制效果达标验收**。
+P0完成只需要满足：
+
+1. 各控制机制独立微测试通过；
+2. 控制器没有读取未授权的actual状态；
+3. 监控、决策和动作时序无零周期偷跑；
+4. 两条最小端到端因果链能够完整追踪；
+5. 目标未达和控制饱和不会终止仿真；
+6. 相同输入能够确定性复现；
+7. 不新增阶段专用仿真模式、数据模型和UI通路。
+
+P0允许控制目标未达、过冲、振荡、饱和、不可行或控制导致性能恶化。
+这些情况必须作为`CONTROL_OUTCOME`导出证据，不得作为模型错误。
 
 ---
 
@@ -1376,6 +1392,24 @@ validation_level: basic | full
 
 通过条件是状态和动作符合规格，不是性能目标达到。
 
+### VERIFY-008：P0机制可信性验收
+
+P0验收门槛如下：
+
+| 条件 | P0判定 |
+| --- | --- |
+| 独立微测试 | CPBM、CMIN、CMAX、BMIN、Soft BMAX、Hard BMAX、MC QoS、CBusy和OSTD至少各有机制级检查 |
+| 授权状态 | L3 CMIN/CMAX只读取上一发布filtered sampled owner；MC BMIN/BMAX只读取上一发布filtered bandwidth和授权buffer状态 |
+| 非零周期时序 | 当前周期真实变化不得零周期成为已发布监控输入；控制动作必须经监控边界或事件调度生效 |
+| L3因果链 | 激励、miss/fill、victim选择、allocation/eviction/bypass、raw/filtered/actual和UI事件可追踪 |
+| MC/CPU因果链 | 激励、MC监控、BMAX/QoS/CBusy动作、CPU OSTD、带宽/延迟和UI事件可追踪 |
+| 失败继续运行 | 目标未达、过冲、饱和、不可行、过度限流和性能恶化继续运行并导出 |
+| 确定性 | 相同配置和seed重复运行结果一致 |
+| 无阶段旁路 | 不新增P0专用仿真模式、影子数据模型或独立UI通路 |
+
+P0自动化测试只判断控制是否按规则生效。目标是否达成属于方案分析结果，
+不得反向改写P0通过条件。
+
 ---
 
 ## 17. 当前实现状态
@@ -1442,6 +1476,23 @@ validation_level: basic | full
 - 同QoS oldest timestamp硬件调度；
 - 固定四场景对照作为主要验证方式；
 - 只看最终平均值判断控制效果。
+
+### 17.4 P0代码审视结论
+
+| P0条件 | 当前代码审视 |
+| --- | --- |
+| 独立微测试 | `tests/test_web_config.py`覆盖控制验证套件；`tests/test_explicit_l3.py`覆盖L3 filtered输入和采样误差；`tests/test_shared_mc.py`覆盖hard/soft BMAX、全候选、轮询和deficit；`tests/qos/test_mpam_16_partid.py`覆盖CBusy/BMAX隔离与组合 |
+| 授权actual隔离 | L3控制路径读取`_filtered_sampled_counts`，`actual_occupancy`只在snapshot导出；MC控制状态由`_filtered_bandwidth_gbps`、buffer和CBusy detector驱动 |
+| 非零周期时序 | L3和MC都按本地monitor period发布filtered状态；hard BMAX有上一周期门控测试；L3控制读取上一发布filtered样本 |
+| L3因果链 | cache行保存owner，导出miss/fill、eviction、allocation denial/bypass、raw/filtered/actual和误差 |
+| MC/CPU因果链 | typed `ControlDecision`和`ControlEvent`保存monitor sample、decision和action ID；CBusy通过RSP/DAT返回旁带更新对应requester的目标MC/PARTID OSTD |
+| 失败继续运行 | 控制验证check失败应作为检查结果展示；目标未达、饱和、过冲和吞吐恶化不抛出仿真异常 |
+| 确定性复现 | 固定seed仿真、NoC tie方向、MC rotating slot和地址交织已有确定性测试或规格要求 |
+| 无阶段旁路 | 当前P0能力复用常规Simulation、Transaction、MonitorSnapshot、ControlEvent和控制总览/因果链UI通路 |
+
+当前仍需注意：P0只证明机制生效和证据可信，不证明任意配置下目标可达。
+后续新增控制算法时，必须先把授权输入、状态更新周期、动作点和饱和行为写入spec，
+再补独立机制测试。
 
 ---
 
