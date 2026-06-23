@@ -127,6 +127,8 @@ class Transaction:
     return_cbusy_level: int = 0
     return_cbusy_ostd_cap: int = 0
     return_cbusy_sample_time_ns: Optional[float] = None
+    return_cbusy_monitor_sample_id: str = ""
+    return_cbusy_decision_id: str = ""
     cache_hit: bool = False
 
     def __setattr__(self, name: str, value: object) -> None:

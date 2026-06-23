@@ -526,7 +526,7 @@ input[readonly] {
 }
 
 .stimulus-config-table {
-  min-width: 1050px;
+  min-width: 1130px;
   table-layout: fixed;
 }
 
@@ -539,7 +539,7 @@ input[readonly] {
 
 .stimulus-config-table th:nth-child(1) { width: 72px; }
 .stimulus-config-table th:nth-child(2) { width: 32px; }
-.stimulus-config-table th:nth-child(3),
+.stimulus-config-table th:nth-child(3) { width: 72px; }
 .stimulus-config-table th:nth-child(4) { width: 48px; }
 .stimulus-config-table th:nth-child(5) { width: 82px; }
 .stimulus-config-table th:nth-child(6) { width: 92px; }
@@ -551,7 +551,8 @@ input[readonly] {
 .stimulus-config-table th:nth-child(12) { width: 64px; }
 .stimulus-config-table th:nth-child(13) { width: 58px; }
 .stimulus-config-table th:nth-child(14),
-.stimulus-config-table th:nth-child(15) { width: 76px; }
+.stimulus-config-table th:nth-child(15),
+.stimulus-config-table th:nth-child(16) { width: 76px; }
 
 .stimulus-config-table input,
 .stimulus-config-table select {

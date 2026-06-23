@@ -61,7 +61,7 @@ const configHeaderFields = {
   stimulus: {
     Requester: "requester",
     En: "enabled",
-    PID: "partid",
+    PARTID: "partid",
     PMG: "pmg",
     Type: "workload_type",
     Addr: "address_pattern",
@@ -73,10 +73,11 @@ const configHeaderFields = {
     Bytes: "request_size_bytes",
     Read: "read_ratio",
     "WSS MB": "working_set_mb",
+    "Base MB": "address_base_mb",
     "P99 ns": "target_p99_ns",
   },
   partid: {
-    PID: "partid",
+    PARTID: "partid",
     Name: "name",
     Mon: "monitor_enable",
     "CMIN %": "cmin",
@@ -107,8 +108,8 @@ const headerHelp = {
   "MC Requests": "最新采样周期内该监控组在 MC 完成调度的请求数。",
   "Throttle ns": "最新周期内 hard limit 等待累计时间。",
   "OSTD Current / Peak": "采样时刻当前 outstanding requests，以及该控制周期内观察到的峰值。",
-  "Core Pool / P OSTD": "该 PARTID 所在 Core 的共享池总占用/峰值/上限，以及 Core 内该 PARTID 的合计占用；共享池总占用包含其他 PARTID。",
-  "Home MC P OSTD": "按目标 MC 分开的 Core/PARTID outstanding、周期峰值、有效 CBusy cap 与等级；MC0 的反馈不限制发往 MC1 的请求。",
+  "Core Pool / ID OSTD": "该 PARTID 所在 Core 的共享池总占用/峰值/上限，以及 Core 内该 PARTID 的合计占用；共享池总占用包含其他 PARTID。",
+  "Home MC ID OSTD": "按目标 MC 分开的 Core/PARTID outstanding、周期峰值、有效 CBusy cap 与等级；MC0 的反馈不限制发往 MC1 的请求。",
   "OSTD Util %": "当前 outstanding 除以该 PARTID 所关联 requester 的最大 outstanding 容量之和。",
   "Issued / Completed": "仿真开始以来该 PARTID 在 CPU requester 侧累计发出和完成的请求数。",
   "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
@@ -390,7 +391,7 @@ function renderStimulusConfig(rows) {
   state.stimulusConfigs = rows.map((row) => ({ ...row }));
   const partidOptions = Array.from(
     { length: 16 },
-    (_, partid) => [partid, `P${partid}`],
+    (_, partid) => [partid, `PARTID ${partid}`],
   );
   const typeOptions = [
     ["stream", "stream"],
@@ -430,6 +431,7 @@ function renderStimulusConfig(rows) {
       <td><input data-stimulus-field="request_size_bytes" ${configHelpAttributes("stimulus", "request_size_bytes")} type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
       <td><input data-stimulus-field="read_ratio" ${configHelpAttributes("stimulus", "read_ratio")} type="number" min="0" max="1" step="0.05" value="${row.read_ratio}"></td>
       <td><input data-stimulus-field="working_set_mb" ${configHelpAttributes("stimulus", "working_set_mb")} type="number" min="1" max="262144" step="1" value="${row.working_set_mb}"></td>
+      <td><input data-stimulus-field="address_base_mb" ${configHelpAttributes("stimulus", "address_base_mb")} type="number" min="0" max="1048576" step="1" value="${row.address_base_mb || 0}"></td>
       <td><input data-stimulus-field="target_p99_ns" ${configHelpAttributes("stimulus", "target_p99_ns")} type="number" min="0" max="1000000" step="1" value="${row.target_p99_ns}"></td>
     </tr>
   `).join("");
@@ -456,6 +458,7 @@ function collectStimulusConfigs() {
       request_size_bytes: Number(value("request_size_bytes").value),
       read_ratio: Number(value("read_ratio").value),
       working_set_mb: Number(value("working_set_mb").value),
+      address_base_mb: Number(value("address_base_mb").value),
       target_p99_ns: Number(value("target_p99_ns").value),
     };
   });
@@ -998,7 +1001,7 @@ function renderPartidVisibility() {
   $("#partidVisibility").innerHTML = Array.from({ length: 16 }, (_, partid) => `
     <label class="partid-visibility-toggle" data-partid-toggle="${partid}" style="--partid-color:${partidColor(partid)}" data-help="切换 PARTID ${partid} 在资源表、趋势图和明细表中的显示。">
       <input type="checkbox" data-visible-partid="${partid}" ${isPartidVisible(partid) ? "checked" : ""}>
-      <span><i></i>P${partid}</span>
+      <span><i></i>ID ${partid}</span>
     </label>
   `).join("");
   $("#selectedPartidCount").textContent = state.visiblePartids.size;
@@ -1627,7 +1630,7 @@ function renderControlFeedbackSummary() {
     <span><b>所选 PARTID 更新</b>${updates.length}</span>
     <span class="feedback-reason"><b>最近动作</b>${
       latest
-        ? `${formatTime(Number(latest.time_ns || 0))} · P${escapeHtml(latest.partid)} · ${escapeHtml(latest.target_msc)}.${escapeHtml(latest.field)} · ${escapeHtml(latest.reason)}`
+        ? `${formatTime(Number(latest.time_ns || 0))} · PARTID ${escapeHtml(latest.partid)} · ${escapeHtml(latest.target_msc)}.${escapeHtml(latest.field)} · ${escapeHtml(latest.reason)}`
         : "暂无运行时控制更新"
     }</span>`;
 }
@@ -1642,7 +1645,7 @@ function renderResourceMonitor() {
   if (state.resourceView === "cpu") {
     headers = [
       "PARTID", "Control State", "Requester", "OSTD Current / Peak",
-      "OSTD Util %", "Core Pool / P OSTD", "Home MC P OSTD",
+      "OSTD Util %", "Core Pool / ID OSTD", "Home MC ID OSTD",
       "CBusy", "Issued / Completed",
       "Backpressure ns", "CBusy Stall ns",
     ];
@@ -1653,7 +1656,7 @@ function renderResourceMonitor() {
         <td>${escapeHtml([...row.requesters].join(", ") || "-")}</td>
         <td><strong>${formatNumber(row.outstanding, 0)}</strong> / ${formatNumber(row.peakOutstanding, 0)} <small>eff ${formatNumber(row.effectiveMaxOutstanding, 0)} · cfg ${formatNumber(row.maxOutstanding, 0)}</small></td>
         <td>${utilizationCell(row.outstandingUtilization, partidColor(row.partid))}</td>
-        <td><strong>${formatNumber(row.coreOutstanding, 0)}</strong> / ${formatNumber(row.corePeakOutstanding, 0)} <small>limit ${formatNumber(row.coreLimit, 0)} · P ${formatNumber(row.corePartidOutstanding, 0)} / ${formatNumber(row.corePartidPeakOutstanding, 0)} · ${escapeHtml([...row.corePolicies].join(" / ") || "-")}</small></td>
+        <td><strong>${formatNumber(row.coreOutstanding, 0)}</strong> / ${formatNumber(row.corePeakOutstanding, 0)} <small>limit ${formatNumber(row.coreLimit, 0)} · ID ${formatNumber(row.corePartidOutstanding, 0)} / ${formatNumber(row.corePartidPeakOutstanding, 0)} · ${escapeHtml([...row.corePolicies].join(" / ") || "-")}</small></td>
         <td>${[...row.destinations.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([mcId, values]) => `<span class="destination-ostd"><b>${escapeHtml(mcId)}</b> ${formatNumber(values.outstanding, 0)} / ${formatNumber(values.peak, 0)} <small>cap ${formatNumber(values.limit, 0)} · L${formatNumber(values.cbusy, 0)}</small></span>`).join("") || "-"}</td>
         <td><span class="cbusy-level level-${row.cbusyLevel}">L${row.cbusyLevel}</span> <small>cap ${formatNumber(row.effectiveMaxOutstanding, 0)} · ${formatNumber(row.cbusyTransitions, 0)} trans</small></td>
         <td>${formatNumber(row.issued, 0)} / ${formatNumber(row.completed, 0)} <small>${(row.completionRatio * 100).toFixed(1)}%</small></td>
@@ -2505,7 +2508,7 @@ function renderCharts() {
     "#latencyLegend",
     latencySeries.map((entry) => ({
       color: entry.color,
-      label: `P${entry.partid}`,
+      label: `ID ${entry.partid}`,
       kind: "dot",
     })),
   );
@@ -2515,7 +2518,7 @@ function renderCharts() {
     "#bandwidthLegend",
     bandwidthSeries.map((entry) => ({
       color: entry.color,
-      label: `P${entry.partid}`,
+      label: `ID ${entry.partid}`,
       kind: "dot",
     })),
   );
@@ -3094,7 +3097,7 @@ function renderControlOverview() {
       : Number(cpuRow.outstanding || 0) > 0 ? "运行" : "空闲";
     return `
       <button type="button" class="overview-partid ${partid === pid ? "active" : ""}" data-overview-partid="${partid}" style="--partid-color:${partidColor(partid)}">
-        <b>P${partid}</b>
+        <b>ID ${partid}</b>
         <span class="${overviewStateKind(cpuLabel)}">CPU ${escapeHtml(cpuLabel)}</span>
         <span class="${overviewStateKind(rowState.l3)}">L3 ${escapeHtml(rowState.l3)}</span>
         <span class="${overviewStateKind(rowState.bw)}">MC ${escapeHtml(rowState.bw)}</span>

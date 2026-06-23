@@ -158,6 +158,10 @@ class MemoryControllerMSC(Component):
         self._cbusy_interval_active_ns: DefaultDict[int, float] = defaultdict(
             float
         )
+        self._cbusy_sample_index = 0
+        self._cbusy_sample_time_ns: Dict[int, float] = {}
+        self._cbusy_monitor_sample_id: Dict[int, str] = {}
+        self._cbusy_decision_id: Dict[int, str] = {}
 
         for partid, setting in self.settings.items():
             self._under_bmin[partid] = bool(
@@ -520,7 +524,18 @@ class MemoryControllerMSC(Component):
             if level > 0
             else 0
         )
-        request.return_cbusy_sample_time_ns = self.kernel.now_ns
+        request.return_cbusy_sample_time_ns = (
+            self._cbusy_sample_time_ns.get(
+                request.partid,
+                self.kernel.now_ns,
+            )
+        )
+        request.return_cbusy_monitor_sample_id = (
+            self._cbusy_monitor_sample_id.get(request.partid, "")
+        )
+        request.return_cbusy_decision_id = (
+            self._cbusy_decision_id.get(request.partid, "")
+        )
         self.on_complete(request)
 
     def _configured_partids(self) -> set[int]:
@@ -729,7 +744,17 @@ class MemoryControllerMSC(Component):
 
     def _evaluate_cbusy(self) -> None:
         sample_ns = self.config.cbusy_sample_ns
+        self._cbusy_sample_index += 1
         for partid in self._known_partids():
+            self._cbusy_sample_time_ns[partid] = self.kernel.now_ns
+            self._cbusy_monitor_sample_id[partid] = (
+                f"mc_cbusy_sample:{self.component_id}:"
+                f"{self._cbusy_sample_index}:partid:{partid}"
+            )
+            self._cbusy_decision_id[partid] = (
+                f"decision:mc_cbusy:{self.component_id}:"
+                f"{self._cbusy_sample_index}:partid:{partid}"
+            )
             setting = self.settings.lookup(partid)
             bandwidth_ratio = (
                 self._filtered_bandwidth_gbps[partid]

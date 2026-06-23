@@ -158,6 +158,7 @@ class WorkloadConfig:
     request_size_bytes: int
     read_ratio: float
     working_set_bytes: int
+    address_base_bytes: int = 0
     target_p99_ns: Optional[float] = None
     injection_rate_mrps: Optional[float] = None
     injection_rate_gbps: Optional[float] = None

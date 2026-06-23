@@ -51,6 +51,8 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.workloads[0].injection_rate_gbps == 6.0
     assert config.workloads[1].injection_rate_mrps == 4.0
     assert config.workloads[1].address_pattern == "pointer_chase"
+    assert config.workloads[0].address_base_bytes == 0
+    assert config.workloads[1].address_base_bytes == 256 * 1024 * 1024
     assert config.workloads[1].dependency_mode == "pointer_chain"
     assert config.workloads[3].address_pattern == "uniform_random"
     assert config.workloads[0].issue_selection == "eligible_scan"
@@ -236,6 +238,101 @@ def test_control_effect_presets_are_buildable(tmp_path) -> None:
         raw = build_config(parameters, str(tmp_path / preset["id"]))
         assert raw["simulation"]["time_ns"] > 0
         assert len(raw["workloads"]) >= 1
+
+
+def test_mc_competition_preset_keeps_both_partids_visible(tmp_path) -> None:
+    preset = next(
+        preset
+        for preset in control_effect_presets()
+        if preset["id"] == "mc_bmin_qos_compete"
+    )
+    parameters = preset["parameters"]
+    active_rows = {
+        row["partid"]: row
+        for row in parameters["stimulus_configs"]
+        if row["enabled"]
+    }
+    assert active_rows[0]["address_base_mb"] != active_rows[1]["address_base_mb"]
+
+    raw = build_config(parameters, str(tmp_path / "mc_bmin_qos_compete"))
+    config_path = tmp_path / "mc_bmin_qos_compete.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    workloads = {workload.partid: workload for workload in config.workloads}
+    assert workloads[0].address_base_bytes != workloads[1].address_base_bytes
+    result = Simulation.from_config(config).run()
+    latest_mc = next(
+        row for row in reversed(result.collector.msc_rows)
+        if row["msc_type"] == "memory_controller"
+    )
+    partid0 = latest_mc["per_partid"]["0"]
+    partid1 = latest_mc["per_partid"]["1"]
+    assert partid0["requests"] > 0
+    assert partid1["requests"] > 0
+    assert partid1["achieved_bandwidth_gbps"] > 1.0
+    assert (
+        partid0["achieved_bandwidth_gbps"]
+        > partid1["achieved_bandwidth_gbps"]
+    )
+
+
+def test_p1_presets_emit_minimal_closed_loop_evidence(tmp_path) -> None:
+    presets = {
+        preset["id"]: preset["parameters"]
+        for preset in control_effect_presets()
+    }
+
+    l3_raw = build_config(
+        presets["l3_cmin_cmax_pressure"],
+        str(tmp_path / "l3_cmax"),
+    )
+    l3_path = tmp_path / "l3_cmax.yaml"
+    l3_path.write_text(yaml.safe_dump(l3_raw, sort_keys=False), encoding="utf-8")
+    l3_result = Simulation.from_config(load_config(l3_path)).run()
+    l3_rows = [
+        row for row in l3_result.collector.msc_rows
+        if row["msc_type"] == "cache"
+    ]
+    l3_partid1 = [
+        row["per_partid"]["1"] for row in l3_rows
+    ]
+    assert sum(row["cmax_growth_blocks"] for row in l3_partid1) > 0
+    assert sum(row["self_replacements"] for row in l3_partid1) > 0
+
+    mc_raw = build_config(
+        presets["mc_hard_bmax_cbusy"],
+        str(tmp_path / "mc_bmax_cbusy"),
+    )
+    mc_path = tmp_path / "mc_bmax_cbusy.yaml"
+    mc_path.write_text(yaml.safe_dump(mc_raw, sort_keys=False), encoding="utf-8")
+    mc_result = Simulation.from_config(load_config(mc_path)).run()
+    mc_rows = [
+        row for row in mc_result.collector.msc_rows
+        if row["msc_type"] == "memory_controller"
+    ]
+    assert sum(
+        row["per_partid"]["0"]["hardlimit_block_events"]
+        for row in mc_rows
+    ) > 0
+    cpu_rows = [
+        row for row in mc_result.collector.requester_rows
+        if row["partid"] == 0
+    ]
+    assert cpu_rows[-1]["effective_max_outstanding"] < 32
+    cbusy_events = [
+        row for row in mc_result.collector.control_rows
+        if row["policy"] == "mc_cbusy"
+    ]
+    assert cbusy_events
+    assert all(row["monitor_sample_id"] for row in cbusy_events)
+    assert all(row["decision_id"] for row in cbusy_events)
+    assert all(
+        row["action_effective_time_ns"] >= row["details"]["sample_time_ns"]
+        for row in cbusy_events
+    )
 
 
 def test_defaults_payload_contains_control_effect_presets() -> None:

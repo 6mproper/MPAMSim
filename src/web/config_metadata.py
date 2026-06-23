@@ -236,7 +236,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "L3 miss处理。",
         "开启可减少重复MC流量；所有waiter保留独立PARTID/PMG和CPU OSTD，fill owner取第一miss。",
         "true或false；包含write的同line请求不合并。",
-        "开启时P0先miss、P1随后read同line，只发送一笔MC请求。",
+        "开启时PARTID 0先miss、PARTID 1随后read同line，只发送一笔MC请求。",
     ),
     "l3_replacement_policy": _field(
         "L3替换策略",
@@ -751,7 +751,7 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
         "每个生成请求的MPAM标签。",
         "多个线程可共享一个PARTID并共同受该分区控制。",
         "整数0到15。",
-        "两个线程都选P3会共享P3的CMAX和BMAX。",
+        "两个线程都选PARTID 3会共享PARTID 3的CMAX和BMAX。",
     ),
     "pmg": _field(
         "激励PMG",
@@ -760,7 +760,7 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
         "L3和MC的(PARTID, PMG)监控key。",
         "改变PMG只改变当前监控分组，不独立改变资源控制。",
         "整数0到15；PMG作用域属于PARTID。",
-        "P3/G1和P3/G2共享控制但分开统计。",
+        "PARTID 3/PMG 1和PARTID 3/PMG 2共享控制但分开统计。",
     ),
     "workload_type": _field(
         "激励类型",
@@ -890,6 +890,15 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
         "1到262,144。",
         "1024表示1 GiB工作集。",
     ),
+    "address_base_mb": _field(
+        "地址基址",
+        "该线程逻辑工作集窗口的起始地址，用于把多个激励分离到不同cache line范围。",
+        "MiB",
+        "流量生成器生成局部地址后统一加基址。",
+        "改变它会改变L3同line merge、MC归因和地址交织结果；P1预设用它避免不同PARTID默认打到同一line。",
+        "0到1,048,576。",
+        "512表示该线程从512 MiB地址窗口开始访问。",
+    ),
     "target_p99_ns": _field(
         "P99目标",
         "正值把该PARTID标记为closed_loop_qos保护对象，0表示不设置延迟目标。",
@@ -910,7 +919,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "L3和MC设置表索引。",
         "该行所有控制值都作用于同一PARTID。",
         "16行固定覆盖0到15，不可重复。",
-        "P2表示设置表索引2。",
+        "PARTID 2表示设置表索引2。",
         "固定标识",
     ),
     "name": _field(
@@ -929,7 +938,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "L3和MC监控快照。",
         "关闭不应被显示为零；当前UI仍保留16行以便识别未启用状态。",
         "不改变控制表值。",
-        "关闭P7监控后控制仍可保留。",
+        "关闭PARTID 7监控后控制仍可保留。",
     ),
     "cpbm_enable": _field(
         "CPBM控制开关",
@@ -956,7 +965,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "L3 victim合法性判断。",
         "关闭后有效CMIN为0，CPBM和CMAX保持。",
         "所有启用CMIN合计不能超过100%。",
-        "仅关闭P1 CMIN不会关闭P1 CMAX。",
+        "仅关闭PARTID 1 CMIN不会关闭PARTID 1 CMAX。",
     ),
     "cmin": _field(
         "CMIN比例",
@@ -975,7 +984,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "L3 miss分配victim选择。",
         "关闭后有效上限只受CPBM可达比例限制。",
         "配置值保留，重新启用后恢复。",
-        "关闭P2 CMAX后仍受P2 CPBM限制。",
+        "关闭PARTID 2 CMAX后仍受PARTID 2 CPBM限制。",
     ),
     "cmax": _field(
         "CMAX比例",
@@ -994,7 +1003,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "MC候选请求评分。",
         "关闭后不产生BMIN credit和升档，其他MC控制保持。",
         "配置值保留。",
-        "关闭P4 BMIN后P4基础QoS仍可生效。",
+        "关闭PARTID 4 BMIN后PARTID 4基础QoS仍可生效。",
     ),
     "bmin_gbps": _field(
         "BMIN目标",
@@ -1013,7 +1022,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "MC候选资格和QoS评分。",
         "关闭后不执行hard阻塞或soft降档，配置值和mode保留。",
         "启用时BMAX必须大于0且不小于BMIN。",
-        "关闭P2 BMAX可用于对照实验。",
+        "关闭PARTID 2 BMAX可用于对照实验。",
     ),
     "bmax_gbps": _field(
         "BMAX目标",
@@ -1041,7 +1050,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "MC本地候选评分。",
         "关闭后基础QoS为0，但aging、BMIN和soft降档仍按各自开关工作。",
         "配置值保留。",
-        "关闭P1 QoS不影响NoC，因为当前NoC本来不使用此值。",
+        "关闭PARTID 1 QoS不影响NoC，因为当前NoC本来不使用此值。",
     ),
     "mc_qos": _field(
         "MC基础QoS",

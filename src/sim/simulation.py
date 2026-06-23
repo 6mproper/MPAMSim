@@ -517,6 +517,9 @@ class Simulation:
             level,
             cap if level > 0 else requester.config.max_outstanding,
         )
+        new_cap = requester.effective_max_outstanding(partid, msc_id)
+        if old_level == 0 and level == 0:
+            return
         self.collector.record_control(
             self._control_event(
                 resource_id=msc_id,
@@ -526,7 +529,10 @@ class Simulation:
                 old_state=old_level,
                 new_state=level,
                 policy="mc_cbusy",
-                reason=f"effective OSTD cap {cap}",
+                reason=f"effective OSTD cap {new_cap}",
+                monitor_sample_id=request.return_cbusy_monitor_sample_id,
+                decision_id=request.return_cbusy_decision_id,
+                action_effective_time_ns=self.kernel.now_ns,
                 details={
                     "requester_id": request.requester_id,
                     "transaction_id": request.transaction_id,
@@ -534,12 +540,7 @@ class Simulation:
                         request.return_cbusy_sample_time_ns
                     ),
                     "old_effective_ostd_cap": old_cap,
-                    "effective_ostd_cap": (
-                        requester.effective_max_outstanding(
-                            partid,
-                            msc_id,
-                        )
-                    ),
+                    "effective_ostd_cap": new_cap,
                     "transport": "rsp_dat_sideband",
                 },
             )

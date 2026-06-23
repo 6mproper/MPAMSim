@@ -226,6 +226,7 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
             "working_set_mb": (
                 64 if workload_type == "pointer_chase" else 256
             ),
+            "address_base_mb": slot * 256,
             "target_p99_ns": 0.0,
         }
         rows.append(row)
@@ -369,6 +370,7 @@ def _apply_stimulus(
     working_set_mb: int = 64,
     read_ratio: float = 1.0,
     target_p99_ns: float = 0.0,
+    address_base_mb: int = 0,
 ) -> None:
     row = parameters["stimulus_configs"][slot]
     type_defaults = _stimulus_defaults_for_type(workload_type)
@@ -394,6 +396,7 @@ def _apply_stimulus(
             "request_size_bytes": 64,
             "read_ratio": read_ratio,
             "working_set_mb": working_set_mb,
+            "address_base_mb": address_base_mb,
             "target_p99_ns": target_p99_ns,
         }
     )
@@ -439,7 +442,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
     _apply_stimulus(hard_cbusy, 0, 0, 500, "random_read", "mrps")
     hard_cbusy["partid_configs"][0].update(
         {
-            "name": "p0_hard_bmax_cbusy",
+            "name": "partid0_hard_bmax_cbusy",
             "bmax_enable": True,
             "bmax_gbps": 8.0,
             "limit_mode": "hardlimit",
@@ -464,37 +467,37 @@ def control_effect_presets() -> List[Dict[str, object]]:
         {
             "duration_ns": 160_000,
             "mc_queue_depth": 64,
-            "mc_bmin_qos_promote": 3,
+            "mc_bmin_qos_promote": 2,
             "mc_softlimit_qos_demote": 2,
         }
     )
-    _apply_stimulus(qos_bmin, 0, 0, 64, "stream")
-    _apply_stimulus(qos_bmin, 2, 1, 64, "stream")
+    _apply_stimulus(qos_bmin, 0, 0, 32, "stream", address_base_mb=0)
+    _apply_stimulus(qos_bmin, 2, 1, 32, "stream", address_base_mb=1024)
     qos_bmin["partid_configs"][0].update(
         {
-            "name": "p0_bmin_qos",
+            "name": "partid0_bmin_qos",
             "cpbm_enable": True,
             "cmax_enable": True,
             "cpbm": "0000",
             "cmax": 0.0,
             "bmin_enable": True,
-            "bmin_gbps": 10.0,
+            "bmin_gbps": 6.0,
             "bmax_enable": True,
             "bmax_gbps": 14.0,
             "limit_mode": "softlimit",
             "mc_qos_enable": True,
-            "mc_qos": 7,
+            "mc_qos": 4,
         }
     )
     qos_bmin["partid_configs"][1].update(
         {
-            "name": "p1_background",
+            "name": "partid1_background",
             "cpbm_enable": True,
             "cmax_enable": True,
             "cpbm": "0000",
             "cmax": 0.0,
             "mc_qos_enable": True,
-            "mc_qos": 0,
+            "mc_qos": 2,
             "bmax_enable": True,
             "bmax_gbps": 16.0,
             "limit_mode": "softlimit",
@@ -504,8 +507,8 @@ def control_effect_presets() -> List[Dict[str, object]]:
         {
             "id": "mc_bmin_qos_compete",
             "name": "MC BMIN / QoS 竞争",
-            "summary": "两个PARTID同时打满MC，P0通过BMIN和3-bit QoS获得调度偏好。",
-            "expected": "控制总览应看到P0 effective QoS高于背景流，MC filtered带宽进入BMIN/BMAX目标带附近。",
+            "summary": "两个PARTID使用不同地址窗口同时打满MC，PARTID 0通过BMIN和3-bit QoS获得调度偏好。",
+            "expected": "控制总览应看到PARTID 0 effective QoS高于背景流，PARTID 0/1都产生MC带宽归因。",
             "parameters": qos_bmin,
         }
     )
@@ -522,11 +525,17 @@ def control_effect_presets() -> List[Dict[str, object]]:
         }
     )
     _set_all_cpbm(l3_pressure, "ff")
-    _apply_stimulus(l3_pressure, 0, 0, 120, "random_read", "gbps", 128)
-    _apply_stimulus(l3_pressure, 1, 1, 120, "random_read", "gbps", 128)
+    _apply_stimulus(
+        l3_pressure, 0, 0, 120, "random_read", "gbps", 128,
+        address_base_mb=0,
+    )
+    _apply_stimulus(
+        l3_pressure, 1, 1, 120, "random_read", "gbps", 128,
+        address_base_mb=512,
+    )
     l3_pressure["partid_configs"][0].update(
         {
-            "name": "p0_cmin_protected",
+            "name": "partid0_cmin_protected",
             "cpbm_enable": True,
             "cmin_enable": True,
             "cmax_enable": True,
@@ -537,7 +546,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
     )
     l3_pressure["partid_configs"][1].update(
         {
-            "name": "p1_cmax_limited",
+            "name": "partid1_cmax_limited",
             "cpbm_enable": True,
             "cmax_enable": True,
             "cmax": 25.0,
@@ -566,13 +575,19 @@ def control_effect_presets() -> List[Dict[str, object]]:
         }
     )
     _set_all_cpbm(mixed, "ff")
-    _apply_stimulus(mixed, 0, 0, 96, "random_read", "gbps", 128, 1.0, 350.0)
-    _apply_stimulus(mixed, 1, 1, 96, "stream")
-    _apply_stimulus(mixed, 2, 2, 96, "mixed_rw", "gbps", 256, 0.7)
+    _apply_stimulus(
+        mixed, 0, 0, 96, "random_read", "gbps", 128, 1.0, 350.0,
+        address_base_mb=0,
+    )
+    _apply_stimulus(mixed, 1, 1, 96, "stream", address_base_mb=512)
+    _apply_stimulus(
+        mixed, 2, 2, 96, "mixed_rw", "gbps", 256, 0.7,
+        address_base_mb=1024,
+    )
     mixed["policy"] = "closed_loop_qos"
     mixed["partid_configs"][0].update(
         {
-            "name": "p0_protected",
+            "name": "partid0_protected",
             "cpbm_enable": True,
             "cmin_enable": True,
             "cmax_enable": True,
@@ -594,7 +609,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
     for partid in (1, 2):
         mixed["partid_configs"][partid].update(
             {
-                "name": f"p{partid}_background",
+                "name": f"partid{partid}_background",
                 "cpbm_enable": True,
                 "cmax_enable": True,
                 "cmax": 45.0,
@@ -609,8 +624,8 @@ def control_effect_presets() -> List[Dict[str, object]]:
         {
             "id": "mixed_control_overview",
             "name": "混合控制总览压力",
-            "summary": "P0保护流叠加两个背景流，用于同时观察CPU OSTD、L3和MC控制状态。",
-            "expected": "控制总览矩阵应出现多个PARTID状态，P0曲线显示目标带、filtered监控和控制事件。",
+            "summary": "PARTID 0保护流叠加两个背景流，用于同时观察CPU OSTD、L3和MC控制状态。",
+            "expected": "控制总览矩阵应出现多个PARTID状态，PARTID 0曲线显示目标带、filtered监控和控制事件。",
             "parameters": mixed,
         }
     )
@@ -859,6 +874,7 @@ def _parse_stimulus_configs(
             request_size = int(raw.get("request_size_bytes", 64))
             read_ratio = float(raw.get("read_ratio", 1.0))
             working_set_mb = int(raw.get("working_set_mb", 64))
+            address_base_mb = int(raw.get("address_base_mb", 0))
             target_p99 = float(raw.get("target_p99_ns", 0.0) or 0.0)
             source_queue_depth = int(
                 raw.get("source_queue_depth", 1)
@@ -899,6 +915,10 @@ def _parse_stimulus_configs(
         if not 1 <= working_set_mb <= 262_144:
             raise ParameterError(
                 f"Stimulus {slot}: working set must be 1..262144 MB"
+            )
+        if not 0 <= address_base_mb <= 1_048_576:
+            raise ParameterError(
+                f"Stimulus {slot}: address base must be 0..1048576 MB"
             )
         if not 0.0 <= target_p99 <= 1_000_000:
             raise ParameterError(
@@ -967,6 +987,7 @@ def _parse_stimulus_configs(
                 "request_size_bytes": request_size,
                 "read_ratio": read_ratio,
                 "working_set_mb": working_set_mb,
+                "address_base_mb": address_base_mb,
                 "target_p99_ns": target_p99,
             }
         )
@@ -1008,6 +1029,9 @@ def _build_workloads(
             "eligible_scan_depth": row["eligible_scan_depth"],
             "working_set_bytes": (
                 row["working_set_mb"] * 1024 * 1024
+            ),
+            "address_base_bytes": (
+                row["address_base_mb"] * 1024 * 1024
             ),
         }
         rate_field = (

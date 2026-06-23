@@ -122,6 +122,9 @@ def _load_workload(item: Dict[str, Any], simulation_time_ns: int) -> WorkloadCon
         request_size_bytes=int(item.get("request_size_bytes", 64)),
         read_ratio=read_ratio,
         working_set_bytes=int(item.get("working_set_bytes", address.get("working_set_bytes", 1 << 20))),
+        address_base_bytes=int(
+            item.get("address_base_bytes", address.get("base_bytes", 0))
+        ),
         target_p99_ns=float(item["target_p99_ns"]) if item.get("target_p99_ns") is not None else None,
         injection_rate_mrps=_optional_float(item.get("injection_rate_mrps", injection.get("rate_mrps"))),
         injection_rate_gbps=_optional_float(item.get("injection_rate_gbps", injection.get("rate_gbps"))),

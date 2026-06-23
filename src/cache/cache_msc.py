@@ -418,6 +418,12 @@ class CacheMSC(Component):
                 waiter.request.return_cbusy_sample_time_ns = (
                     entry.owner_request.return_cbusy_sample_time_ns
                 )
+                waiter.request.return_cbusy_monitor_sample_id = (
+                    entry.owner_request.return_cbusy_monitor_sample_id
+                )
+                waiter.request.return_cbusy_decision_id = (
+                    entry.owner_request.return_cbusy_decision_id
+                )
             waiter.request.timing.mshr_fill_delay_ns += delay
             waiter.request.cache_delay_ns += self.config.fill_latency_ns
             self.on_hit(waiter.request)

@@ -47,6 +47,7 @@ class WorkloadGenerator:
         self.default_priority = default_priority
         self.rng = random.Random(seed)
         self._stream_addr = 0
+        self._address_base = int(workload.address_base_bytes)
         self._interval_ns = self._calculate_interval_ns(max(1, requester_count))
         self._stop_ns = float(workload.stop_ns or 0)
         self._burst_remaining = max(1, workload.burst_length)
@@ -115,17 +116,21 @@ class WorkloadGenerator:
             )
             address = self._stream_addr
             self._stream_addr = (self._stream_addr + self.workload.request_size_bytes) % working_set
-            return address
+            return self._address_base + address
         if pattern == "pointer_chase":
-            return self._chain_next_address[chain_id]
+            return self._address_base + self._chain_next_address[chain_id]
         slots = self._address_slots()
         if pattern == "hotset":
             slots = max(1, slots // 16)
-        return self.rng.randrange(slots) * self.workload.request_size_bytes
+        return (
+            self._address_base
+            + self.rng.randrange(slots) * self.workload.request_size_bytes
+        )
 
     def _successor_address(self, address: int, chain_id: int) -> int:
         slots = self._address_slots()
-        current_slot = address // self.workload.request_size_bytes
+        local_address = max(0, address - self._address_base)
+        current_slot = local_address // self.workload.request_size_bytes
         mixed = (
             current_slot * 1_103_515_245
             + 12_345
