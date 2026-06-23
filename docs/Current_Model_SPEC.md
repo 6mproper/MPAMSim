@@ -64,6 +64,48 @@ P0完成只需要满足：
 P0允许控制目标未达、过冲、振荡、饱和、不可行或控制导致性能恶化。
 这些情况必须作为`CONTROL_OUTCOME`导出证据，不得作为模型错误。
 
+### 0.6 P1目标定义
+
+P1是**最小闭环MVP**，不是完整SoC仿真扩展。
+P1在P0机制可信的基础上，只要求跑通三条最小闭环场景：
+
+1. L3 CMAX occupancy control；
+2. MC BMAX bandwidth control；
+3. CBusy -> RN OSTD source throttling。
+
+P1必须复用现有类型化`Transaction`、`MonitorSample`、`ControlEvent`
+和决策轨迹类型。当前实现中的决策轨迹类型名为`ControlDecision`；
+UI或文档可以称为`DecisionTrace`，但不得新增另一套P1专用决策类型。
+P1必须复用常规仿真模式、常规数据模型和常规UI通路。
+P1不得新增`validation_stage`运行模式，不得新增P1专用数据面或UI通路。
+P1控制器不得读取actual语义数据作为控制输入。
+
+P1不实现：
+
+- NoC QoS；
+- credit/VC；
+- 完整DRAM bank/row/refresh；
+- 完整resctrl/libvirt接口；
+- 完整UI工作区；
+- 自动根因分类；
+- PPA综合评分；
+- 所有控制组合测试。
+
+P1成功标准：
+
+1. 同一配置和seed确定性复现；
+2. 当上一发布filtered sampled occupancy达到或超过CMAX，且控制动作到达
+   `action_effective_time_ns`后，对应PARTID新增L3 allocation必须被限制、旁路
+   或只能自替换；actual occupancy允许因在途fill、采样误差和交织误差短暂过冲；
+3. BMAX必须能改变MC effective QoS或产生hard block，其中soft BMAX对应effective
+   QoS demotion，hard BMAX对应hard block，事件必须标明`limit_mode`；
+4. CBusy通过RSP/DAT返回RN后，必须降低对应`(MC, PARTID)`的effective OSTD，
+   且不得影响其他MC或其他PARTID；
+5. 所有控制事件必须能追踪`monitor_sample_id`、`decision_id`
+   和`action_effective_time_ns`；
+6. 目标未达、过冲、振荡、饱和或不可行目标只记录为`CONTROL_OUTCOME`，
+   不得中止仿真。
+
 ---
 
 ## 1. 模型目标与边界
@@ -1417,6 +1459,25 @@ P0验收门槛如下：
 
 P0自动化测试只判断控制是否按规则生效。目标是否达成属于方案分析结果，
 不得反向改写P0通过条件。
+
+### VERIFY-009：P1最小闭环MVP验收
+
+P1验收门槛如下：
+
+| 条件 | P1判定 |
+| --- | --- |
+| 范围 | 只覆盖L3 CMAX、MC BMAX、CBusy到RN OSTD三条最小闭环，不扩展完整SoC仿真 |
+| 复用数据面 | 复用`Transaction`、`MonitorSample`、`ControlEvent`、现有决策轨迹类型`ControlDecision`、常规仿真模式和常规UI通路 |
+| 无阶段旁路 | 不新增`validation_stage`、P1专用数据面或P1专用UI通路 |
+| 授权状态 | 控制器不读取actual语义数据作为控制输入 |
+| L3 CMAX | CMAX生效后限制、旁路或自替换新增allocation；允许在途fill和监控误差导致actual短暂过冲 |
+| MC BMAX | soft BMAX可改变effective QoS；hard BMAX可产生hard block；事件标明`limit_mode` |
+| CBusy/OSTD | CBusy经RSP/DAT返回RN后降低对应`(MC, PARTID)` effective OSTD，并隔离其他目标 |
+| 因果证据 | 控制事件可追踪`monitor_sample_id`、`decision_id`和`action_effective_time_ns` |
+| 确定性 | 相同配置和seed重复运行结果一致 |
+| 失败继续运行 | 目标未达、过冲、振荡、饱和和不可行只记录为`CONTROL_OUTCOME` |
+
+P1验收不要求所有控制目标必然达成，也不要求所有控制组合都测试完备。
 
 ---
 
