@@ -268,7 +268,7 @@ def default_parameters() -> Dict[str, object]:
         "l3_lookup_parallelism": 16,
         "l3_mshr_entries": 64,
         "l3_fill_buffer_entries": 16,
-        "l3_merge_same_line_misses": True,
+        "l3_merge_same_line_misses": False,
         "l3_replacement_policy": "lru",
         "l3_clock_mhz": 1000,
         "l3_monitor_period_cycles": 256,
@@ -1117,7 +1117,7 @@ def build_config(
         values, "l3_fill_buffer_entries", 16, 1, 1024
     )
     l3_merge_same_line_misses = bool(
-        values.get("l3_merge_same_line_misses", True)
+        values.get("l3_merge_same_line_misses", False)
     )
     l3_replacement_policy = _choice(
         values,

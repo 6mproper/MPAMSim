@@ -72,7 +72,7 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.caches[0].fill_latency_ns == 10
     assert config.caches[0].mshr_entries == 64
     assert config.caches[0].fill_buffer_entries == 16
-    assert config.caches[0].merge_same_line_misses is True
+    assert config.caches[0].merge_same_line_misses is False
     assert config.caches[0].replacement_policy == "lru"
     assert config.caches[0].clock_mhz == 1_000
     assert config.caches[0].monitor_period_cycles == 256

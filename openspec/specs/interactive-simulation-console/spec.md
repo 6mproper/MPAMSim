@@ -300,7 +300,7 @@ PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBu
 ### Requirement: L3数据面资源配置和证据
 
 控制台 MUST 配置replacement、miss detect、fill latency、MSHR、fill buffer和same-line merge，
-并显示actual occupancy、sampled estimate、误差、merge和fill压力。
+并显示actual occupancy、sampled estimate、误差、merge和fill压力。same-line read merge默认 MUST 关闭。
 
 #### Scenario: 查看MSHR说明
 

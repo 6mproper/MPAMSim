@@ -111,6 +111,18 @@ def test_control_overview_chart_layers_are_configurable() -> None:
         assert re.search(pattern, index_html), layer
 
 
+def test_l3_same_line_merge_is_unchecked_by_default() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r'<input data-param="l3_merge_same_line_misses"([^>]*)>',
+        index_html,
+    )
+    assert match is not None
+    assert "checked" not in match.group(1)
+
+
 def test_algorithm_explanations_use_compact_body() -> None:
     app_js = (
         PROJECT_ROOT / "src/web/static/app.js"

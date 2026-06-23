@@ -222,7 +222,7 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 item.get("fill_buffer_entries", 16)
             ),
             merge_same_line_misses=bool(
-                item.get("merge_same_line_misses", True)
+                item.get("merge_same_line_misses", False)
             ),
             replacement_policy=str(
                 item.get("replacement_policy", "lru")

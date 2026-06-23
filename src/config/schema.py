@@ -36,7 +36,7 @@ class CacheConfig:
     fill_latency_ns: float = 10.0
     mshr_entries: int = 64
     fill_buffer_entries: int = 16
-    merge_same_line_misses: bool = True
+    merge_same_line_misses: bool = False
     replacement_policy: str = "lru"
     clock_mhz: float = 1000.0
     monitor_period_cycles: int = 256

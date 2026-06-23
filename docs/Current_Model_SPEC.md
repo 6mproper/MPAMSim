@@ -730,7 +730,8 @@ miss仅占用lookup到miss识别，之后由MSHR和fill资源跟踪，
 
 ### L3-005：同line miss
 
-默认合并同line read miss：
+默认不合并同line read miss，以保留每笔miss对MSHR、MC和流控路径的独立压力。
+显式开启`merge_same_line_misses`后：
 
 - 第一请求建立MSHR和内存读；
 - 后续请求加入waiter；
