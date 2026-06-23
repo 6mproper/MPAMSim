@@ -67,7 +67,7 @@ P0允许控制目标未达、过冲、振荡、饱和、不可行或控制导致
 P0还必须包含监控、滤波、控制和动作的双缓冲时序门槛：
 
 - 控制器读取锁存`control_input`；
-- 本边界刚发布的`filtered_monitor`不得同边界驱动控制；
+- 控制器不得读取窗口内尚未发布的监控或actual/debug状态；
 - 控制动作的`action_effective_time_ns`不得早于对应control input锁存边界。
 
 ### 0.6 P1目标定义
@@ -100,7 +100,7 @@ P1不实现：
 P1成功标准：
 
 1. 同一配置和seed确定性复现；
-2. 当上一发布filtered sampled occupancy达到或超过CMAX，且控制动作到达
+2. 当L3发布并保存的control sampled occupancy达到或超过CMAX，且控制动作到达
    `action_effective_time_ns`后，对应PARTID新增L3 allocation必须被限制、旁路
    或只能自替换；actual occupancy允许因在途fill、采样误差和交织误差短暂过冲；
 3. BMAX必须能改变MC effective QoS或产生hard block，其中soft BMAX对应effective
@@ -762,34 +762,54 @@ l3_monitor_period_cycles: 256
 
 ### L3-MON-002：1/8 set采样
 
-每连续8个set为一组，只读取组内第一个set的所有way：
+每连续`monitor_group_sets`个set为一组，只读取组内一个采样offset对应set的所有way。
+采样方式可配：
+
+- `fixed_first`：固定读取组内offset 0，对应早期“每8个set取第一个set”的近似监控；
+- `rotating`：每隔`sampling_rotation_period_monitor_cycles`个L3监控周期，组内采样offset加1并取模。
 
 ```text
-group = floor(set_index / 8)
-sample_set = group * 8
+group = floor(set_index / monitor_group_sets)
+sample_set = group * monitor_group_sets + sampling_offset
 ```
 
 每个PARTID同时保留：
 
 - 全set实际占用；
 - 1/8 set原始采样占用；
-- 滤波MPAM占用。
+- 控制使用的MPAM抽样占用。
 
 实际值仅供验证和UI，不允许CMIN/CMAX读取。
 
-### MON-001：滤波公式
+### MON-001：L3占用监控语义
+
+L3缓存占用是状态量，不是带宽速率量。CMIN/CMAX使用的是监控周期边界发布并保存的
+抽样owner绝对值：
 
 ```text
-history_weight + current_weight = 256
-
-filtered[k] =
-(
-  history_weight * filtered[k-1]
-  + current_weight * raw[k]
-) / 256
+sampled_occupancy[k] = count(owner == PARTID in sampled sets at boundary k)
+control_input[k+1] = sampled_occupancy[k]
 ```
 
-权重由用户配置。启动值和整数舍入规则必须在实现前固定并测试。
+UI可以同时显示：
+
+- `actual_occupancy`：全set真实owner占用，仅用于观测；
+- `raw_sampled_occupancy`：当前采样offset看到的owner占用；
+- `control_sampled_occupancy`：控制器后续窗口读取的MPAM监控值。
+
+交织和采样会天然导致`raw_sampled_occupancy`与`actual_occupancy`不一致，这是模型要显式展示的误差来源。
+
+### MON-002：L3抽样访问带宽滤波
+
+```text
+history_weight + current_weight = 1
+
+filtered_access_bw[k] =
+  history_weight * filtered_access_bw[k-1]
+  + current_weight * raw_access_bw[k]
+```
+
+该权重仅用于L3抽样访问带宽等速率类监控，不用于CMIN/CMAX占用控制输入。
 
 ### L3-CTRL-001：CPBM
 
@@ -803,15 +823,15 @@ eligible_ways = CPBM中置1的way
 
 ### L3-CTRL-002：控制时序
 
-L3使用双缓冲监控时序。周期`k`内的CMIN/CMAX只读取本地监控边界锁存的
-`control_input[k]`：
+L3使用监控窗口边界时序。窗口`k`内的CMIN/CMAX只读取此前已发布并保存的
+`control_input[k]`；窗口内物理owner变化不能被控制器提前读取：
 
 ```text
-control_input[k] = filtered_occupancy[k-1]
+control_input[k+1] = sampled_occupancy[k]
 ```
 
-周期末发布`filtered[k]`供UI、导出和证据链使用；该值不得在同一监控边界立即驱动
-CMIN/CMAX，最早在下一次L3本地监控边界被锁存为新的`control_input`。
+周期末发布`sampled_occupancy[k]`供UI、导出和证据链使用，并作为后续控制窗口输入。
+边界之前已经完成的victim选择不能回溯使用新值；边界之后的新动作可以使用保存后的新值。
 
 ### L3-CTRL-003：CMIN
 
@@ -941,25 +961,33 @@ mc_clock_mhz:
 mc_monitor_period_cycles: 256
 ```
 
-每周期统计每PARTID已服务字节：
+每个PARTID维护63bit历史累计服务字节计数。每个监控边界保存当前累计值，
+并用当前累计值与上一次保存值做模`2^63`差分：
 
 ```text
-raw_bw = serviced_bytes * 8 / monitor_period_ns
+cumulative[k] = (cumulative[k-1] + serviced_bytes_in_window[k]) mod 2^63
+delta_bytes[k] = (cumulative[k] - cumulative[k-1]) mod 2^63
+raw_bw[k] = delta_bytes[k] * 8 / monitor_period_ns
 ```
 
-使用与L3相同的可配历史滤波。
+累计值用于表达硬件监控计数器语义；控制使用的是差分带宽经过滤波后的保存值。
 
-### MC-CTRL-001：上一周期输入
+### MC-CTRL-001：滤波与控制输入
 
-BMIN/BMAX使用双缓冲监控时序。周期`k`内的控制只读取本地监控边界锁存的
-`control_input[k]`：
+BMIN/BMAX使用本地监控边界保存的filtered bandwidth。权重必须满足：
 
 ```text
-filtered_bw[k-1]
+history_weight + current_weight = 1
+
+filtered_bw[k] =
+  history_weight * filtered_bw[k-1]
+  + current_weight * raw_bw[k]
+
+control_input[k+1] = filtered_bw[k]
 ```
 
-本周期刚计算出的`filtered_bw[k]`只作为监控发布值和下一次边界的候选输入；
-不允许暗中使用当前瞬时带宽或同一边界刚发布的filtered值。
+窗口内不允许暗中读取当前瞬时服务字节、未发布raw带宽或actual/debug状态。边界之前已经完成的调度不能回溯使用新值；
+边界之后的后续控制窗口可以使用保存后的`control_input`。
 
 ### MC-CTRL-002：滞回
 
@@ -1241,8 +1269,8 @@ control_state
 
 - `actual`：验证用真实观测，不得作为控制输入；
 - `raw_monitor`：未滤波MPAM采样；
-- `filtered_monitor`：本地边界最新发布的滤波监控值；
-- `control_input`：控制器实际读取的上一发布锁存值。
+- `filtered_monitor`：本地边界最新发布的滤波监控值，主要用于MC带宽等速率量；
+- `control_input`：控制器实际读取的已发布保存值。L3为抽样占用，MC为滤波带宽。
 
 ### MON-002：样本与事件分离
 
@@ -1271,18 +1299,17 @@ details
 
 ### MON-003：更新顺序
 
-每个资源监控边界使用双缓冲更新顺序：
+每个资源监控边界使用非偷跑更新顺序：
 
 1. 关闭刚结束窗口的raw计数；
-2. 将上一已发布filtered值锁存为新控制窗口的`control_input`；
-3. 基于`control_input`和授权硬件状态更新控制状态、决策和动作；
-4. 读取刚关闭窗口的raw样本；
-5. 计算并发布新的filtered监控值；
-6. 清空刚关闭窗口计数；
-7. 保留新filtered历史，作为下一次监控边界的锁存候选。
+2. 读取刚关闭窗口的授权监控样本；
+3. L3保存新的`control_sampled_occupancy`，MC保存新的`control_bandwidth`；
+4. 基于保存后的控制输入和授权硬件状态更新控制状态、决策和动作；
+5. 发布UI、导出和证据链样本；
+6. 清空窗口级raw计数，保留累计计数和filtered历史。
 
-本边界新计算的filtered值可以立即用于UI、导出和证据链，但不得在同一边界驱动
-CMIN/CMAX、BMIN/BMAX、hard block、soft demotion或CBusy带宽项。
+边界之前已经完成的决策不能回溯使用新监控值；边界之后的新控制窗口可以使用新保存值。
+控制器仍不得读取actual/debug状态。
 
 ### MON-004：控制结果契约
 
@@ -1494,9 +1521,9 @@ P0验收门槛如下：
 | 条件 | P0判定 |
 | --- | --- |
 | 独立微测试 | CPBM、CMIN、CMAX、BMIN、Soft BMAX、Hard BMAX、MC QoS、CBusy和OSTD至少各有机制级检查 |
-| 授权状态 | L3 CMIN/CMAX只读取上一发布filtered sampled owner；MC BMIN/BMAX只读取上一发布filtered bandwidth和授权buffer状态 |
-| 非零周期时序 | 控制器读取锁存`control_input`；同边界新`filtered_monitor`不得立即控制；控制动作必须经监控边界或事件调度生效 |
-| L3因果链 | 激励、miss/fill、victim选择、allocation/eviction/bypass、raw/latest filtered/control input/actual和UI事件可追踪 |
+| 授权状态 | L3 CMIN/CMAX只读取发布并保存的control sampled owner；MC BMIN/BMAX只读取发布并保存的control bandwidth和授权buffer状态 |
+| 非零周期时序 | 控制器读取保存的`control_input`；窗口内未发布监控不得控制；控制动作必须经监控边界或事件调度生效 |
+| L3因果链 | 激励、miss/fill、victim选择、allocation/eviction/bypass、raw sampled/control input/actual和UI事件可追踪 |
 | MC/CPU因果链 | 激励、MC监控、BMAX/QoS/CBusy动作、CPU OSTD、带宽/延迟和UI事件可追踪 |
 | 失败继续运行 | 目标未达、过冲、饱和、不可行、过度限流和性能恶化继续运行并导出 |
 | 确定性 | 相同配置和seed重复运行结果一致 |

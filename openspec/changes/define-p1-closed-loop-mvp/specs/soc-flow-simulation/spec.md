@@ -35,13 +35,13 @@ CBusy -> RN OSTD source throttling三条场景。
 
 #### Scenario: L3 CMAX occupancy control
 
-- **WHEN** 上一发布filtered sampled occupancy达到或超过CMAX
+- **WHEN** L3发布并保存的control sampled occupancy达到或超过CMAX
 - **THEN** 在对应`action_effective_time_ns`之后，该PARTID新增L3 allocation MUST 被限制、旁路或只能自替换
 - **AND** actual occupancy MAY 因在途fill、采样误差或交织误差短暂过冲
 
 #### Scenario: MC BMAX bandwidth control
 
-- **WHEN** 上一发布filtered bandwidth超过BMAX
+- **WHEN** MC发布并保存的control bandwidth超过BMAX
 - **THEN** soft BMAX MUST 能改变对应PARTID的MC effective QoS
 - **AND** hard BMAX MUST 能产生对应PARTID的hard block
 - **AND** 事件 MUST 标明`limit_mode=soft`或`limit_mode=hard`

@@ -107,6 +107,7 @@ class CacheMSC(Component):
     approximations = (
         "sparse allocation of untouched all-invalid sets",
         "one sampled set per eight-set monitor group",
+        "configurable fixed or rotating sampled-set offset",
     )
 
     def __init__(
@@ -165,6 +166,9 @@ class CacheMSC(Component):
             int, float
         ] = defaultdict(float)
         self._monitor_updates: DefaultDict[int, int] = defaultdict(int)
+        self._monitor_cycle_index = 0
+        self._sampling_offset = 0
+        self._last_sampling_offset = 0
         self._control_state_by_partid: Dict[int, Dict[str, bool]] = {}
         self.kernel.schedule(
             self.monitor_period_ns,
@@ -673,8 +677,27 @@ class CacheMSC(Component):
     def _tag(self, address: int) -> int:
         return self._line_address(address) // self.config.sets
 
+    def _sample_offset(self) -> int:
+        if self.config.sampling_mode == "rotating":
+            return self._sampling_offset
+        return 0
+
     def _is_sample_set(self, set_index: int) -> bool:
-        return set_index % self.config.monitor_group_sets == 0
+        return (
+            set_index % self.config.monitor_group_sets
+            == self._sample_offset()
+        )
+
+    def _advance_sampling_offset(self) -> None:
+        self._monitor_cycle_index += 1
+        if self.config.sampling_mode != "rotating":
+            self._sampling_offset = 0
+            return
+        period = self.config.sampling_rotation_period_monitor_cycles
+        if self._monitor_cycle_index % period == 0:
+            self._sampling_offset = (
+                self._sampling_offset + 1
+            ) % self.config.monitor_group_sets
 
     def _eligible_way_indexes(self, partid: int) -> List[int]:
         if not self.enforce_controls:
@@ -694,8 +717,10 @@ class CacheMSC(Component):
 
     @property
     def sampled_capacity_lines(self) -> int:
-        sampled_sets = math.ceil(
-            self.config.sets / self.config.monitor_group_sets
+        sampled_sets = sum(
+            1
+            for set_index in range(self.config.sets)
+            if self._is_sample_set(set_index)
         )
         return sampled_sets * self.config.ways
 
@@ -806,20 +831,13 @@ class CacheMSC(Component):
             + self.config.current_weight
         )
         sample_scale = self.config.monitor_group_sets
+        sample_offset = self._sample_offset()
+        self._last_sampling_offset = sample_offset
         local_cycle = int(
             self.kernel.now_ns * self.config.clock_mhz / 1000.0
         )
         for partid in self._known_monitor_partids():
-            self._control_sampled_counts[partid] = (
-                self._filtered_sampled_counts[partid]
-            )
-            self._publish_control_state(partid, local_cycle, sample_scale)
             raw_count = float(raw_counts.get(partid, 0))
-            previous_count = self._filtered_sampled_counts[partid]
-            filtered_count = (
-                self.config.history_weight * previous_count
-                + self.config.current_weight * raw_count
-            ) / weight_sum
             raw_bandwidth = (
                 self._monitor_sampled_bytes[partid]
                 * sample_scale
@@ -834,13 +852,21 @@ class CacheMSC(Component):
                 + self.config.current_weight * raw_bandwidth
             ) / weight_sum
             self._raw_sampled_counts[partid] = raw_count
-            self._filtered_sampled_counts[partid] = filtered_count
+            self._filtered_sampled_counts[partid] = raw_count
+            self._control_sampled_counts[partid] = raw_count
             self._raw_sampled_bandwidth_gbps[partid] = raw_bandwidth
             self._filtered_sampled_bandwidth_gbps[partid] = (
                 filtered_bandwidth
             )
             self._monitor_sampled_bytes[partid] = 0
             self._monitor_updates[partid] += 1
+            self._publish_control_state(
+                partid,
+                local_cycle,
+                sample_scale,
+                sample_offset,
+            )
+        self._advance_sampling_offset()
         self.kernel.schedule(
             period_ns,
             self._publish_mpam_monitor,
@@ -852,6 +878,7 @@ class CacheMSC(Component):
         partid: int,
         local_cycle: int,
         sample_scale: int,
+        sample_offset: int,
     ) -> None:
         if self.on_control_event is None:
             return
@@ -916,9 +943,11 @@ class CacheMSC(Component):
                 "control_input_value": control_bytes,
                 "control_input_unit": "byte",
                 "control_sampled_way_count": control_count,
-                "latest_filtered_sampled_way_count": (
+                "latest_sampled_way_count": (
                     self._filtered_sampled_counts[partid]
                 ),
+                "sampling_mode": self.config.sampling_mode,
+                "sampling_offset": sample_offset,
                 "cmin_quota_lines": cmin_quota,
                 "cmax_quota_lines": cmax_quota,
             },
@@ -1162,6 +1191,12 @@ class CacheMSC(Component):
             "sets": self.config.sets,
             "ways_per_set": self.config.ways,
             "monitor_group_sets": self.config.monitor_group_sets,
+            "sampling_mode": self.config.sampling_mode,
+            "sampling_offset": self._sample_offset(),
+            "last_sampling_offset": self._last_sampling_offset,
+            "sampling_rotation_period_monitor_cycles": (
+                self.config.sampling_rotation_period_monitor_cycles
+            ),
             "clock_mhz": self.config.clock_mhz,
             "monitor_period_cycles": self.config.monitor_period_cycles,
             "monitor_period_ns": self.monitor_period_ns,

@@ -53,7 +53,7 @@ def _mc(
         clock_mhz=1000,
         monitor_period_cycles=8,
         history_weight=0,
-        current_weight=256,
+        current_weight=1,
         **overrides,
     )
     mc = MemoryControllerMSC(
@@ -134,7 +134,7 @@ def test_equal_qos_uses_rotating_buffer_slot() -> None:
     assert mc._select_request().request is second
 
 
-def test_hard_bmax_uses_previous_period_and_releases_by_period() -> None:
+def test_hard_bmax_uses_published_control_bandwidth_by_period() -> None:
     kernel, mc, _ = _mc(
         [_control(0, bmax=16, mode="hardlimit")]
     )
@@ -148,19 +148,19 @@ def test_hard_bmax_uses_previous_period_and_releases_by_period() -> None:
     kernel.run(8.1)
     assert mc._raw_bandwidth_gbps[0] == 64
     assert mc._filtered_bandwidth_gbps[0] == 64
-    assert mc._control_bandwidth_gbps[0] == 0
-    assert mc._hard_block[0] is False
-    assert mc.queue_length == 2
-
-    kernel.run(16.1)
     assert mc._control_bandwidth_gbps[0] == 64
     assert mc._hard_block[0] is True
+    assert mc.queue_length == 3
     blocked_depth = mc.queue_length
 
-    kernel.run(31.9)
+    kernel.run(15.9)
+    assert mc._hard_block[0] is True
     assert mc.queue_length == blocked_depth
-    kernel.run(32.1)
+
+    kernel.run(16.1)
+    assert mc._control_bandwidth_gbps[0] == 0
     assert mc._hard_block[0] is False
+    assert mc.queue_length == blocked_depth - 1
 
 
 def test_soft_bmax_without_partid_contention_stays_eligible() -> None:

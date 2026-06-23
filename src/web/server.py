@@ -783,7 +783,7 @@ def evaluate_control_verification(
         "cmax",
         "CMAX 分配上界",
         cmax_full > cmax_limited,
-        "CMAX=12.5%时上一filtered监控值阻止继续增长或迫使请求者自替换，并降低sampled ownership；滤波过冲不要求瞬时物理占用严格等于2/16",
+        "CMAX=12.5%时control sampled监控值阻止继续增长或迫使请求者自替换，并降低sampled ownership；采样/交织过冲不要求瞬时物理占用严格等于2/16",
         (
             f"全量={cmax_full:.0f} ways，限制={cmax_limited:.0f} ways，"
             f"增长阻止={cmax_blocks:.0f}，自替换={cmax_self_replacements:.0f}"

@@ -29,14 +29,20 @@
 - **WHEN** victim PARTID处于或低于有效CMIN采样目标
 - **THEN** 其他PARTID不能驱逐该victim
 
-### Requirement: 每8个set采样1个
+### Requirement: 每个monitor group采样1个set
 
-L3 MUST 采样每8个set中的第一个set，并把采样访问和占用按8倍估算。
+L3 MUST 在每个monitor group中采样1个set，并把采样访问和占用按monitor group比例估算。
+采样offset MUST 支持固定offset 0和按本地监控周期轮转两种模式。
 
-#### Scenario: 访问采样set
+#### Scenario: 访问固定采样set
 
-- **WHEN** `set_index modulo 8 == 0`
+- **WHEN** `sampling_mode=fixed_first`且`set_index modulo monitor_group_sets == 0`
 - **THEN** 更新采样way owner和流量计数
+
+#### Scenario: 访问轮转采样set
+
+- **WHEN** `sampling_mode=rotating`且`set_index modulo monitor_group_sets == sampling_offset`
+- **THEN** 更新当前offset对应的采样way owner和流量计数
 
 #### Scenario: 访问非采样set
 
@@ -135,7 +141,7 @@ CMIN不能超过CPBM可达比例。
 
 ### Requirement: 控制与监控共享真实Line状态
 
-CPBM、CMIN、CMAX、实际占用和1/8抽样监控 MUST 基于同一组真实L3 line，不得维护独立
+CPBM、CMIN、CMAX、实际占用和可配1/8抽样监控 MUST 基于同一组真实L3 line，不得维护独立
 owner影子作为控制事实。
 
 #### Scenario: 非抽样Set分配
@@ -143,40 +149,44 @@ owner影子作为控制事实。
 - **WHEN** PARTID在非抽样set完成fill
 - **THEN** actual occupancy增加而本次sampled occupancy可以不增加
 
-#### Scenario: 抽样Set分配
+#### Scenario: 固定抽样Set分配
 
-- **WHEN** PARTID在`set % 8 == 0`的set完成fill
+- **WHEN** `sampling_mode=fixed_first`且PARTID在每个抽样组offset 0的set完成fill
 - **THEN** actual和sampled owner都来自同一line的owner字段
+
+#### Scenario: 轮转抽样Set分配
+
+- **WHEN** `sampling_mode=rotating`
+- **THEN** L3 MUST 每隔`sampling_rotation_period_monitor_cycles`个本地监控周期把组内采样offset加1并对`monitor_group_sets`取模
+- **AND** sampled owner MUST 只读取当前采样offset对应set的way owner
 
 ### Requirement: L3本地周期MPAM监控
 
-L3 MUST 每个可配本地监控周期发布所有PARTID的raw抽样owner、filtered owner和抽样访问带宽。
+L3 MUST 每个可配本地监控周期发布所有PARTID的raw抽样owner、control sampled owner和抽样访问带宽。
+L3 occupancy是缓存状态的抽样绝对值，不得把CMIN/CMAX输入建模成带宽式递归滤波值。
 
 #### Scenario: 256拍发布
 
 - **WHEN** L3运行到一个监控周期边界
-- **THEN** raw读取每8个set首set的way owner，filtered按可配权重更新
+- **THEN** raw读取当前采样offset对应set的way owner
+- **AND** control sampled owner MUST 保存为本边界发布的raw sampled owner
+- **AND** sampled access bandwidth MAY 按`history_weight + current_weight = 1`的权重滤波
 
-### Requirement: CMIN和CMAX只读Filtered监控
+### Requirement: CMIN和CMAX只读发布后的抽样占用
 
-CMIN/CMAX MUST 使用本地监控边界锁存的上一发布filtered sampled-owner值执行保护和增长限制。
+CMIN/CMAX MUST 使用本地监控边界发布并保存的control sampled-owner值执行保护和增长限制。
 
 #### Scenario: 当前物理状态变化
 
 - **WHEN** 当前周期物理owner变化但尚未到监控边界
-- **THEN** CMIN/CMAX决策输入保持上一发布值
+- **THEN** CMIN/CMAX决策输入保持上一控制窗口保存值
 
-#### Scenario: filtered发布不立即控制
+#### Scenario: 边界后进入下一控制窗口
 
-- **WHEN** 监控边界T基于刚关闭窗口raw owner计算出新的filtered sampled-owner
-- **THEN** 该filtered sampled-owner MAY 立即用于UI、导出和证据
-- **AND** CMIN/CMAX victim选择 MUST 在下一次本地监控边界前继续读取边界T之前锁存的control input
-
-#### Scenario: 下一边界锁存
-
-- **WHEN** 下一次本地监控边界到达
-- **THEN** 上一次已发布filtered sampled-owner MUST 被锁存为新的control input
-- **AND** 后续CMIN/CMAX动作才可以使用该值
+- **WHEN** 监控边界T基于刚关闭窗口raw owner计算出新的control sampled-owner
+- **THEN** 该值 MAY 立即用于UI、导出和证据
+- **AND** 后续控制窗口中的CMIN/CMAX动作才可以读取该值
+- **AND** 边界T之前已经完成的victim选择不得回溯使用该值
 
 ### Requirement: L3控制事件证据
 
@@ -187,7 +197,7 @@ L3 CMIN/CMAX内部控制状态切换 MUST 复用常规`ControlEvent`通路。
 - **WHEN** L3本地监控边界锁存的control input改变CMIN保护或CMAX限制状态
 - **THEN** MUST 导出`limit_state_changed`控制事件
 - **AND** 事件 MUST 引用`control_input` monitor sample
-- **AND** 事件 SHOULD 包含control sampled-owner、quota和latest filtered证据
+- **AND** 事件 SHOULD 包含control sampled-owner、quota、raw sampled owner、sampling mode和sampling offset证据
 
 ### Requirement: 三平面误差证据
 

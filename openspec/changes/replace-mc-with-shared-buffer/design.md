@@ -15,12 +15,13 @@ ready = valid AND not hard_blocked AND not ordering_blocked
 
 ```text
 period_ns = monitor_period_cycles * 1000 / mc_clock_mhz
-raw_bw = serviced_bytes * 8 / period_ns
-filtered = (history_weight * previous + current_weight * raw) / sum
+delta_bytes = (cumulative_now - cumulative_previous) mod 2^63
+raw_bw = delta_bytes * 8 / period_ns
+filtered = history_weight * previous_filtered + current_weight * raw_bw
 ```
 
-周期边界先把上一已发布filtered锁存为control input，并用它更新UNDER_BMIN、
-OVER_BMAX和HARD_BLOCK；随后计算并发布新的latest filtered，供下一次边界锁存。
+周期边界基于63bit累计计数差分计算并保存control bandwidth，并用它更新UNDER_BMIN、
+OVER_BMAX和HARD_BLOCK；窗口内尚未发布的瞬时服务字节不得驱动控制。
 
 ## 滞回
 

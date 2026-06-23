@@ -1,18 +1,17 @@
 ## ADDED Requirements
 
-### Requirement: L3控制读取锁存监控输入
+### Requirement: L3控制读取已发布抽样占用输入
 
-L3 CMIN/CMAX MUST 读取本地监控边界锁存的`control_sampled`输入，而不是同一边界刚计算出的
-最新`filtered_sampled`发布值。
+L3 CMIN/CMAX MUST 读取本地监控边界发布并保存的`control_sampled`输入，而不是窗口内尚未发布的
+即时physical或raw owner状态。
 
-#### Scenario: filtered发布不立即控制
+#### Scenario: 窗口内物理变化不立即控制
 
-- **WHEN** 监控边界T基于刚关闭窗口raw owner计算出新的filtered sampled-owner
-- **THEN** 该filtered sampled-owner MAY 立即用于UI、导出和证据
-- **AND** CMIN/CMAX victim选择 MUST 在下一次本地监控边界前继续读取边界T之前锁存的control input
+- **WHEN** 当前控制窗口内发生新的line owner变化但还未到L3监控边界
+- **THEN** CMIN/CMAX victim选择 MUST 继续读取已保存的control input
 
-#### Scenario: 下一边界锁存
+#### Scenario: 边界后新窗口使用
 
-- **WHEN** 下一次本地监控边界到达
-- **THEN** 上一次已发布filtered sampled-owner MUST 被锁存为新的control input
-- **AND** 后续CMIN/CMAX动作才可以使用该值
+- **WHEN** L3监控边界T发布新的sampled-owner占用
+- **THEN** 该值 MUST 被保存为后续控制窗口的control input
+- **AND** 边界T之前已经完成的victim选择不得回溯使用该值

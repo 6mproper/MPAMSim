@@ -94,13 +94,13 @@ CBusy -> RN OSTD source throttling三条场景。
 
 #### Scenario: L3 CMAX occupancy control
 
-- **WHEN** 上一发布filtered sampled occupancy达到或超过CMAX
+- **WHEN** L3发布并保存的control sampled occupancy达到或超过CMAX
 - **THEN** 在对应`action_effective_time_ns`之后，该PARTID新增L3 allocation MUST 被限制、旁路或只能自替换
 - **AND** actual occupancy MAY 因在途fill、采样误差或交织误差短暂过冲
 
 #### Scenario: MC BMAX bandwidth control
 
-- **WHEN** 上一发布filtered bandwidth超过BMAX
+- **WHEN** MC基于63bit累计计数差分发布并保存的control bandwidth超过BMAX
 - **THEN** soft BMAX MUST 能改变对应PARTID的MC effective QoS
 - **AND** hard BMAX MUST 能产生对应PARTID的hard block
 - **AND** 事件 MUST 标明`limit_mode=soft`或`limit_mode=hard`
@@ -139,7 +139,7 @@ P1成功 MUST 以控制动作闭环和证据完整性判断，不得要求任意
 
 - **WHEN** P0验证控制机制是否可信
 - **THEN** MUST 验证控制器读取的是锁存`control_input`
-- **AND** MUST 验证同一监控边界刚发布的`filtered_monitor`不会立即驱动控制
+- **AND** MUST 验证窗口内尚未发布的raw、actual或debug状态不会驱动控制
 
 #### Scenario: P1闭环门槛
 
@@ -162,6 +162,12 @@ P1成功 MUST 以控制动作闭环和证据完整性判断，不得要求任意
 - **WHEN** L3或MC导出刚发布的滤波监控值
 - **THEN** 对应`MonitorSample.semantic` MUST 为`filtered_monitor`
 - **AND** UI MUST 标注为latest filtered或最新发布监控值
+
+#### Scenario: L3 sampled control语义
+
+- **WHEN** L3导出CMIN/CMAX实际读取的抽样占用
+- **THEN** 对应`MonitorSample.semantic` MUST 为`control_input`
+- **AND** UI MUST 标注为control sampled occupancy或控制输入
 
 ### Requirement: 控制结果契约
 

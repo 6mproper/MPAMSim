@@ -44,6 +44,8 @@ def _mc_counters() -> Dict[str, float]:
 
 
 class MemoryControllerMSC(Component):
+    MONITOR_COUNTER_MODULUS = 1 << 63
+
     capabilities = (
         "memory_controller_service",
         "shared_request_buffer",
@@ -114,7 +116,13 @@ class MemoryControllerMSC(Component):
         self._dispatch_pending = False
         self._peak_queue_length = 0
 
-        self._monitor_service_bytes: DefaultDict[int, int] = defaultdict(int)
+        self._monitor_cumulative_bytes: DefaultDict[
+            int, int
+        ] = defaultdict(int)
+        self._monitor_last_sample_bytes: DefaultDict[
+            int, int
+        ] = defaultdict(int)
+        self._monitor_delta_bytes: DefaultDict[int, int] = defaultdict(int)
         self._raw_bandwidth_gbps: DefaultDict[int, float] = defaultdict(float)
         self._filtered_bandwidth_gbps: DefaultDict[int, float] = defaultdict(
             float
@@ -510,7 +518,10 @@ class MemoryControllerMSC(Component):
         self._interval_busy_ns += serialization_ns
         self._interval_requests += 1
         self._interval_bytes += request.size_bytes
-        self._monitor_service_bytes[request.partid] += request.size_bytes
+        self._monitor_cumulative_bytes[request.partid] = (
+            self._monitor_cumulative_bytes[request.partid]
+            + request.size_bytes
+        ) % self.MONITOR_COUNTER_MODULUS
         self._sample_queue()
 
         self.kernel.schedule(
@@ -555,7 +566,8 @@ class MemoryControllerMSC(Component):
         return sorted(
             self._configured_partids()
             | pending
-            | set(self._monitor_service_bytes)
+            | set(self._monitor_cumulative_bytes)
+            | set(self._monitor_last_sample_bytes)
             | set(self._filtered_bandwidth_gbps)
             | set(self._control_bandwidth_gbps)
             | set(self._cbusy_level)
@@ -630,17 +642,36 @@ class MemoryControllerMSC(Component):
             self.kernel.now_ns * self.config.clock_mhz / 1000.0
         )
         for partid in partids:
-            control_bandwidth = self._filtered_bandwidth_gbps[partid]
-            self._control_bandwidth_gbps[partid] = control_bandwidth
+            cumulative = self._monitor_cumulative_bytes[partid]
+            previous_cumulative = self._monitor_last_sample_bytes[partid]
+            delta_bytes = (
+                cumulative - previous_cumulative
+            ) % self.MONITOR_COUNTER_MODULUS
+            raw = (
+                delta_bytes
+                * 8.0
+                / period_ns
+            )
+            previous = self._filtered_bandwidth_gbps[partid]
+            filtered = (
+                self.config.history_weight * previous
+                + self.config.current_weight * raw
+            ) / weight_sum
+            self._monitor_delta_bytes[partid] = delta_bytes
+            self._monitor_last_sample_bytes[partid] = cumulative
+            self._raw_bandwidth_gbps[partid] = raw
+            self._filtered_bandwidth_gbps[partid] = filtered
+            self._control_bandwidth_gbps[partid] = filtered
+            self._monitor_updates[partid] += 1
             old_state, new_state = self._update_limit_states(
                 partid,
-                control_bandwidth,
+                filtered,
             )
             self._publish_limit_state_event(
                 partid,
                 old_state,
                 new_state,
-                control_bandwidth,
+                filtered,
                 local_cycle,
             )
             if self._hard_block[partid]:
@@ -665,22 +696,6 @@ class MemoryControllerMSC(Component):
                         ]
                         group["hardlimit_block_events"] += 1
                         group["throttle_delay_ns"] += period_ns
-
-        for partid in partids:
-            raw = (
-                self._monitor_service_bytes[partid]
-                * 8.0
-                / period_ns
-            )
-            previous = self._filtered_bandwidth_gbps[partid]
-            filtered = (
-                self.config.history_weight * previous
-                + self.config.current_weight * raw
-            ) / weight_sum
-            self._raw_bandwidth_gbps[partid] = raw
-            self._filtered_bandwidth_gbps[partid] = filtered
-            self._monitor_updates[partid] += 1
-            self._monitor_service_bytes[partid] = 0
         self._schedule_dispatch(0.0)
         self.kernel.schedule(
             period_ns,
@@ -962,6 +977,10 @@ class MemoryControllerMSC(Component):
                 "control_bandwidth_gbps": (
                     self._control_bandwidth_gbps[partid]
                 ),
+                "monitor_cumulative_bytes_63b": (
+                    self._monitor_cumulative_bytes[partid]
+                ),
+                "monitor_delta_bytes": self._monitor_delta_bytes[partid],
                 "bmax_gbps": bmax,
                 "bmin_gbps": bmin,
                 "bmax_assert_gbps": bmax,
@@ -1078,6 +1097,10 @@ class MemoryControllerMSC(Component):
                 "control_bandwidth_gbps": (
                     self._control_bandwidth_gbps[partid]
                 ),
+                "monitor_cumulative_bytes_63b": (
+                    self._monitor_cumulative_bytes[partid]
+                ),
+                "monitor_delta_bytes": self._monitor_delta_bytes[partid],
                 "controller_bandwidth_gbps": self.total_bandwidth_gbps,
                 "bandwidth_utilization": min(
                     1.0,

@@ -15,8 +15,10 @@ def _config(
     fill_entries: int = 2,
     replacement: str = "lru",
     monitor_cycles: int = 256,
-    history_weight: int = 192,
-    current_weight: int = 64,
+    history_weight: float = 0.75,
+    current_weight: float = 0.25,
+    sampling_mode: str = "fixed_first",
+    sampling_rotation_period_monitor_cycles: int = 1,
 ) -> CacheConfig:
     return CacheConfig(
         id="slc0",
@@ -40,6 +42,10 @@ def _config(
         monitor_period_cycles=monitor_cycles,
         history_weight=history_weight,
         current_weight=current_weight,
+        sampling_mode=sampling_mode,
+        sampling_rotation_period_monitor_cycles=(
+            sampling_rotation_period_monitor_cycles
+        ),
     )
 
 
@@ -219,14 +225,14 @@ def test_lru_evicts_oldest_eligible_line() -> None:
     assert misses[-1] is evicted_second
 
 
-def test_l3_control_reads_only_published_filtered_sample() -> None:
+def test_l3_control_reads_published_sampled_owner_after_boundary() -> None:
     kernel, cache, _, _ = _cache(
         _config(
             sets=8,
             ways=2,
             monitor_cycles=8,
             history_weight=0,
-            current_weight=256,
+            current_weight=1,
         )
     )
     request = _request(1, 0, partid=3)
@@ -237,8 +243,6 @@ def test_l3_control_reads_only_published_filtered_sample() -> None:
     kernel.run(8)
     assert cache._raw_sampled_counts[3] == 1
     assert cache._filtered_sampled_counts[3] == 1
-    assert cache._control_owner_counts().get(3, 0) == 0
-    kernel.run(16)
     assert cache._control_owner_counts()[3] == 1
 
 
@@ -249,7 +253,7 @@ def test_l3_monitor_exposes_physical_sample_error() -> None:
             ways=2,
             monitor_cycles=8,
             history_weight=0,
-            current_weight=256,
+            current_weight=1,
         )
     )
     non_sampled = _request(1, 64, partid=4)
@@ -262,3 +266,27 @@ def test_l3_monitor_exposes_physical_sample_error() -> None:
     assert values["raw_occupancy_bytes"] == 0
     assert values["filtered_occupancy_bytes"] == 0
     assert values["monitor_error_bytes"] == -64
+
+
+def test_l3_rotating_sampling_changes_sample_offset() -> None:
+    kernel, cache, _, _ = _cache(
+        _config(
+            sets=16,
+            ways=1,
+            monitor_cycles=8,
+            history_weight=0,
+            current_weight=1,
+            sampling_mode="rotating",
+            sampling_rotation_period_monitor_cycles=1,
+        )
+    )
+    set_one_line = _request(1, 64, partid=4)
+    cache._allocate_fill(set_one_line)
+
+    assert cache._sample_offset() == 0
+    assert cache._sampled_owner_counts().get(4, 0) == 0
+
+    kernel.run(8)
+
+    assert cache._sample_offset() == 1
+    assert cache._sampled_owner_counts()[4] == 1

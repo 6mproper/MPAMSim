@@ -76,6 +76,14 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Cache {cache.id} monitor_group_sets must be 8 in this model"
             )
+        if cache.sampling_mode not in {"fixed_first", "rotating"}:
+            raise ConfigError(
+                f"Cache {cache.id} sampling_mode must be fixed_first or rotating"
+            )
+        if cache.sampling_rotation_period_monitor_cycles <= 0:
+            raise ConfigError(
+                f"Cache {cache.id} sampling rotation period must be positive"
+            )
         if cache.clock_mhz <= 0:
             raise ConfigError(
                 f"Cache {cache.id} clock must be positive"
@@ -87,11 +95,12 @@ def validate_config(config: ProjectConfig) -> None:
         if (
             cache.history_weight < 0
             or cache.current_weight < 0
-            or cache.history_weight + cache.current_weight != 256
+            or abs(cache.history_weight + cache.current_weight - 1.0)
+            > 1e-9
         ):
             raise ConfigError(
                 f"Cache {cache.id} monitor weights must be "
-                "non-negative and sum to 256"
+                "non-negative and sum to 1"
             )
     for mc in config.memory_controllers:
         if mc.clock_mhz <= 0:
@@ -105,11 +114,11 @@ def validate_config(config: ProjectConfig) -> None:
         if (
             mc.history_weight < 0
             or mc.current_weight < 0
-            or mc.history_weight + mc.current_weight != 256
+            or abs(mc.history_weight + mc.current_weight - 1.0) > 1e-9
         ):
             raise ConfigError(
                 f"Memory controller {mc.id} monitor weights must be "
-                "non-negative and sum to 256"
+                "non-negative and sum to 1"
             )
         if not 0 <= mc.bandwidth_hysteresis < 1:
             raise ConfigError(

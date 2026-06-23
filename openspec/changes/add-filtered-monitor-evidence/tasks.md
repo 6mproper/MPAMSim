@@ -10,7 +10,7 @@
 ## 3. 监控和控制
 
 - [x] 3.1 实现L3 256拍raw/filtered占用和带宽监控。
-- [x] 3.2 让CMIN/CMAX只读取上一发布filtered值。
+- [x] 3.2 让CMIN/CMAX只读取发布并保存的control sampled值。
 - [x] 3.3 实现linear/XOR MC地址交织。
 - [x] 3.4 扩展目标、physical、raw、filtered和状态时间证据。
 

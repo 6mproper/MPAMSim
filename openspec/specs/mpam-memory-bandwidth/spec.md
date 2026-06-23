@@ -31,12 +31,12 @@
 
 ### Requirement: BMAX hard limit
 
-当前MC模型 MUST 根据上一发布filtered bandwidth形成hard OVER_BMAX状态，并在整个监控周期内
+当前MC模型 MUST 根据发布并保存的control bandwidth形成hard OVER_BMAX状态，并在后续控制窗口内
 阻止该PARTID entry参与dispatch。
 
 #### Scenario: 超过hard limit
 
-- **WHEN** `hardlimit`的上一发布filtered bandwidth超过BMAX
+- **WHEN** `hardlimit`的control bandwidth超过BMAX
 - **THEN** 该PARTID entry保留在buffer且不参与candidate选择，并记录hard-block和throttle证据
 
 ### Requirement: BMAX soft limit
@@ -152,25 +152,41 @@ aging cap、BMIN promotion和soft-limit demotion。
 - **WHEN** QoS 7请求处于hard OVER_BMAX状态
 - **THEN** hard状态释放前排除该请求
 
-### Requirement: 上一滤波周期驱动BMIN和BMAX
+### Requirement: 63bit累计计数驱动BMIN和BMAX
 
-周期k的BMIN/BMAX MUST 只读取本地监控边界锁存的周期k-1发布滤波带宽，不得读取当前瞬时服务字节。
+MC MUST 为每个PARTID维护63bit累计服务字节计数。每个本地监控边界基于累计计数差分计算上一个窗口的采样带宽，
+再用可配权重计算filtered bandwidth，并把该filtered bandwidth保存为后续控制窗口的control bandwidth。
+BMIN/BMAX不得读取当前瞬时服务字节或actual/debug带宽。
+
+#### Scenario: 累计计数差分
+
+- **WHEN** MC运行到监控边界T
+- **THEN** MUST 保存当前63bit累计计数
+- **AND** MUST 用`(cumulative[T] - cumulative[T-1]) mod 2^63`计算本窗口服务字节
+- **AND** MUST 用该差分计算`sample_bandwidth`
+
+#### Scenario: 权重滤波
+
+- **WHEN** MC计算本窗口`sample_bandwidth`
+- **THEN** `filtered_bandwidth[T] = history_weight * filtered_bandwidth[T-1] + current_weight * sample_bandwidth[T]`
+- **AND** `history_weight + current_weight` MUST 等于1
+- **AND** `filtered_bandwidth[T]` MUST 保存为后续控制窗口的`control_bandwidth`
 
 #### Scenario: Hard BMAX过冲
 
 - **WHEN** 当前周期服务使raw带宽超过BMAX
 - **THEN** 请求可在本周期继续服务，hard block从下一周期生效
 
-#### Scenario: BMAX发布不立即控制
+#### Scenario: 边界后控制生效
 
 - **WHEN** 当前窗口服务字节使本边界发布的filtered bandwidth超过BMAX
-- **THEN** 该PARTID在本边界之后的同timestamp调度 MUST NOT 因这个刚发布值立即hard block或soft demote
-- **AND** hard/soft控制最早在下一次本地监控边界锁存该filtered值后生效
+- **THEN** 边界之前已经完成的调度不得回溯使用该值
+- **AND** 边界之后后续控制窗口的hard/soft控制 MAY 使用该值
 
 #### Scenario: BMAX释放延迟
 
 - **WHEN** hard block后的窗口不再服务该PARTID并发布低于释放阈值的filtered bandwidth
-- **THEN** hard block MUST 在下一次本地监控边界锁存该低filtered值后释放
+- **THEN** hard block MUST 在发布该低filtered值后的后续控制窗口释放
 - **AND** 释放延迟和过冲 MUST 记录为可观察控制结果，不得中止仿真
 
 #### Scenario: CBusy带宽输入

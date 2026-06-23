@@ -261,6 +261,8 @@ def default_parameters() -> Dict[str, object]:
         "l3_ways": 16,
         "l3_line_size": 64,
         "l3_monitor_group_sets": 8,
+        "l3_sampling_mode": "fixed_first",
+        "l3_sampling_rotation_period_monitor_cycles": 1,
         "l3_hit_latency_ns": 20,
         "l3_miss_detect_latency_ns": 20,
         "l3_fill_latency_ns": 10,
@@ -272,8 +274,8 @@ def default_parameters() -> Dict[str, object]:
         "l3_replacement_policy": "lru",
         "l3_clock_mhz": 1000,
         "l3_monitor_period_cycles": 256,
-        "l3_history_weight": 192,
-        "l3_current_weight": 64,
+        "l3_history_weight": 0.75,
+        "l3_current_weight": 0.25,
         "noc_routers": 8,
         "noc_link_gbps": 256,
         "noc_router_latency_ns": 5,
@@ -294,8 +296,8 @@ def default_parameters() -> Dict[str, object]:
         "mc_interleave_xor_shift": 12,
         "mc_clock_mhz": 1000,
         "mc_monitor_period_cycles": 256,
-        "mc_history_weight": 192,
-        "mc_current_weight": 64,
+        "mc_history_weight": 0.75,
+        "mc_current_weight": 0.25,
         "mc_bandwidth_hysteresis": 0.05,
         "mc_aging_mode": "none",
         "mc_aging_quantum_cycles": 256,
@@ -1091,6 +1093,19 @@ def build_config(
     monitor_group_sets = _integer(
         values, "l3_monitor_group_sets", 8, 8, 8
     )
+    l3_sampling_mode = _choice(
+        values,
+        "l3_sampling_mode",
+        "fixed_first",
+        ["fixed_first", "rotating"],
+    )
+    l3_sampling_rotation_period_monitor_cycles = _integer(
+        values,
+        "l3_sampling_rotation_period_monitor_cycles",
+        1,
+        1,
+        1_000_000,
+    )
     l3_hit_latency_ns = _number(
         values, "l3_hit_latency_ns", 20, 1, 500
     )
@@ -1138,15 +1153,15 @@ def build_config(
     l3_monitor_period_cycles = _integer(
         values, "l3_monitor_period_cycles", 256, 1, 1_000_000
     )
-    l3_history_weight = _integer(
-        values, "l3_history_weight", 192, 0, 256
+    l3_history_weight = _number(
+        values, "l3_history_weight", 0.75, 0, 1
     )
-    l3_current_weight = _integer(
-        values, "l3_current_weight", 64, 0, 256
+    l3_current_weight = _number(
+        values, "l3_current_weight", 0.25, 0, 1
     )
-    if l3_history_weight + l3_current_weight != 256:
+    if abs(l3_history_weight + l3_current_weight - 1.0) > 1e-9:
         raise ParameterError(
-            "L3 history_weight + current_weight must equal 256"
+            "L3 history_weight + current_weight must equal 1"
         )
     noc_routers = _integer(
         values, "noc_routers", 8, 1, 64
@@ -1241,15 +1256,15 @@ def build_config(
     mc_monitor_period_cycles = _integer(
         values, "mc_monitor_period_cycles", 256, 1, 1_000_000
     )
-    mc_history_weight = _integer(
-        values, "mc_history_weight", 192, 0, 256
+    mc_history_weight = _number(
+        values, "mc_history_weight", 0.75, 0, 1
     )
-    mc_current_weight = _integer(
-        values, "mc_current_weight", 64, 0, 256
+    mc_current_weight = _number(
+        values, "mc_current_weight", 0.25, 0, 1
     )
-    if mc_history_weight + mc_current_weight != 256:
+    if abs(mc_history_weight + mc_current_weight - 1.0) > 1e-9:
         raise ParameterError(
-            "MC history_weight + current_weight must equal 256"
+            "MC history_weight + current_weight must equal 1"
         )
     mc_bandwidth_hysteresis = _number(
         values, "mc_bandwidth_hysteresis", 0.05, 0, 0.999999
@@ -1436,6 +1451,10 @@ def build_config(
             "sets": l3_sets,
             "ways": l3_ways,
             "monitor_group_sets": monitor_group_sets,
+            "sampling_mode": l3_sampling_mode,
+            "sampling_rotation_period_monitor_cycles": (
+                l3_sampling_rotation_period_monitor_cycles
+            ),
             "hit_latency_ns": l3_hit_latency_ns,
             "miss_detect_latency_ns": (
                 l3_miss_detect_latency_ns

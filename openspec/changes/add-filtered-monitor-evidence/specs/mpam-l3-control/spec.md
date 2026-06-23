@@ -2,21 +2,21 @@
 
 ### Requirement: L3本地周期MPAM监控
 
-L3 MUST 每个可配本地监控周期发布所有PARTID的raw抽样owner、filtered owner和抽样访问带宽。
+L3 MUST 每个可配本地监控周期发布所有PARTID的raw抽样owner、control sampled owner和抽样访问带宽。
 
 #### Scenario: 256拍发布
 
 - **WHEN** L3运行到一个监控周期边界
-- **THEN** raw读取每8个set首set的way owner，filtered按可配权重更新
+- **THEN** raw读取每个monitor group当前sampling offset对应set的way owner，并保存为control sampled occupancy
 
-### Requirement: CMIN和CMAX只读Filtered监控
+### Requirement: CMIN和CMAX只读发布监控
 
-CMIN/CMAX MUST 使用上一发布filtered sampled-owner值执行保护和增长限制。
+CMIN/CMAX MUST 使用发布并保存的control sampled-owner值执行保护和增长限制。
 
 #### Scenario: 当前物理状态变化
 
 - **WHEN** 当前周期物理owner变化但尚未到监控边界
-- **THEN** CMIN/CMAX决策输入保持上一发布值
+- **THEN** CMIN/CMAX决策输入保持已保存的control input
 
 ### Requirement: 三平面误差证据
 

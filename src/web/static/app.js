@@ -121,7 +121,7 @@ const headerHelp = {
   "Failed / Full Laps": "目标端暂不可接收导致的失败下Ring次数，以及flit完成整圈绕行次数。",
   "Injection BP": "源link没有空槽导致的注入反压事件和累计等待时间。",
   "L3 Occupancy": "所有 L3 实例的 8-set 抽样占用估算之和。",
-  "Physical / Raw / Filtered": "Physical来自全部真实set/tag/way；Raw来自每8个set首set owner并按8倍缩放；Filtered是CMIN/CMAX实际读取的递归滤波MPAM值。",
+  "Physical / Raw / Control": "Physical来自全部真实set/tag/way；Raw来自当前采样offset的owner并按monitor group比例缩放；Control是CMIN/CMAX实际读取的已发布抽样占用。",
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
   "Alloc Denials": "因 CPBM 或 CMAX 无可用 way 而拒绝抽样分配的次数。",
@@ -1699,7 +1699,7 @@ function renderResourceMonitor() {
       </tr>`);
   } else if (state.resourceView === "l3") {
     headers = [
-      "PARTID", "Control State", "Physical / Raw / Filtered",
+      "PARTID", "Control State", "Physical / Raw / Control",
       "Monitor Error", "L3 Util %", "Raw / Filtered BW",
       "Hit Rate", "L3 Queue",
       "MSHR", "Fill Buffer", "Queue Delay / Full",
@@ -1912,7 +1912,7 @@ function renderControlVerification() {
     || ($$("[data-partid-row]").length
       ? collectParameters()
       : state.defaults);
-  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 0)}/${formatNumber(algorithm.mc_current_weight, 0)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
+  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
@@ -2058,18 +2058,22 @@ function configurationDiagnostics() {
 
   if (!stimuli.length) add("error", "没有启用的激励，仿真不会产生请求。");
   if (
-    Number(parameters.mc_history_weight)
-    + Number(parameters.mc_current_weight)
-    !== 256
+    Math.abs(
+      Number(parameters.mc_history_weight)
+      + Number(parameters.mc_current_weight)
+      - 1,
+    ) > 1e-9
   ) {
-    add("error", "MC History Weight 与 Current Weight 之和必须等于 256。");
+    add("error", "MC History Weight 与 Current Weight 之和必须等于 1。");
   }
   if (
-    Number(parameters.l3_history_weight)
-    + Number(parameters.l3_current_weight)
-    !== 256
+    Math.abs(
+      Number(parameters.l3_history_weight)
+      + Number(parameters.l3_current_weight)
+      - 1,
+    ) > 1e-9
   ) {
-    add("error", "L3 History Weight 与 Current Weight 之和必须等于 256。");
+    add("error", "L3 History Weight 与 Current Weight 之和必须等于 1。");
   }
   const activePartids = new Set(stimuli.map((row) => row.partid));
   activePartids.forEach((partid) => {

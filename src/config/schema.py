@@ -30,6 +30,8 @@ class CacheConfig:
     hit_latency_ns: float = 20.0
     sets: int = 1024
     monitor_group_sets: int = 8
+    sampling_mode: str = "fixed_first"
+    sampling_rotation_period_monitor_cycles: int = 1
     queue_depth: int = 128
     lookup_parallelism: int = 16
     miss_detect_latency_ns: float = 20.0
@@ -40,8 +42,8 @@ class CacheConfig:
     replacement_policy: str = "lru"
     clock_mhz: float = 1000.0
     monitor_period_cycles: int = 256
-    history_weight: int = 192
-    current_weight: int = 64
+    history_weight: float = 0.75
+    current_weight: float = 0.25
 
 
 @dataclass
@@ -71,8 +73,8 @@ class MemoryControllerConfig:
     base_latency_ns: float = 80.0
     clock_mhz: float = 1000.0
     monitor_period_cycles: int = 256
-    history_weight: int = 192
-    current_weight: int = 64
+    history_weight: float = 0.75
+    current_weight: float = 0.25
     bandwidth_hysteresis: float = 0.05
     aging_mode: str = "none"
     aging_quantum_cycles: int = 256
