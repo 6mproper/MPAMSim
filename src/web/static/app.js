@@ -28,7 +28,13 @@ const state = {
   stimulusConfigs: [],
   resourceView: "cpu",
   overviewPartid: 0,
-  showRawMonitor: false,
+  overviewChartLayers: {
+    targetBand: true,
+    filtered: true,
+    actual: true,
+    raw: false,
+    events: true,
+  },
   advancedEvidenceView: "resource-monitor",
   causalPartid: 0,
   experimentPartid: 0,
@@ -286,6 +292,7 @@ function fillForm(values) {
     else input.value = values[key];
   });
   clampDependentInputs();
+  renderSocCapabilitySummaries();
 }
 
 function collectParameters() {
@@ -857,6 +864,112 @@ function formatNumber(value, digits = 1) {
   if (Math.abs(number) >= 1_000_000) return `${(number / 1_000_000).toFixed(digits)}M`;
   if (Math.abs(number) >= 1_000) return `${(number / 1_000).toFixed(digits)}k`;
   return number.toFixed(digits);
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "--";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let scaled = bytes;
+  let unit = units[0];
+  for (let index = 1; index < units.length && scaled >= 1024; index += 1) {
+    scaled /= 1024;
+    unit = units[index];
+  }
+  return `${formatNumber(scaled, scaled < 10 ? 2 : 1)} ${unit}`;
+}
+
+function numberParam(name, fallback = 0) {
+  const value = Number($(`[data-param="${name}"]`)?.value);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function setCapabilityRow(selector, title, detail) {
+  const target = $(selector);
+  if (!target) return;
+  target.innerHTML = `
+    <b>${escapeHtml(title)}</b>
+    <span>${escapeHtml(detail)}</span>
+  `;
+}
+
+function stimulusOfferedBandwidthGbps() {
+  return collectStimulusConfigs()
+    .filter((row) => row.enabled)
+    .reduce((sum, row) => {
+      const rate = Number(row.rate_value || 0);
+      const bytes = Number(row.request_size_bytes || 64);
+      if (String(row.rate_unit).toLowerCase() === "mrps") {
+        return sum + rate * bytes * 0.008;
+      }
+      return sum + rate;
+    }, 0);
+}
+
+function renderSocCapabilitySummaries() {
+  if (!$("#socCpuCapability")) return;
+  const activeCores = numberParam("active_cores", 8);
+  const threadsPerCore = numberParam("threads_per_core", 2);
+  const hardwareThreads = activeCores * threadsPerCore;
+  const enabledStimuli = collectStimulusConfigs()
+    .filter((row) => row.enabled)
+    .length;
+  const threadOstd = numberParam("max_outstanding", 32);
+  const coreOstd = numberParam("core_max_outstanding", 48);
+  const threadTotal = hardwareThreads * threadOstd;
+  const coreTotal = activeCores * coreOstd;
+  const effectiveOstd = Math.min(threadTotal, coreTotal);
+  setCapabilityRow(
+    "#socCpuCapability",
+    `源端 offered ${formatNumber(stimulusOfferedBandwidthGbps(), 1)} Gbps`,
+    `${enabledStimuli}/${hardwareThreads}路激励 · OSTD聚合上限 ${formatNumber(effectiveOstd, 0)} req（thread ${formatNumber(threadTotal, 0)} / core pool ${formatNumber(coreTotal, 0)}）`,
+  );
+
+  const l3Instances = numberParam("l3_instances", 1);
+  const l3Sets = numberParam("l3_sets", 1);
+  const l3Ways = numberParam("l3_ways", 1);
+  const lineBytes = numberParam("l3_line_size", 64);
+  const lookupParallelism = numberParam("l3_lookup_parallelism", 1);
+  const hitLatency = Math.max(1e-9, numberParam("l3_hit_latency_ns", 1));
+  const l3Clock = Math.max(1e-9, numberParam("l3_clock_mhz", 1000));
+  const l3MonitorCycles = numberParam("l3_monitor_period_cycles", 256);
+  const l3CapacityBytes = l3Instances * l3Sets * l3Ways * lineBytes;
+  const l3LookupGbps = l3Instances * lookupParallelism * lineBytes * 8 / hitLatency;
+  const l3MonitorNs = l3MonitorCycles * 1000 / l3Clock;
+  setCapabilityRow(
+    "#socL3Capability",
+    `L3容量 ${formatBytes(l3CapacityBytes)} · lookup峰值 ${formatNumber(l3LookupGbps, 1)} Gbps`,
+    `${l3Instances}实例 × ${formatNumber(lookupParallelism, 0)}槽 · line ${formatNumber(lineBytes, 0)}B · monitor ${formatNumber(l3MonitorNs, 2)} ns`,
+  );
+
+  const nocRouters = numberParam("noc_routers", 1);
+  const mcCount = numberParam("memory_controllers", 1);
+  const nocNodes = nocRouters + l3Instances + mcCount;
+  const nocClock = Math.max(1e-9, numberParam("noc_clock_mhz", 1000));
+  const nocHopCycles = numberParam("noc_hop_latency_cycles", 1);
+  const nocSlots = numberParam("noc_link_slots_per_direction", 1);
+  const flitBytes = numberParam("noc_flit_bytes", 16);
+  const hopNs = nocHopCycles * 1000 / nocClock;
+  const perLinkGbps = 3 * 2 * nocSlots * flitBytes * 8 / Math.max(1e-9, hopNs);
+  const ringAggregateGbps = perLinkGbps * nocNodes;
+  setCapabilityRow(
+    "#socNocCapability",
+    `Ring DAT等效聚合 ${formatNumber(ringAggregateGbps, 1)} Gbps`,
+    `${nocNodes}节点 · 单link双向三通道 ${formatNumber(perLinkGbps, 1)} Gbps · hop ${formatNumber(hopNs, 2)} ns`,
+  );
+
+  const channelsPerMc = numberParam("channels_per_mc", 1);
+  const channelBandwidth = numberParam("channel_bandwidth_gbps", 1);
+  const mcClock = Math.max(1e-9, numberParam("mc_clock_mhz", 1000));
+  const mcMonitorCycles = numberParam("mc_monitor_period_cycles", 256);
+  const perMcGbps = channelsPerMc * channelBandwidth;
+  const totalMcGbps = mcCount * perMcGbps;
+  const mcMonitorNs = mcMonitorCycles * 1000 / mcClock;
+  setCapabilityRow(
+    "#socMcCapability",
+    `MC系统带宽 ${formatNumber(totalMcGbps, 1)} Gbps`,
+    `${mcCount} MC × ${channelsPerMc}通道 × ${formatNumber(channelBandwidth, 1)} Gbps · 每MC ${formatNumber(perMcGbps, 1)} Gbps · monitor ${formatNumber(mcMonitorNs, 2)} ns`,
+  );
 }
 
 function visibleRows(rows) {
@@ -1677,6 +1790,16 @@ function syncPartidSelect(selector, selected) {
   select.value = current;
 }
 
+function overviewLayerEnabled(layer) {
+  return Boolean(state.overviewChartLayers[layer]);
+}
+
+function syncOverviewLayerControls() {
+  $$("[data-overview-layer]").forEach((input) => {
+    input.checked = overviewLayerEnabled(input.dataset.overviewLayer);
+  });
+}
+
 function experimentCases() {
   if (state.experiment?.cases) return state.experiment.cases;
   const results = state.experimentPartial?.results || {};
@@ -2047,6 +2170,7 @@ function configurationDiagnostics() {
 }
 
 function renderConfigDiagnostics() {
+  renderSocCapabilitySummaries();
   const diagnostics = configurationDiagnostics();
   $("#configDiagnostics").innerHTML = diagnostics.map((row) => `
     <div class="diagnostic ${row.severity}">
@@ -2818,6 +2942,7 @@ function overviewTargetBand(minValue, maxValue, fallbackMax, color) {
 
 function renderControlOverview() {
   syncPartidSelect("#overviewPartid", state.overviewPartid);
+  syncOverviewLayerControls();
   const pid = Number(state.overviewPartid);
   const target = effectTarget(pid);
   const rows = buildEffectRows(pid);
@@ -2876,31 +3001,39 @@ function renderControlOverview() {
   const pointSeries = (key) => rows.map(
     (row) => ({ x: row.timeNs, y: Number(row[key] || 0) }),
   );
-  const eventXs = rows.filter((row) => row.events.length).map((row) => row.timeNs);
+  const eventXs = overviewLayerEnabled("events")
+    ? rows.filter((row) => row.events.length).map((row) => row.timeNs)
+    : [];
   const l3Series = [
-    { color: "#697680", width: 1.2, marker: "none", points: pointSeries("l3ActualShare") },
-    { color: selectedColor, width: 3, points: pointSeries("l3FilteredShare") },
+    ...(overviewLayerEnabled("actual")
+      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("l3ActualShare") }]
+      : []),
+    ...(overviewLayerEnabled("raw")
+      ? [{
+        color: "#a66a00",
+        width: 1.1,
+        dash: [1, 4],
+        marker: "points",
+        points: pointSeries("l3RawShare"),
+      }]
+      : []),
+    ...(overviewLayerEnabled("filtered")
+      ? [{ color: selectedColor, width: 3, points: pointSeries("l3FilteredShare") }]
+      : []),
   ];
-  if (state.showRawMonitor) {
-    l3Series.splice(1, 0, {
-      color: "#a66a00",
-      width: 1.1,
-      dash: [1, 4],
-      marker: "points",
-      points: pointSeries("l3RawShare"),
-    });
-  }
   renderLegend("#overviewL3Legend", [
-    { color: "#2d7a4c", label: "目标带", kind: "band" },
-    { color: selectedColor, label: "filtered监控", kind: "filtered" },
-    { color: "#697680", label: "actual", kind: "actual" },
-    ...(state.showRawMonitor ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
-    { color: colors.amber, label: "控制事件", kind: "event" },
+    ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: selectedColor, label: "filtered监控", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
+    ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
+    ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
   ]);
   drawLineChart($("#overviewL3Chart"), l3Series, {
     yMax: 100,
     eventXs,
-    bands: overviewTargetBand(target.cmin, target.cmax, 100, "rgba(45, 122, 76, 0.14)"),
+    bands: overviewLayerEnabled("targetBand")
+      ? overviewTargetBand(target.cmin, target.cmax, 100, "rgba(45, 122, 76, 0.14)")
+      : [],
   });
 
   const mcValues = rows.flatMap((row) => [
@@ -2915,29 +3048,35 @@ function renderControlOverview() {
     Number(target.bmax || 0),
   ) * 1.15;
   const mcSeries = [
-    { color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcActualBandwidth") },
-    { color: selectedColor, width: 3, points: pointSeries("mcFilteredBandwidth") },
+    ...(overviewLayerEnabled("actual")
+      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcActualBandwidth") }]
+      : []),
+    ...(overviewLayerEnabled("raw")
+      ? [{
+        color: "#a66a00",
+        width: 1.1,
+        dash: [1, 4],
+        marker: "points",
+        points: pointSeries("mcRawBandwidth"),
+      }]
+      : []),
+    ...(overviewLayerEnabled("filtered")
+      ? [{ color: selectedColor, width: 3, points: pointSeries("mcFilteredBandwidth") }]
+      : []),
   ];
-  if (state.showRawMonitor) {
-    mcSeries.splice(1, 0, {
-      color: "#a66a00",
-      width: 1.1,
-      dash: [1, 4],
-      marker: "points",
-      points: pointSeries("mcRawBandwidth"),
-    });
-  }
   renderLegend("#overviewMcLegend", [
-    { color: "#2d7a4c", label: "目标带", kind: "band" },
-    { color: selectedColor, label: "filtered监控", kind: "filtered" },
-    { color: "#697680", label: "actual", kind: "actual" },
-    ...(state.showRawMonitor ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
-    { color: colors.amber, label: "控制事件", kind: "event" },
+    ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: selectedColor, label: "filtered监控", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
+    ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
+    ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
   ]);
   drawLineChart($("#overviewMcChart"), mcSeries, {
     yMax: mcYMax,
     eventXs,
-    bands: overviewTargetBand(target.bmin, target.bmax, mcYMax, "rgba(45, 122, 76, 0.14)"),
+    bands: overviewLayerEnabled("targetBand")
+      ? overviewTargetBand(target.bmin, target.bmax, mcYMax, "rgba(45, 122, 76, 0.14)")
+      : [],
   });
 
   const cpuRows = aggregateCpuResources();
@@ -3206,7 +3345,7 @@ function showAlgorithmPopover(target, pin = false) {
 
 function renderAlgorithmBody(entry) {
   if (entry.body) {
-    return `<p>${escapeHtml(entry.body)}</p>`;
+    return `<p class="algorithm-compact-lines">${escapeHtml(entry.body)}</p>`;
   }
   const labels = {
     summary: "功能",
@@ -3221,12 +3360,10 @@ function renderAlgorithmBody(entry) {
     evidence: "可观察证据",
     boundary: "模型边界",
   };
-  return Object.entries(labels).map(([key, label]) => `
-    <section class="algorithm-detail">
-      <h4>${escapeHtml(label)}</h4>
-      <p>${escapeHtml(entry[key] || "未定义")}</p>
-    </section>
-  `).join("");
+  const lines = Object.entries(labels)
+    .filter(([key]) => entry[key])
+    .map(([key, label]) => `${label}：${entry[key]}`);
+  return `<p class="algorithm-compact-lines">${escapeHtml(lines.join("\n"))}</p>`;
 }
 
 function scheduleAlgorithmPopover(target) {
@@ -3557,8 +3694,10 @@ function bindEvents() {
     state.overviewPartid = Number(event.target.value);
     renderControlOverview();
   });
-  $("#showRawMonitor").addEventListener("change", (event) => {
-    state.showRawMonitor = event.target.checked;
+  $("#overviewChartLayers").addEventListener("change", (event) => {
+    const input = event.target.closest?.("[data-overview-layer]");
+    if (!input) return;
+    state.overviewChartLayers[input.dataset.overviewLayer] = input.checked;
     renderControlOverview();
   });
   $("#overviewPartidMatrix").addEventListener("click", (event) => {

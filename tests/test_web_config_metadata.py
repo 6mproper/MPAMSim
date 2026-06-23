@@ -68,6 +68,7 @@ def test_results_default_to_control_evidence_workspace() -> None:
         "presetSelect",
         "applyPresetButton",
         "presetExpected",
+        "overviewChartLayers",
         "overviewCpuCard",
         "overviewL3Card",
         "overviewMcCard",
@@ -85,3 +86,62 @@ def test_results_default_to_control_evidence_workspace() -> None:
         "controls",
     ):
         assert f'data-advanced-target="{advanced_target}"' in index_html
+
+
+def test_control_overview_chart_layers_are_configurable() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    layers = re.findall(r'data-overview-layer="([^"]+)"', index_html)
+    assert layers == [
+        "targetBand",
+        "filtered",
+        "actual",
+        "raw",
+        "events",
+    ]
+    for layer in layers:
+        pattern = (
+            rf'<label data-help="[^"]+">'
+            rf'<input data-overview-layer="{layer}"'
+        )
+        assert re.search(pattern, index_html), layer
+
+
+def test_algorithm_explanations_use_compact_body() -> None:
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+    assert "algorithm-compact-lines" in app_js
+    assert ".algorithm-popover .algorithm-compact-lines" in styles
+
+
+def test_soc_tab_has_capability_summaries_and_mc_clock() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    for element_id in (
+        "socCpuCapability",
+        "socL3Capability",
+        "socNocCapability",
+        "socMcCapability",
+    ):
+        assert f'id="{element_id}"' in index_html
+    assert index_html.count('data-param="mc_clock_mhz"') == 1
+    soc_panel = re.search(
+        r'<section class="config-section active" data-panel="soc">(.*?)'
+        r'<section class="config-section" data-panel="traffic">',
+        index_html,
+        re.S,
+    ).group(1)
+    policy_panel = re.search(
+        r'<section class="config-section" data-panel="policy">(.*?)'
+        r'</section>',
+        index_html,
+        re.S,
+    ).group(1)
+    assert 'data-param="mc_clock_mhz"' in soc_panel
+    assert 'data-param="mc_clock_mhz"' not in policy_panel

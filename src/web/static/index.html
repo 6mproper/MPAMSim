@@ -56,6 +56,7 @@
               </select>
             </label>
             <label>Thread 保留 OSTD<input data-param="thread_ostd_reserve" type="number" min="1" max="1024" step="1"></label>
+            <div id="socCpuCapability" class="capability-row" data-help="多核能力摘要：offered带宽来自当前启用激励，MRPS按请求大小换算；OSTD上限来自Thread与Core池配置，属于源端建模约束。"></div>
           </div>
 
           <h2>L3 / SLC</h2>
@@ -83,6 +84,7 @@
             <label data-algorithm="l3-cmax">监控周期 cycles<input data-param="l3_monitor_period_cycles" type="number" min="1" max="1000000" step="1"></label>
             <label data-algorithm="l3-cmax">History Weight<input data-param="l3_history_weight" type="number" min="0" max="256" step="1"></label>
             <label data-algorithm="l3-cmax">Current Weight<input data-param="l3_current_weight" type="number" min="0" max="256" step="1"></label>
+            <div id="socL3Capability" class="capability-row" data-help="L3能力摘要：容量按实例数、set、way和line bytes计算；lookup峰值按全hit、lookup并发槽和命中延迟估算，不包含MSHR、fill和MC瓶颈。"></div>
           </div>
 
           <h2>NoC</h2>
@@ -102,6 +104,7 @@
                 <option value="ccw">逆时针</option>
               </select>
             </label>
+            <div id="socNocCapability" class="capability-row" data-help="NoC能力摘要：按REQ/RSP/DAT三条双向bufferless ring、节点数、link slots、flit bytes和hop周期估算DAT等效聚合运输能力；不表示QoS隔离能力。"></div>
           </div>
 
           <h2>Memory Controller</h2>
@@ -109,11 +112,13 @@
             <label>控制器数<input data-param="memory_controllers" type="number" min="1" max="8" step="1"></label>
             <label>每控制器通道<input data-param="channels_per_mc" type="number" min="1" max="16" step="1"></label>
             <label>单通道 Gbps<input data-param="channel_bandwidth_gbps" type="number" min="1" max="2048" step="1"></label>
+            <label data-algorithm="mc-bmax">MC Clock MHz<input data-param="mc_clock_mhz" type="number" min="1" max="10000" step="1"></label>
             <label>基础延迟 ns<input data-param="mc_base_latency_ns" type="number" min="1" max="2000" step="1"></label>
             <label>请求队列深度<input data-param="mc_queue_depth" type="number" min="1" max="8192" step="1"></label>
             <label>地址交织<select data-param="mc_interleave_mode"><option value="linear">Linear</option><option value="xor">XOR</option></select></label>
             <label>交织粒度 bytes<input data-param="mc_interleave_granularity_bytes" type="number" min="1" max="1073741824" step="1"></label>
             <label>XOR Shift<input data-param="mc_interleave_xor_shift" type="number" min="0" max="63" step="1"></label>
+            <div id="socMcCapability" class="capability-row" data-help="MC能力摘要：每MC带宽=通道数×单通道Gbps，系统带宽再乘MC数量；监控周期按MC本地时钟换算为ns。"></div>
           </div>
         </section>
 
@@ -211,7 +216,6 @@
           </div>
           <h2>MC 调度算法参数</h2>
           <div class="field-grid">
-            <label data-algorithm="mc-bmax">MC Clock MHz<input data-param="mc_clock_mhz" type="number" min="1" max="10000" step="1"></label>
             <label data-algorithm="mc-bmax">监控周期 cycles<input data-param="mc_monitor_period_cycles" type="number" min="1" max="1000000" step="1"></label>
             <label data-algorithm="mc-bmax">History Weight<input data-param="mc_history_weight" type="number" min="0" max="256" step="1"></label>
             <label data-algorithm="mc-bmax">Current Weight<input data-param="mc_current_weight" type="number" min="0" max="256" step="1"></label>
@@ -310,10 +314,14 @@
               <label>PARTID
                 <select id="overviewPartid"></select>
               </label>
-              <label class="inline-toggle" data-help="默认隐藏raw MPAM采样，避免和控制输入、实际值混成一团；打开后用点状线显示raw采样误差。">
-                <input id="showRawMonitor" type="checkbox">
-                <span>显示raw采样误差</span>
-              </label>
+              <fieldset id="overviewChartLayers" class="overview-layer-controls" data-help="选择控制总览中 L3 和 MC 图表显示哪些曲线层；只影响前端显示，不会重新仿真。">
+                <legend>曲线</legend>
+                <label data-help="目标带：L3显示CMIN/CMAX允许占用比例，MC显示BMIN/BMAX带宽范围；这是用户配置的控制目标。"><input data-overview-layer="targetBand" type="checkbox" checked><span>目标带</span></label>
+                <label data-help="filtered监控：MPAM控制逻辑实际读取的滤波监控值；L3来自sampled-owner滤波占用，MC来自滤波带宽。"><input data-overview-layer="filtered" type="checkbox" checked><span>filtered</span></label>
+                <label data-help="actual：验证用真实观测值；L3为物理实际缓存占比，MC为实际服务带宽，不直接作为控制输入。"><input data-overview-layer="actual" type="checkbox" checked><span>actual</span></label>
+                <label data-help="raw：未滤波MPAM采样值；用于观察抽样误差和滤波滞后，默认关闭以减少曲线重叠。"><input data-overview-layer="raw" type="checkbox"><span>raw</span></label>
+                <label data-help="控制事件：橙色竖线标记控制逻辑在该周期产生状态或参数动作，帮助对齐因果链。"><input data-overview-layer="events" type="checkbox" checked><span>控制事件</span></label>
+              </fieldset>
             </div>
           </div>
           <div class="overview-grid">
