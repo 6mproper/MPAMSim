@@ -9,6 +9,7 @@ class MetricSemantic(str, Enum):
     ACTUAL = "actual"
     RAW_MONITOR = "raw_monitor"
     FILTERED_MONITOR = "filtered_monitor"
+    CONTROL_INPUT = "control_input"
     CONFIGURED_TARGET = "configured_target"
     EFFECTIVE_TARGET = "effective_target"
     CONTROL_STATE = "control_state"
@@ -18,6 +19,10 @@ MetricValue = Any
 
 
 def _metric_semantic(metric: str) -> MetricSemantic:
+    if metric.startswith("control_") or metric.endswith(
+        "_control_input"
+    ):
+        return MetricSemantic.CONTROL_INPUT
     if metric.startswith("configured_"):
         return MetricSemantic.CONFIGURED_TARGET
     if metric.startswith("effective_") or metric in {
@@ -221,6 +226,37 @@ class MonitorSnapshot:
 
 
 @dataclass(frozen=True)
+class ControlContext:
+    interval_index: int
+    time_ns: float
+    monitor_samples: Tuple[MonitorSample, ...]
+    metrics_by_partid: Mapping[int, Mapping[str, float]]
+    authorized_inputs: Tuple[str, ...] = ()
+    previous_state: Optional[Mapping[str, object]] = None
+    action_effective_time_ns: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ControlOutcome:
+    target_state: str
+    reason: str
+    monitor_sample_id: str = ""
+    decision_id: str = ""
+    action_effective_time_ns: Optional[float] = None
+    metrics: Optional[Mapping[str, object]] = None
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "target_state": self.target_state,
+            "reason": self.reason,
+            "monitor_sample_id": self.monitor_sample_id,
+            "decision_id": self.decision_id,
+            "action_effective_time_ns": self.action_effective_time_ns,
+            "metrics": dict(self.metrics or {}),
+        }
+
+
+@dataclass(frozen=True)
 class ControlDecision:
     target_resource_id: str
     partid: int
@@ -269,6 +305,8 @@ class ControlEvent:
     action_effective_time_ns: Optional[float] = None
     pmg: Optional[int] = None
     details: Optional[Mapping[str, object]] = None
+    outcome_state: str = ""
+    outcome_reason: str = ""
 
     def to_row(self) -> Dict[str, object]:
         return {
@@ -292,4 +330,6 @@ class ControlEvent:
             "decision_id": self.decision_id,
             "action_effective_time_ns": self.action_effective_time_ns,
             "details": dict(self.details or {}),
+            "outcome_state": self.outcome_state,
+            "outcome_reason": self.outcome_reason,
         }

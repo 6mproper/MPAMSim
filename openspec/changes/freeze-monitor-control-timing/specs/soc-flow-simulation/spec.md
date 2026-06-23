@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
-### Requirement: P2监控控制时序冻结
+### Requirement: P0/P1监控控制时序门槛
 
-P2阶段 MUST 只冻结监控、滤波、控制和动作之间的时序语义，不得新增阶段专用仿真模式、
-数据模型或UI通路。
+P0/P1阶段 MUST 先冻结监控、滤波、控制和动作之间的时序语义，不得新增阶段专用仿真模式、
+数据模型或UI通路；该门槛不是独立的后续仿真模式。
 
 #### Scenario: 双缓冲监控边界
 
@@ -18,8 +18,8 @@ P2阶段 MUST 只冻结监控、滤波、控制和动作之间的时序语义，
 - **THEN** 证据 MUST 能区分UI/导出显示的最新filtered监控值和控制器实际读取的control input
 - **AND** `action_effective_time_ns` MUST 不早于control input被锁存的本地监控边界
 
-#### Scenario: 无P2旁路
+#### Scenario: 无阶段旁路
 
-- **WHEN** 运行P2相关微测试、控制验证或普通仿真
+- **WHEN** 运行P0/P1相关微测试、控制验证或普通仿真
 - **THEN** MUST 复用常规`Transaction`、`MonitorSample`、`ControlEvent`和控制总览/因果链UI通路
-- **AND** MUST NOT 新增`validation_stage`或P2专用数据面
+- **AND** MUST NOT 新增`validation_stage`或阶段专用数据面

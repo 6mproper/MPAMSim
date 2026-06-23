@@ -12,14 +12,16 @@ filtered_count[k] =
 
 ## 控制输入
 
-周期k内的CMIN/CMAX只读取周期边界已发布的`filtered_count[k-1]`。
+周期k内的CMIN/CMAX只读取本地边界锁存的`control_input[k]`，
+其来源是上一已发布`filtered_count[k-1]`。
 CPBM仍是每次fill直接执行的way eligibility。
 
 ## 三平面对照
 
 - physical actual：全部真实set/tag/way，仅观测；
 - raw MPAM：每8个set首set的即时样本；
-- filtered MPAM：递归滤波发布值，作为控制输入。
+- latest filtered MPAM：递归滤波发布值，用于UI和下一边界锁存候选；
+- control input：控制器实际读取的锁存监控值。
 
 ## 地址交织
 

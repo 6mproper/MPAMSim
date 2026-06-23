@@ -19,7 +19,8 @@ raw_bw = serviced_bytes * 8 / period_ns
 filtered = (history_weight * previous + current_weight * raw) / sum
 ```
 
-周期末发布filtered并更新下一周期UNDER_BMIN、OVER_BMAX和HARD_BLOCK。
+周期边界先把上一已发布filtered锁存为control input，并用它更新UNDER_BMIN、
+OVER_BMAX和HARD_BLOCK；随后计算并发布新的latest filtered，供下一次边界锁存。
 
 ## 滞回
 

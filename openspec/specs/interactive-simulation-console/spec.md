@@ -34,6 +34,34 @@ MC或requester私有字段。
 - **WHEN** 类型化契约接入当前数据通路
 - **THEN** 现有周期表格、控制记录和最终报告保持可用
 
+### Requirement: 控制总览区分control input和latest filtered
+
+控制总览 MUST 将控制器实际读取的锁存值显示为control input，并与latest filtered区分。
+
+#### Scenario: L3和MC主图
+
+- **WHEN** 用户查看控制总览
+- **THEN** 主线默认 SHOULD 显示control input
+- **AND** latest filtered SHOULD 可选显示
+- **AND** actual、raw和控制事件仍按显示层开关控制
+
+#### Scenario: 文案区分
+
+- **WHEN** UI解释filtered、control input、actual或raw
+- **THEN** filtered MUST 表示最新发布滤波监控值
+- **AND** control input MUST 表示控制器读取的锁存监控值
+- **AND** actual MUST 标注为验证用观测值，不得描述为控制输入
+
+### Requirement: 结果文案不以达标作为验收
+
+UI MUST 避免把目标达成或未达成表述为自动通过或失败。
+
+#### Scenario: 目标偏离
+
+- **WHEN** 控制目标未达、过冲或饱和
+- **THEN** UI SHOULD 显示目标偏离、需解释或控制结果
+- **AND** MUST NOT 将其显示为仿真失败
+
 ### Requirement: 报告访问
 
 完成任务 MUST 提供同一次运行生成的HTML报告链接。
@@ -282,7 +310,7 @@ PARTID编辑器 MUST 独立开关CPBM、CMIN、CMAX、BMIN、BMAX、MC QoS和CBu
 ### Requirement: MC周期控制配置和证据
 
 控制台 MUST 配置MC clock、256拍周期、filter weights、滞回和service deficit，并显示
-raw/filtered BW、UNDER/OVER/HARD状态、candidate、grant和QoS饱和。
+raw/latest filtered/control input BW、UNDER/OVER/HARD状态、candidate、grant和QoS饱和。
 
 #### Scenario: 查看Hard BMAX说明
 

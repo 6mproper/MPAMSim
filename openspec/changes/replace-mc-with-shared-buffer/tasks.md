@@ -13,7 +13,7 @@
 - [x] 3.2 实现rotating slot 3-bit QoS调度。
 - [x] 3.3 实现上一滤波周期驱动的BMIN、soft/hard BMAX和滞回。
 - [x] 3.4 实现可选per-PARTID service deficit。
-- [x] 3.5 让CBusy读取buffer count、filtered BW和hard block。
+- [x] 3.5 让CBusy读取buffer count、control input BW和hard block。
 
 ## 4. 验证
 

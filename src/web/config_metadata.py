@@ -258,7 +258,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
     ),
     "l3_monitor_period_cycles": _field(
         "L3监控周期",
-        "每个周期读取每8个set首set的way owner并发布所有PARTID的raw和filtered监控值。",
+        "每个周期读取每8个set首set的way owner并发布所有PARTID的raw和latest filtered监控值；控制器读取上一边界锁存的control input。",
         "L3 cycle",
         "L3 MPAM监控平面和CMIN/CMAX控制输入。",
         "周期越短控制响应越快，但抽样量化和控制过冲更明显。",
@@ -1128,8 +1128,8 @@ OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "mrps": "每秒百万请求数；请求频率不随request_size_bytes改变。",
     },
     "limit_mode": {
-        "softlimit": "上一filtered BW形成OVER_BMAX且存在PARTID竞争时降低effective QoS；请求仍eligible，无竞争可借用。",
-        "hardlimit": "上一filtered BW形成OVER_BMAX后，下一整个监控周期从候选集合移除，直到滤波值越过滞回释放阈值。",
+        "softlimit": "上一监控边界锁存的control input BW形成OVER_BMAX且存在PARTID竞争时降低effective QoS；请求仍eligible，无竞争可借用。",
+        "hardlimit": "上一监控边界锁存的control input BW形成OVER_BMAX后，下一整个监控周期从候选集合移除，直到control input越过滞回释放阈值。",
     },
     "core_ostd_policy": {
         "shared": "两个SMT线程共享Core总容量，同时各自受Thread最大OSTD限制；空闲容量可由任一线程使用。",
@@ -1247,9 +1247,9 @@ CONTROL_ALGORITHMS: Dict[str, Dict[str, str]] = {
     },
     "mc-bmin": {
         "title": "MC BMIN滤波监控升档",
-        "summary": "使用上一监控周期发布的滤波带宽，在PARTID间竞争时提升UNDER_BMIN请求的3-bit QoS。",
-        "inputs": "上一filtered BW、BMIN目标、滞回、BMIN enable、ready PARTID数量和升档值。",
-        "state": "每MC、每PARTID raw/filtered BW与UNDER_BMIN锁存状态。",
+        "summary": "使用上一监控边界锁存的control input带宽，在PARTID间竞争时提升UNDER_BMIN请求的3-bit QoS。",
+        "inputs": "锁存control input BW、BMIN目标、滞回、BMIN enable、ready PARTID数量和升档值。",
+        "state": "每MC、每PARTID raw/latest filtered/control input BW与UNDER_BMIN锁存状态。",
         "cadence": "每monitor_period_cycles更新UNDER状态；每次dispatch按锁存状态计算QoS。",
         "decision": "未锁存时filtered<BMIN assert；已锁存时filtered>=BMIN*(1+h) release；仅至少两个PARTID ready时升档。",
         "action": "effective_qos加入bmin_qos_promote并钳位到7；不预留带宽、不阻塞其他请求。",
@@ -1261,9 +1261,9 @@ CONTROL_ALGORITHMS: Dict[str, Dict[str, str]] = {
     },
     "mc-bmax": {
         "title": "MC BMAX周期Soft/Hard控制",
-        "summary": "使用上一监控周期的滤波带宽形成OVER_BMAX；soft在竞争时降QoS，hard整周期移除该PARTID候选。",
+        "summary": "使用上一监控边界锁存的control input带宽形成OVER_BMAX；soft在竞争时降QoS，hard整周期移除该PARTID候选。",
         "inputs": "MC clock、周期、history/current权重、BMAX、mode、滞回、ready竞争和soft降档值。",
-        "state": "每MC、每PARTID raw/filtered BW、OVER_BMAX和HARD_BLOCK锁存状态。",
+        "state": "每MC、每PARTID raw/latest filtered/control input BW、OVER_BMAX和HARD_BLOCK锁存状态。",
         "cadence": "当前周期累计服务字节；周期末发布滤波值并更新下一周期控制状态。",
         "decision": "filtered>BMAX assert；filtered<=BMAX*(1-h) release。soft仅竞争时降档；hard在整个下一周期不可服务。",
         "action": "soft请求仍eligible且无竞争可借用；hard请求保留在共享buffer并累计阻塞、等待和buffer增长证据。",

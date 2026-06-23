@@ -78,6 +78,8 @@ def test_results_default_to_control_evidence_workspace() -> None:
         "advancedEvidenceBody",
     ):
         assert f'id="{element_id}"' in index_html
+    assert 'data-overview-layer="controlInput"' in index_html
+    assert "latest filtered" in index_html
     for advanced_target in (
         "resource-monitor",
         "control-effect",
@@ -95,6 +97,7 @@ def test_control_overview_chart_layers_are_configurable() -> None:
     layers = re.findall(r'data-overview-layer="([^"]+)"', index_html)
     assert layers == [
         "targetBand",
+        "controlInput",
         "filtered",
         "actual",
         "raw",

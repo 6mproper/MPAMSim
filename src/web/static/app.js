@@ -30,7 +30,8 @@ const state = {
   overviewPartid: 0,
   overviewChartLayers: {
     targetBand: true,
-    filtered: true,
+    controlInput: true,
+    filtered: false,
     actual: true,
     raw: false,
     events: true,
@@ -1165,6 +1166,7 @@ function aggregateL3Resources() {
     occupancy: 0,
     rawOccupancy: 0,
     filteredOccupancy: 0,
+    controlOccupancy: 0,
     actualOccupancy: 0,
     rawBandwidth: 0,
     filteredBandwidth: 0,
@@ -1238,6 +1240,12 @@ function aggregateL3Resources() {
         target.rawOccupancy += Number(values.raw_occupancy_bytes || 0);
         target.filteredOccupancy += Number(
           values.filtered_occupancy_bytes
+          ?? values.estimated_occupancy_bytes
+          ?? 0,
+        );
+        target.controlOccupancy += Number(
+          values.control_occupancy_bytes
+          ?? values.filtered_occupancy_bytes
           ?? values.estimated_occupancy_bytes
           ?? 0,
         );
@@ -1368,6 +1376,7 @@ function aggregateMcResources() {
     cbusyCap: 0,
     rawBandwidth: 0,
     filteredBandwidth: 0,
+    controlBandwidth: 0,
     underBmin: false,
     overBmax: false,
     hardBlock: false,
@@ -1421,6 +1430,11 @@ function aggregateMcResources() {
         target.rawBandwidth += Number(values.raw_bandwidth_gbps || 0);
         target.filteredBandwidth += Number(
           values.filtered_bandwidth_gbps || 0,
+        );
+        target.controlBandwidth += Number(
+          values.control_bandwidth_gbps
+          ?? values.filtered_bandwidth_gbps
+          ?? 0,
         );
         target.underBmin ||= Boolean(values.under_bmin);
         target.overBmax ||= Boolean(values.over_bmax);
@@ -2651,6 +2665,15 @@ function buildEffectRows(partid) {
         ),
         0,
       );
+      const controlOccupancy = cacheValues.reduce(
+        (sum, row) => sum + Number(
+          row.control_occupancy_bytes
+          ?? row.filtered_occupancy_bytes
+          ?? row.estimated_occupancy_bytes
+          ?? 0,
+        ),
+        0,
+      );
       const cacheCapacity = sumValues(cacheValues, "cache_capacity_bytes");
       const mcRequests = sumValues(mcValues, "requests");
       const mcActualBandwidth = sumValues(mcValues, "achieved_bandwidth_gbps");
@@ -2658,6 +2681,14 @@ function buildEffectRows(partid) {
       const mcFilteredBandwidth = sumValues(
         mcValues,
         "filtered_bandwidth_gbps",
+      );
+      const mcControlBandwidth = mcValues.reduce(
+        (sum, row) => sum + Number(
+          row.control_bandwidth_gbps
+          ?? row.filtered_bandwidth_gbps
+          ?? 0,
+        ),
+        0,
       );
       const hasEffectiveBmin = mcValues.some(
         (row) => row.bmin_gbps != null,
@@ -2691,20 +2722,22 @@ function buildEffectRows(partid) {
       previousTime = timeNs;
       return {
         timeNs,
-        l3Share: sharePercent(filteredOccupancy, cacheCapacity),
+        l3Share: sharePercent(controlOccupancy, cacheCapacity),
         l3ActualShare: sharePercent(actualOccupancy, cacheCapacity),
         l3RawShare: sharePercent(rawOccupancy, cacheCapacity),
         l3FilteredShare: sharePercent(filteredOccupancy, cacheCapacity),
+        l3ControlShare: sharePercent(controlOccupancy, cacheCapacity),
         l3EffectiveCmin: effectiveCmin,
         l3EffectiveCmax: effectiveCmax,
         l3Contended: cacheValues.some(
           (row) => Number(row.allocation_denials || 0) > 0
             || Number(row.cmin_protected_evictions || 0) > 0,
         ),
-        mcBandwidth: mcFilteredBandwidth,
+        mcBandwidth: mcControlBandwidth,
         mcActualBandwidth,
         mcRawBandwidth,
         mcFilteredBandwidth,
+        mcControlBandwidth,
         mcEffectiveBmin: hasEffectiveBmin ? effectiveBmin : configuredTarget.bmin,
         mcEffectiveBmax: hasEffectiveBmax ? effectiveBmax : configuredTarget.bmax,
         mcContended: mcRows.some(
@@ -2759,22 +2792,22 @@ function effectState(row, target) {
     && row.mcContended
     && row.mcBandwidth + 0.5 < target.bmin;
   const l3 = l3MaxFail || l3MinFail
-    ? "未达标"
-    : row.l3Contended ? "达标" : "观察";
+    ? "目标偏离"
+    : row.l3Contended ? "机制生效" : "观察";
   const bw = bwMaxFail || bwMinFail
-    ? "未达标"
-    : row.mcContended || target.mode === "hardlimit" ? "达标" : "借用";
+    ? "目标偏离"
+    : row.mcContended || target.mode === "hardlimit" ? "机制生效" : "借用";
   return {
     l3,
     bw,
-    overall: l3 === "未达标" || bw === "未达标" ? "需检查" : "符合模型",
+    overall: l3 === "目标偏离" || bw === "目标偏离" ? "需解释" : "机制可观察",
   };
 }
 
 function stateBadge(value) {
-  const kind = value === "未达标" || value === "需检查"
+  const kind = value === "目标偏离" || value === "需解释"
     ? "fail"
-    : value === "达标" || value === "符合模型"
+    : value === "机制生效" || value === "机制可观察"
       ? "pass"
       : "observe";
   return `<span class="effect-state ${kind}">${escapeHtml(value)}</span>`;
@@ -2801,7 +2834,8 @@ function renderControlEffect() {
   renderLegend("#effectL3Legend", [
     { color: "#60717e", label: "物理实际", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
-    { color: selectedColor, label: "滤波监控", kind: "filtered" },
+    { color: selectedColor, label: "控制输入", kind: "filtered" },
+    { color: "#6d5fa8", label: "最新filtered", kind: "filtered" },
     { color: "#2d7a4c", label: "配置CMIN", kind: "configured" },
     { color: "#2d7a4c", label: "生效CMIN", kind: "effective" },
     { color: "#b43a3a", label: "配置CMAX", kind: "configured" },
@@ -2811,7 +2845,8 @@ function renderControlEffect() {
   drawLineChart($("#effectL3Chart"), [
     { color: "#60717e", width: 1.2, marker: "none", points: points("l3ActualShare") },
     { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("l3RawShare") },
-    { color: selectedColor, width: 2.8, points: points("l3FilteredShare") },
+    { color: selectedColor, width: 2.8, points: points("l3ControlShare") },
+    { color: "#6d5fa8", width: 1.6, dash: [6, 3], marker: "none", points: points("l3FilteredShare") },
     { color: "#2d7a4c", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.cmin) },
     { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("l3EffectiveCmin") },
     { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.cmax) },
@@ -2821,7 +2856,8 @@ function renderControlEffect() {
   renderLegend("#effectBwLegend", [
     { color: "#60717e", label: "服务实际", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
-    { color: selectedColor, label: "滤波监控", kind: "filtered" },
+    { color: selectedColor, label: "控制输入", kind: "filtered" },
+    { color: "#6d5fa8", label: "最新filtered", kind: "filtered" },
     { color: "#2d7a4c", label: "配置BMIN", kind: "configured" },
     { color: "#2d7a4c", label: "生效BMIN", kind: "effective" },
     { color: "#b43a3a", label: "配置BMAX", kind: "configured" },
@@ -2831,7 +2867,8 @@ function renderControlEffect() {
   drawLineChart($("#effectBwChart"), [
     { color: "#60717e", width: 1.2, marker: "none", points: points("mcActualBandwidth") },
     { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("mcRawBandwidth") },
-    { color: selectedColor, width: 2.8, points: points("mcFilteredBandwidth") },
+    { color: selectedColor, width: 2.8, points: points("mcControlBandwidth") },
+    { color: "#6d5fa8", width: 1.6, dash: [6, 3], marker: "none", points: points("mcFilteredBandwidth") },
     { color: "#2d7a4c", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmin) },
     { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmin") },
     { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmax) },
@@ -2869,10 +2906,10 @@ function renderControlEffect() {
       <tr>
         <td><span class="partid-chip" style="background:${partidColor(partid)}">${partid}</span></td>
         <td>${rowTarget.cmin == null ? "-" : `${formatNumber(rowTarget.cmin, 1)}%`} / ${rowTarget.cmax == null ? "-" : `${formatNumber(rowTarget.cmax, 1)}%`}</td>
-        <td>${latest ? `${formatNumber(latest.l3FilteredShare, 2)}% <small>实际 ${formatNumber(latest.l3ActualShare, 2)}%</small>` : "-"}</td>
+        <td>${latest ? `${formatNumber(latest.l3ControlShare, 2)}% <small>latest ${formatNumber(latest.l3FilteredShare, 2)} / 实际 ${formatNumber(latest.l3ActualShare, 2)}</small>` : "-"}</td>
         <td>${stateBadge(rowState.l3)}</td>
         <td>${rowTarget.bmin == null ? "-" : formatNumber(rowTarget.bmin, 1)} / ${rowTarget.bmax == null ? "-" : formatNumber(rowTarget.bmax, 1)} <small>${escapeHtml(rowTarget.mode)}</small></td>
-        <td>${latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps <small>实际 ${formatNumber(latest.mcActualBandwidth, 3)}</small>` : "-"}</td>
+        <td>${latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(latest.mcFilteredBandwidth, 3)} / 实际 ${formatNumber(latest.mcActualBandwidth, 3)}</small>` : "-"}</td>
         <td>${stateBadge(rowState.bw)}</td>
         <td>${rowTarget.qos} / ${latest ? formatNumber(latest.effectiveQos, 2) : "-"}</td>
         <td>${rowTarget.p99 == null ? "-" : formatNumber(rowTarget.p99, 1)} / ${latest ? formatNumber(latest.p99, 1) : "-"}</td>
@@ -2884,9 +2921,9 @@ function renderControlEffect() {
     ? selectedRows.map((row) => `
       <tr>
         <td>${formatTime(row.timeNs)}</td>
-        <td>${formatNumber(row.l3FilteredShare, 2)}% <small>原始 ${formatNumber(row.l3RawShare, 2)} / 实际 ${formatNumber(row.l3ActualShare, 2)}</small></td>
+        <td>${formatNumber(row.l3ControlShare, 2)}% <small>latest ${formatNumber(row.l3FilteredShare, 2)} / 原始 ${formatNumber(row.l3RawShare, 2)} / 实际 ${formatNumber(row.l3ActualShare, 2)}</small></td>
         <td>${target.cmin == null ? "-" : `${formatNumber(row.l3EffectiveCmin ?? target.cmin, 1)}%`} / ${target.cmax == null ? "-" : `${formatNumber(row.l3EffectiveCmax ?? target.cmax, 1)}%`} <small>${row.l3Contended ? "替换竞争" : "无替换竞争"}</small></td>
-        <td>${formatNumber(row.mcFilteredBandwidth, 3)} Gbps <small>原始 ${formatNumber(row.mcRawBandwidth, 3)} / 实际 ${formatNumber(row.mcActualBandwidth, 3)}</small></td>
+        <td>${formatNumber(row.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(row.mcFilteredBandwidth, 3)} / 原始 ${formatNumber(row.mcRawBandwidth, 3)} / 实际 ${formatNumber(row.mcActualBandwidth, 3)}</small></td>
         <td>${target.bmin == null ? "-" : formatNumber(row.mcEffectiveBmin ?? target.bmin, 1)} / ${target.bmax == null ? "-" : formatNumber(row.mcEffectiveBmax ?? target.bmax, 1)} <small>${row.mcContended ? "竞争" : target.mode}</small></td>
         <td>${formatNumber(row.baseQos, 0)} / ${formatNumber(row.effectiveQos, 2)}</td>
         <td>L${row.cbusy} / ${formatNumber(row.outstanding, 0)} of ${formatNumber(row.ostdCap, 0)}</td>
@@ -2923,8 +2960,8 @@ function overviewStatus(label, detail = "", kind = "neutral") {
 }
 
 function overviewStateKind(value) {
-  if (["未达标", "需检查", "受限"].includes(value)) return "warn";
-  if (["达标", "符合模型", "生效"].includes(value)) return "good";
+  if (["目标偏离", "需解释", "受限"].includes(value)) return "warn";
+  if (["机制生效", "机制可观察", "生效"].includes(value)) return "good";
   if (["借用", "观察", "运行"].includes(value)) return "observe";
   return "neutral";
 }
@@ -2981,11 +3018,11 @@ function renderControlOverview() {
     </div>
     <div class="overview-metric-grid">
       ${overviewMetric("CMIN / CMAX", formatTargetRange(target.cmin, target.cmax, "%"))}
-      ${overviewMetric("Filtered Monitor", latest ? `${formatNumber(latest.l3FilteredShare, 2)}%` : "--", "控制读取值")}
+      ${overviewMetric("Control Input", latest ? `${formatNumber(latest.l3ControlShare, 2)}%` : "--", "锁存读取值")}
+      ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.l3FilteredShare, 2)}%` : "--", "最新发布")}
       ${overviewMetric("Physical Actual", latest ? `${formatNumber(latest.l3ActualShare, 2)}%` : "--", "验证误差")}
       ${overviewMetric("Allocation Denial", formatNumber(l3.allocationDenials || 0, 0))}
       ${overviewMetric("Hit Rate", `${((l3.hitRate || 0) * 100).toFixed(2)}%`)}
-      ${overviewMetric("Queue", `${formatNumber(l3.queueOccupancy || 0, 2)} / ${formatNumber(l3.queueDepth || 0, 0)}`)}
     </div>`;
 
   $("#overviewMcCard").innerHTML = `
@@ -2994,11 +3031,11 @@ function renderControlOverview() {
     </div>
     <div class="overview-metric-grid">
       ${overviewMetric("BMIN / BMAX", formatTargetRange(target.bmin, target.bmax, " Gbps"), escapeHtml(target.mode || "disabled"))}
-      ${overviewMetric("Filtered Monitor", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "控制读取值")}
+      ${overviewMetric("Control Input", latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps` : "--", "锁存读取值")}
+      ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "最新发布")}
       ${overviewMetric("Service Actual", latest ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps` : "--", "实际服务")}
       ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
       ${overviewMetric("QoS Base / Eff", `${escapeHtml(mc.qos ?? "-")} / ${formatNumber(mc.effectiveQos || 0, 2)}`)}
-      ${overviewMetric("CBusy", `L${formatNumber(Math.max(mc.cbusyLevel || 0, latest?.cbusy || 0), 0)}`, `${formatNumber(mc.cbusyTransitions || 0, 0)} transitions`)}
     </div>`;
 
   const pointSeries = (key) => rows.map(
@@ -3020,13 +3057,17 @@ function renderControlOverview() {
         points: pointSeries("l3RawShare"),
       }]
       : []),
+    ...(overviewLayerEnabled("controlInput")
+      ? [{ color: selectedColor, width: 3, points: pointSeries("l3ControlShare") }]
+      : []),
     ...(overviewLayerEnabled("filtered")
-      ? [{ color: selectedColor, width: 3, points: pointSeries("l3FilteredShare") }]
+      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], points: pointSeries("l3FilteredShare") }]
       : []),
   ];
   renderLegend("#overviewL3Legend", [
     ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: selectedColor, label: "filtered监控", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered", kind: "filtered" }] : []),
     ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
     ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
@@ -3041,6 +3082,7 @@ function renderControlOverview() {
 
   const mcValues = rows.flatMap((row) => [
     Number(row.mcActualBandwidth || 0),
+    Number(row.mcControlBandwidth || 0),
     Number(row.mcFilteredBandwidth || 0),
     Number(row.mcRawBandwidth || 0),
   ]);
@@ -3063,13 +3105,17 @@ function renderControlOverview() {
         points: pointSeries("mcRawBandwidth"),
       }]
       : []),
+    ...(overviewLayerEnabled("controlInput")
+      ? [{ color: selectedColor, width: 3, points: pointSeries("mcControlBandwidth") }]
+      : []),
     ...(overviewLayerEnabled("filtered")
-      ? [{ color: selectedColor, width: 3, points: pointSeries("mcFilteredBandwidth") }]
+      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], points: pointSeries("mcFilteredBandwidth") }]
       : []),
   ];
   renderLegend("#overviewMcLegend", [
     ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: selectedColor, label: "filtered监控", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered", kind: "filtered" }] : []),
     ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
     ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),

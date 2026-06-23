@@ -301,6 +301,18 @@ def test_p1_presets_emit_minimal_closed_loop_evidence(tmp_path) -> None:
     ]
     assert sum(row["cmax_growth_blocks"] for row in l3_partid1) > 0
     assert sum(row["self_replacements"] for row in l3_partid1) > 0
+    l3_limit_events = [
+        row for row in l3_result.collector.control_rows
+        if row["policy"] == "l3_cmin_cmax"
+        and row["event_type"] == "limit_state_changed"
+    ]
+    l3_sample_ids = {
+        row["sample_id"]
+        for row in l3_result.collector.monitor_sample_rows
+        if row["semantic"] == "control_input"
+    }
+    assert l3_limit_events
+    assert all(row["monitor_sample_id"] in l3_sample_ids for row in l3_limit_events)
 
     mc_raw = build_config(
         presets["mc_hard_bmax_cbusy"],
@@ -317,6 +329,19 @@ def test_p1_presets_emit_minimal_closed_loop_evidence(tmp_path) -> None:
         row["per_partid"]["0"]["hardlimit_block_events"]
         for row in mc_rows
     ) > 0
+    mc_limit_events = [
+        row for row in mc_result.collector.control_rows
+        if row["policy"] == "mc_bmin_bmax"
+        and row["event_type"] == "limit_state_changed"
+    ]
+    mc_sample_ids = {
+        row["sample_id"]
+        for row in mc_result.collector.monitor_sample_rows
+        if row["semantic"] == "control_input"
+    }
+    assert mc_limit_events
+    assert all(row["monitor_sample_id"] in mc_sample_ids for row in mc_limit_events)
+    assert any(row["outcome_state"] == "overshoot" for row in mc_limit_events)
     cpu_rows = [
         row for row in mc_result.collector.requester_rows
         if row["partid"] == 0

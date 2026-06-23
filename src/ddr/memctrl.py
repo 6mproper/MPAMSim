@@ -95,6 +95,7 @@ class MemoryControllerMSC(Component):
         settings: SettingsTable,
         on_complete: Callable[[Request], None],
         enforce_controls: bool = True,
+        on_control_event: Optional[Callable[..., None]] = None,
     ) -> None:
         super().__init__(config.id, "memory_controller")
         self.kernel = kernel
@@ -102,6 +103,7 @@ class MemoryControllerMSC(Component):
         self.settings = settings
         self.on_complete = on_complete
         self.enforce_controls = enforce_controls
+        self.on_control_event = on_control_event
 
         self._buffer: List[Optional[BufferEntry]] = [
             None
@@ -563,7 +565,12 @@ class MemoryControllerMSC(Component):
         self,
         partid: int,
         filtered_gbps: float,
-    ) -> None:
+    ) -> Tuple[Dict[str, bool], Dict[str, bool]]:
+        old_state = {
+            "under_bmin": bool(self._under_bmin[partid]),
+            "over_bmax": bool(self._over_bmax[partid]),
+            "hard_block": bool(self._hard_block[partid]),
+        }
         setting = self.settings.lookup(partid)
         hysteresis = self.config.bandwidth_hysteresis
         if (
@@ -605,6 +612,12 @@ class MemoryControllerMSC(Component):
             and setting.bmax_enable
             and self.enforce_controls
         )
+        new_state = {
+            "under_bmin": bool(self._under_bmin[partid]),
+            "over_bmax": bool(self._over_bmax[partid]),
+            "hard_block": bool(self._hard_block[partid]),
+        }
+        return old_state, new_state
 
     def _publish_bandwidth_monitor(self) -> None:
         period_ns = self.monitor_period_ns
@@ -613,10 +626,23 @@ class MemoryControllerMSC(Component):
             + self.config.current_weight
         )
         partids = self._known_partids()
+        local_cycle = int(
+            self.kernel.now_ns * self.config.clock_mhz / 1000.0
+        )
         for partid in partids:
             control_bandwidth = self._filtered_bandwidth_gbps[partid]
             self._control_bandwidth_gbps[partid] = control_bandwidth
-            self._update_limit_states(partid, control_bandwidth)
+            old_state, new_state = self._update_limit_states(
+                partid,
+                control_bandwidth,
+            )
+            self._publish_limit_state_event(
+                partid,
+                old_state,
+                new_state,
+                control_bandwidth,
+                local_cycle,
+            )
             if self._hard_block[partid]:
                 blocked = [
                     entry
@@ -660,6 +686,67 @@ class MemoryControllerMSC(Component):
             period_ns,
             self._publish_bandwidth_monitor,
             f"mc-monitor:{self.component_id}",
+        )
+
+    def _publish_limit_state_event(
+        self,
+        partid: int,
+        old_state: Dict[str, bool],
+        new_state: Dict[str, bool],
+        control_bandwidth: float,
+        local_cycle: int,
+    ) -> None:
+        if self.on_control_event is None or old_state == new_state:
+            return
+        setting = self.settings.lookup(partid)
+        monitor_sample_id = (
+            f"{self.component_id}:mc_control_input:"
+            f"{local_cycle}:partid:{partid}"
+        )
+        if new_state["hard_block"] or new_state["over_bmax"]:
+            outcome_state = "overshoot"
+        elif new_state["under_bmin"]:
+            outcome_state = "unmet"
+        else:
+            outcome_state = "met"
+        self.on_control_event(
+            resource_id=self.component_id,
+            partid=partid,
+            event_type="limit_state_changed",
+            field="mc_bmin_bmax_state",
+            old_state=old_state,
+            new_state=new_state,
+            policy="mc_bmin_bmax",
+            reason=(
+                "latched bandwidth control input updates "
+                "BMIN/BMAX state"
+            ),
+            monitor_sample_id=monitor_sample_id,
+            decision_id=(
+                f"decision:{monitor_sample_id}:mc_bmin_bmax"
+            ),
+            action_effective_time_ns=self.kernel.now_ns,
+            details={
+                "local_cycle": local_cycle,
+                "control_input_metric": "control_bandwidth_gbps",
+                "control_input_value": control_bandwidth,
+                "control_input_unit": "Gbps",
+                "latest_filtered_bandwidth_gbps": (
+                    self._filtered_bandwidth_gbps[partid]
+                ),
+                "bmin_gbps": setting.bw_min_gbps,
+                "bmax_gbps": setting.bw_max_gbps,
+                "limit_mode": setting.bw_limit_mode,
+                "bandwidth_hysteresis": self.config.bandwidth_hysteresis,
+            },
+            outcome_state=outcome_state,
+            outcome_reason=(
+                "BMAX exceeded"
+                if new_state["over_bmax"]
+                else "below BMIN"
+                if new_state["under_bmin"]
+                else "limit state released"
+            ),
         )
 
     def _update_service_deficit(self) -> None:

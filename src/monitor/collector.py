@@ -4,7 +4,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import DefaultDict, Dict, Iterable, List
 
-from src.contracts.telemetry import ControlEvent, MonitorSnapshot
+from src.contracts.telemetry import (
+    ControlEvent,
+    MonitorSample,
+    MonitorSnapshot,
+)
 from src.sim.component import Component
 from src.traffic.request import Request
 from src.traffic.requester import RequesterRuntime
@@ -82,6 +86,7 @@ class MetricsCollector:
         self.monitor_sample_rows: List[Dict[str, object]] = []
         self.monitor_snapshots: List[MonitorSnapshot] = []
         self.control_events: List[ControlEvent] = []
+        self._monitor_sample_ids: set[str] = set()
         self.last_interval_metrics: Dict[int, Dict[str, float]] = {}
         self.last_capture_ns = 0.0
         self.last_capture_id = ""
@@ -187,6 +192,9 @@ class MetricsCollector:
         self.monitor_sample_rows.extend(
             sample.to_row() for sample in policy_snapshot.samples
         )
+        self._monitor_sample_ids.update(
+            sample.sample_id for sample in policy_snapshot.samples
+        )
 
         requester_runtimes = list(requesters)
         requester_rows = {
@@ -218,6 +226,9 @@ class MetricsCollector:
             self.monitor_sample_rows.extend(
                 sample.to_row() for sample in snapshot.samples
             )
+            self._monitor_sample_ids.update(
+                sample.sample_id for sample in snapshot.samples
+            )
             self.msc_rows.append(
                 {
                     "time_ns": time_ns,
@@ -236,6 +247,12 @@ class MetricsCollector:
     def record_control(self, event: ControlEvent) -> None:
         self.control_events.append(event)
         self.control_rows.append(event.to_row())
+
+    def record_monitor_sample(self, sample: MonitorSample) -> None:
+        if sample.sample_id in self._monitor_sample_ids:
+            return
+        self._monitor_sample_ids.add(sample.sample_id)
+        self.monitor_sample_rows.append(sample.to_row())
 
     def cumulative_metrics(self, elapsed_ns: float) -> Dict[int, Dict[str, float]]:
         return {

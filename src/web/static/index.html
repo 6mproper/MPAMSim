@@ -318,7 +318,8 @@
               <fieldset id="overviewChartLayers" class="overview-layer-controls" data-help="选择控制总览中 L3 和 MC 图表显示哪些曲线层；只影响前端显示，不会重新仿真。">
                 <legend>曲线</legend>
                 <label data-help="目标带：L3显示CMIN/CMAX允许占用比例，MC显示BMIN/BMAX带宽范围；这是用户配置的控制目标。"><input data-overview-layer="targetBand" type="checkbox" checked><span>目标带</span></label>
-                <label data-help="filtered监控：MPAM控制逻辑实际读取的滤波监控值；L3来自sampled-owner滤波占用，MC来自滤波带宽。"><input data-overview-layer="filtered" type="checkbox" checked><span>filtered</span></label>
+                <label data-help="control input：控制器实际读取的锁存监控值；来自上一已发布filtered，在当前控制窗口内保持稳定。"><input data-overview-layer="controlInput" type="checkbox" checked><span>control input</span></label>
+                <label data-help="latest filtered：本地监控边界最新发布的滤波监控值；用于UI和证据，最早下一次边界才会锁存为control input。"><input data-overview-layer="filtered" type="checkbox"><span>latest filtered</span></label>
                 <label data-help="actual：验证用真实观测值；L3为物理实际缓存占比，MC为实际服务带宽，不直接作为控制输入。"><input data-overview-layer="actual" type="checkbox" checked><span>actual</span></label>
                 <label data-help="raw：未滤波MPAM采样值；用于观察抽样误差和滤波滞后，默认关闭以减少曲线重叠。"><input data-overview-layer="raw" type="checkbox"><span>raw</span></label>
                 <label data-help="控制事件：橙色竖线标记控制逻辑在该周期产生状态或参数动作，帮助对齐因果链。"><input data-overview-layer="events" type="checkbox" checked><span>控制事件</span></label>

@@ -5,7 +5,8 @@
 在控制总览工具栏增加“曲线”显示层配置：
 
 - 目标带：显示 CMIN/CMAX 或 BMIN/BMAX 范围；
-- filtered：显示 MPAM 控制实际读取的滤波监控值；
+- control input：显示MPAM控制实际读取的锁存监控值；
+- latest filtered：显示最新发布的滤波监控值，默认关闭；
 - actual：显示物理实际 L3 占比或 MC 实际服务带宽；
 - raw：显示未滤波 raw 采样；
 - 控制事件：显示控制动作所在时间点的事件标记。
@@ -18,7 +19,8 @@
 
 ```text
 targetBand = true
-filtered = true
+controlInput = true
+filtered = false
 actual = true
 raw = false
 events = true

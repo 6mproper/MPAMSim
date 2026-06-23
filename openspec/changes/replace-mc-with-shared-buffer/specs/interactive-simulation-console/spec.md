@@ -3,7 +3,7 @@
 ### Requirement: MC周期控制配置和证据
 
 控制台 MUST 配置MC clock、256拍周期、filter weights、滞回和service deficit，并显示
-raw/filtered BW、UNDER/OVER/HARD状态、candidate、grant和QoS饱和。
+raw/latest filtered/control input BW、UNDER/OVER/HARD状态、candidate、grant和QoS饱和。
 
 #### Scenario: 查看Hard BMAX说明
 

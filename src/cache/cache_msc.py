@@ -118,6 +118,7 @@ class CacheMSC(Component):
         on_hit: Callable[[Request], None],
         on_miss: Callable[[Request], None],
         enforce_controls: bool = True,
+        on_control_event: Optional[Callable[..., None]] = None,
     ) -> None:
         super().__init__(config.id, "cache")
         self.kernel = kernel
@@ -126,6 +127,7 @@ class CacheMSC(Component):
         self.on_hit = on_hit
         self.on_miss = on_miss
         self.enforce_controls = enforce_controls
+        self.on_control_event = on_control_event
         self._queue: Deque[Request] = deque()
         self._active_lookups = 0
         self._interval_lookup_busy_ns = 0.0
@@ -163,6 +165,7 @@ class CacheMSC(Component):
             int, float
         ] = defaultdict(float)
         self._monitor_updates: DefaultDict[int, int] = defaultdict(int)
+        self._control_state_by_partid: Dict[int, Dict[str, bool]] = {}
         self.kernel.schedule(
             self.monitor_period_ns,
             self._publish_mpam_monitor,
@@ -803,10 +806,14 @@ class CacheMSC(Component):
             + self.config.current_weight
         )
         sample_scale = self.config.monitor_group_sets
+        local_cycle = int(
+            self.kernel.now_ns * self.config.clock_mhz / 1000.0
+        )
         for partid in self._known_monitor_partids():
             self._control_sampled_counts[partid] = (
                 self._filtered_sampled_counts[partid]
             )
+            self._publish_control_state(partid, local_cycle, sample_scale)
             raw_count = float(raw_counts.get(partid, 0))
             previous_count = self._filtered_sampled_counts[partid]
             filtered_count = (
@@ -838,6 +845,93 @@ class CacheMSC(Component):
             period_ns,
             self._publish_mpam_monitor,
             f"l3-monitor:{self.component_id}",
+        )
+
+    def _publish_control_state(
+        self,
+        partid: int,
+        local_cycle: int,
+        sample_scale: int,
+    ) -> None:
+        if self.on_control_event is None:
+            return
+        setting = self.settings.lookup(partid)
+        control_count = self._control_sampled_counts[partid]
+        cmin_quota = self._quota_lines(
+            self._effective_min_percent(setting),
+            round_up=True,
+        )
+        cmax_quota = self._quota_lines(
+            self._effective_max_percent(setting),
+            round_up=False,
+        )
+        new_state = {
+            "cmin_protected": bool(
+                self.enforce_controls
+                and setting.cmin_enable
+                and cmin_quota > 0
+                and control_count > 0
+                and control_count <= cmin_quota
+            ),
+            "cmax_limited": bool(
+                self.enforce_controls
+                and setting.cmax_enable
+                and control_count >= cmax_quota
+            ),
+        }
+        old_state = self._control_state_by_partid.get(
+            partid,
+            {"cmin_protected": False, "cmax_limited": False},
+        )
+        self._control_state_by_partid[partid] = dict(new_state)
+        if old_state == new_state:
+            return
+        control_bytes = (
+            control_count * sample_scale * self.config.line_size
+        )
+        monitor_sample_id = (
+            f"{self.component_id}:l3_control_input:"
+            f"{local_cycle}:partid:{partid}"
+        )
+        self.on_control_event(
+            resource_id=self.component_id,
+            partid=partid,
+            event_type="limit_state_changed",
+            field="l3_cmin_cmax_state",
+            old_state=old_state,
+            new_state=new_state,
+            policy="l3_cmin_cmax",
+            reason=(
+                "latched sampled-owner control input updates "
+                "CMIN/CMAX eligibility"
+            ),
+            monitor_sample_id=monitor_sample_id,
+            decision_id=(
+                f"decision:{monitor_sample_id}:l3_cmin_cmax"
+            ),
+            action_effective_time_ns=self.kernel.now_ns,
+            details={
+                "local_cycle": local_cycle,
+                "control_input_metric": "control_occupancy_bytes",
+                "control_input_value": control_bytes,
+                "control_input_unit": "byte",
+                "control_sampled_way_count": control_count,
+                "latest_filtered_sampled_way_count": (
+                    self._filtered_sampled_counts[partid]
+                ),
+                "cmin_quota_lines": cmin_quota,
+                "cmax_quota_lines": cmax_quota,
+            },
+            outcome_state=(
+                "saturated"
+                if new_state["cmax_limited"]
+                else "met"
+            ),
+            outcome_reason=(
+                "CMAX limit active"
+                if new_state["cmax_limited"]
+                else "L3 limit state updated"
+            ),
         )
 
     def monitor_snapshot(self, interval_ns: float):

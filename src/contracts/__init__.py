@@ -13,8 +13,10 @@ from .interfaces import (
     ValidationHook,
 )
 from .telemetry import (
+    ControlContext,
     ControlDecision,
     ControlEvent,
+    ControlOutcome,
     MetricSemantic,
     MonitorSample,
     MonitorSnapshot,
@@ -34,8 +36,10 @@ __all__ = [
     "CapabilityDescriptor",
     "CompletionCondition",
     "ComponentRegistry",
+    "ControlContext",
     "ControlDecision",
     "ControlEvent",
+    "ControlOutcome",
     "ControlPolicy",
     "EndpointPort",
     "McArbitrationState",

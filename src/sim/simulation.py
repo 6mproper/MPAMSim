@@ -7,7 +7,11 @@ from typing import Callable, Dict, List, Optional
 from src.cache.cache_msc import CacheMSC
 from src.config.schema import ProjectConfig
 from src.contracts.capabilities import ComponentRegistry
-from src.contracts.telemetry import ControlEvent
+from src.contracts.telemetry import (
+    ControlEvent,
+    MetricSemantic,
+    MonitorSample,
+)
 from src.ddr.memctrl import MemoryControllerMSC
 from src.monitor.collector import MetricsCollector
 from src.monitor.exporter import write_csv, write_json
@@ -235,6 +239,7 @@ class Simulation:
                 self.settings_tables[mc.id],
                 self._memory_service_complete,
                 enforce_controls=self.enforce_controls,
+                on_control_event=self._record_component_control_event,
             )
             for mc in config.memory_controllers
         }
@@ -247,6 +252,7 @@ class Simulation:
                 self._cache_hit_complete,
                 self._cache_miss,
                 enforce_controls=self.enforce_controls,
+                on_control_event=self._record_component_control_event,
             )
             for index, cache in enumerate(config.caches)
         }
@@ -650,6 +656,65 @@ class Simulation:
                 return descriptor.component_type
         return "unknown"
 
+    def _record_component_control_event(
+        self,
+        *,
+        resource_id: str,
+        partid: int,
+        event_type: str,
+        field: str,
+        old_state: object,
+        new_state: object,
+        policy: str,
+        reason: str,
+        monitor_sample_id: str,
+        decision_id: str,
+        action_effective_time_ns: float,
+        pmg: Optional[int] = None,
+        details: Optional[Dict[str, object]] = None,
+        outcome_state: str = "",
+        outcome_reason: str = "",
+    ) -> None:
+        details = dict(details or {})
+        if monitor_sample_id:
+            self.collector.record_monitor_sample(
+                MonitorSample(
+                    time_ns=self.kernel.now_ns,
+                    resource_type=self._resource_type(resource_id),
+                    resource_id=resource_id,
+                    local_cycle=details.get("local_cycle"),
+                    partid=partid,
+                    pmg=pmg,
+                    metric=str(
+                        details.get("control_input_metric")
+                        or f"{field}_control_input"
+                    ),
+                    value=details.get("control_input_value"),
+                    unit=str(details.get("control_input_unit") or "value"),
+                    semantic=MetricSemantic.CONTROL_INPUT,
+                    sample_id=monitor_sample_id,
+                )
+            )
+        self.collector.record_control(
+            self._control_event(
+                resource_id=resource_id,
+                partid=partid,
+                pmg=pmg,
+                event_type=event_type,
+                field=field,
+                old_state=old_state,
+                new_state=new_state,
+                policy=policy,
+                reason=reason,
+                monitor_sample_id=monitor_sample_id,
+                decision_id=decision_id,
+                action_effective_time_ns=action_effective_time_ns,
+                details=details,
+                outcome_state=outcome_state,
+                outcome_reason=outcome_reason,
+            )
+        )
+
     def _control_event(
         self,
         resource_id: str,
@@ -665,6 +730,8 @@ class Simulation:
         action_effective_time_ns: Optional[float] = None,
         pmg: Optional[int] = None,
         details: Optional[Dict[str, object]] = None,
+        outcome_state: str = "",
+        outcome_reason: str = "",
     ) -> ControlEvent:
         self._control_event_sequence += 1
         return ControlEvent(
@@ -688,4 +755,6 @@ class Simulation:
                 else action_effective_time_ns
             ),
             details=details,
+            outcome_state=outcome_state,
+            outcome_reason=outcome_reason,
         )

@@ -64,6 +64,12 @@ P0完成只需要满足：
 P0允许控制目标未达、过冲、振荡、饱和、不可行或控制导致性能恶化。
 这些情况必须作为`CONTROL_OUTCOME`导出证据，不得作为模型错误。
 
+P0还必须包含监控、滤波、控制和动作的双缓冲时序门槛：
+
+- 控制器读取锁存`control_input`；
+- 本边界刚发布的`filtered_monitor`不得同边界驱动控制；
+- 控制动作的`action_effective_time_ns`不得早于对应control input锁存边界。
+
 ### 0.6 P1目标定义
 
 P1是**最小闭环MVP**，不是完整SoC仿真扩展。
@@ -1224,10 +1230,18 @@ sample_id
 actual
 raw_monitor
 filtered_monitor
+control_input
 configured_target
 effective_target
 control_state
 ```
+
+四层监控语义必须保持分离：
+
+- `actual`：验证用真实观测，不得作为控制输入；
+- `raw_monitor`：未滤波MPAM采样；
+- `filtered_monitor`：本地边界最新发布的滤波监控值；
+- `control_input`：控制器实际读取的上一发布锁存值。
 
 ### MON-002：样本与事件分离
 
@@ -1268,6 +1282,30 @@ details
 
 本边界新计算的filtered值可以立即用于UI、导出和证据链，但不得在同一边界驱动
 CMIN/CMAX、BMIN/BMAX、hard block、soft demotion或CBusy带宽项。
+
+### MON-004：控制结果契约
+
+控制事件必须保留稳定结果字段：
+
+```text
+outcome_state
+outcome_reason
+```
+
+`outcome_state`可表达`met`、`unmet`、`overshoot`、`saturated`、
+`infeasible`或`degraded`等状态。它只用于解释控制结果，不作为仿真中止条件。
+
+### MON-005：控制上下文
+
+后续新增控制能力应通过类型化`ControlContext`读取：
+
+- 授权`MonitorSample`视图；
+- 资源/MSC scope；
+- 上一控制状态；
+- 动作生效边界；
+- 允许读取的输入字段列表。
+
+新增NoC QoS、PE侧限流、多MC协同或PMG策略不得直接读取私有actual状态。
 
 ---
 
@@ -1329,8 +1367,8 @@ CMIN/CMAX、BMIN/BMAX、hard block、soft demotion或CBusy带宽项。
 
 根据启用控制自动选择3到5张重点图：
 
-- CMIN/CMAX：目标、raw、filtered、actual和控制事件；
-- BMIN/BMAX：目标、raw、filtered、actual、QoS和状态；
+- CMIN/CMAX：目标、control input、latest filtered、raw、actual和控制事件；
+- BMIN/BMAX：目标、control input、latest filtered、raw、actual、QoS和状态；
 - CBusy：MC buffer、MC等级、RN等级、OSTD和stall；
 - 无控制：吞吐、延迟和瓶颈。
 
@@ -1456,8 +1494,8 @@ P0验收门槛如下：
 | --- | --- |
 | 独立微测试 | CPBM、CMIN、CMAX、BMIN、Soft BMAX、Hard BMAX、MC QoS、CBusy和OSTD至少各有机制级检查 |
 | 授权状态 | L3 CMIN/CMAX只读取上一发布filtered sampled owner；MC BMIN/BMAX只读取上一发布filtered bandwidth和授权buffer状态 |
-| 非零周期时序 | 当前周期真实变化不得零周期成为已发布监控输入；控制动作必须经监控边界或事件调度生效 |
-| L3因果链 | 激励、miss/fill、victim选择、allocation/eviction/bypass、raw/filtered/actual和UI事件可追踪 |
+| 非零周期时序 | 控制器读取锁存`control_input`；同边界新`filtered_monitor`不得立即控制；控制动作必须经监控边界或事件调度生效 |
+| L3因果链 | 激励、miss/fill、victim选择、allocation/eviction/bypass、raw/latest filtered/control input/actual和UI事件可追踪 |
 | MC/CPU因果链 | 激励、MC监控、BMAX/QoS/CBusy动作、CPU OSTD、带宽/延迟和UI事件可追踪 |
 | 失败继续运行 | 目标未达、过冲、饱和、不可行、过度限流和性能恶化继续运行并导出 |
 | 确定性 | 相同配置和seed重复运行结果一致 |
@@ -1516,16 +1554,16 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - MSHR同line read合并、fill buffer readiness和fill延迟；
 - CPBM/CMIN/CMAX、actual occupancy和1/8抽样监控共享同一line状态；
 - actual与sample估计误差、merge、fill、eviction和bypass证据。
-- L3独立clock、256拍raw/filtered owner和访问带宽监控；
-- CMIN/CMAX只读取上一发布filtered sampled-owner，physical actual仅观测；
+- L3独立clock、256拍raw/latest filtered/control input owner和访问带宽监控；
+- CMIN/CMAX只读取锁存control input sampled-owner，physical actual仅观测；
 - linear/XOR地址到MC交织，在CPU OSTD准入前确定home MC。
 - 每MC固定深度共享buffer和全深度ready候选；
 - 同line read/read可重排，任何含write的较新事务等待较老事务；
 - 3-bit base/effective QoS和同档rotating slot scan；
-- 每256个MC本地拍发布raw/filtered带宽，BMIN/BMAX读取上一发布值；
+- 每256个MC本地拍发布raw/latest filtered带宽，BMIN/BMAX读取锁存control input；
 - BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
 - 可选每PARTID饱和service-deficit计数器；
-- CBusy读取每PARTID buffer占用、filtered BW和hard状态；
+- CBusy读取每PARTID buffer占用、control input BW和hard状态；
 - MC服务完成时把当前CBusy采样为RSP/DAT返回旁带，RN只更新收到返回的
   `requester_id`、目标MC和PARTID反馈表。
 
@@ -1536,10 +1574,10 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 | CPU | 已实现两级OSTD、三种Core策略、目标MC限制、REQ Ring准入和可配源队列 | 后续补充OSTD lifetime直方图 |
 | 激励 | 已拆分地址、操作、依赖、到达和发射选择，并保留type兼容预设 | 后续增加可配stride、hotset比例和多链UI |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
-| L3 | 已实现真实set/tag/way、MSHR、fill、physical/raw/filtered抽样误差和上一256拍CMIN/CMAX输入 | 后续增加跨line child transaction和更完整本地监控事件导出 |
+| L3 | 已实现真实set/tag/way、MSHR、fill、physical/raw/latest filtered/control input抽样误差和CMIN/CMAX输入 | 后续增加跨line child transaction |
 | MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
 | CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的目标MC/PARTID状态 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
-| 监控 | L3/MC快照已包含actual/raw/filtered和local cycle，但历史仍按全局导出周期保存 | 保存每个资源本地监控周期和稳定因果ID |
+| 监控 | L3/MC快照已包含actual/raw/latest filtered/control input和local cycle，内部控制事件已带稳定因果ID | 后续增加更完整的本地监控周期浏览器视图 |
 | UI | 多页签和大表 | 配置驱动单工作区 |
 
 ### 17.3 已被目标规格取代

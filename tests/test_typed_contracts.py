@@ -10,8 +10,10 @@ from src.contracts.capabilities import (
     ComponentRegistry,
 )
 from src.contracts.telemetry import (
+    ControlContext,
     ControlDecision,
     ControlEvent,
+    ControlOutcome,
     MetricSemantic,
     MonitorSnapshot,
 )
@@ -124,6 +126,8 @@ def test_monitor_snapshot_flattens_partid_and_group_samples() -> None:
             "per_partid": {
                 "3": {
                     "configured_cmax_percent": 25.0,
+                    "control_occupancy_bytes": 2048,
+                    "filtered_occupancy_bytes": 4096,
                     "occupancy_share": 0.20,
                 }
             },
@@ -150,6 +154,16 @@ def test_monitor_snapshot_flattens_partid_and_group_samples() -> None:
         for row in rows
         if row["metric"] == "estimated_occupancy_bytes"
     )
+    control_input = next(
+        row
+        for row in rows
+        if row["metric"] == "control_occupancy_bytes"
+    )
+    filtered = next(
+        row
+        for row in rows
+        if row["metric"] == "filtered_occupancy_bytes"
+    )
 
     assert configured["partid"] == 3
     assert configured["semantic"] == (
@@ -158,6 +172,8 @@ def test_monitor_snapshot_flattens_partid_and_group_samples() -> None:
     assert group["partid"] == 3
     assert group["pmg"] == 2
     assert group["unit"] == "byte"
+    assert control_input["semantic"] == MetricSemantic.CONTROL_INPUT.value
+    assert filtered["semantic"] == MetricSemantic.FILTERED_MONITOR.value
 
 
 def test_control_decision_and_event_keep_causal_ids() -> None:
@@ -190,6 +206,8 @@ def test_control_decision_and_event_keep_causal_ids() -> None:
         action_effective_time_ns=(
             decision.action_effective_time_ns
         ),
+        outcome_state="met",
+        outcome_reason="setting applied",
     )
 
     row = event.to_row()
@@ -198,6 +216,43 @@ def test_control_decision_and_event_keep_causal_ids() -> None:
     assert row["new_value"] == 7
     assert row["monitor_sample_id"] == "interval:2"
     assert row["decision_id"] == decision.decision_id
+    assert row["outcome_state"] == "met"
+    assert row["outcome_reason"] == "setting applied"
+
+
+def test_control_outcome_and_context_are_typed_contracts() -> None:
+    sample = MonitorSnapshot.from_payload(
+        time_ns=8.0,
+        resource_type="memory_controller",
+        resource_id="mc0",
+        interval_ns=8.0,
+        sample_id="mc0:sample:1",
+        payload={
+            "per_partid": {
+                "0": {
+                    "control_bandwidth_gbps": 64.0,
+                }
+            }
+        },
+    ).samples[-1]
+    outcome = ControlOutcome(
+        target_state="overshoot",
+        reason="BMAX exceeded before next control window",
+        monitor_sample_id=sample.sample_id,
+        metrics={"control_bandwidth_gbps": 64.0},
+    )
+    context = ControlContext(
+        interval_index=1,
+        time_ns=8.0,
+        monitor_samples=(sample,),
+        metrics_by_partid={0: {"control_bandwidth_gbps": 64.0}},
+        authorized_inputs=("control_bandwidth_gbps",),
+        action_effective_time_ns=16.0,
+    )
+
+    assert sample.semantic == MetricSemantic.CONTROL_INPUT
+    assert outcome.to_dict()["target_state"] == "overshoot"
+    assert context.authorized_inputs == ("control_bandwidth_gbps",)
 
 
 def test_component_registry_rejects_duplicates_and_conflicts() -> None:
