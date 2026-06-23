@@ -16,7 +16,7 @@
 关键设置：
 
 - 单MC、低带宽、短队列、较高随机读压力；
-- P0启用hard BMAX和CBusy；
+- PARTID 0启用hard BMAX和CBusy；
 - CBusy队列阈值较低，OSTD cap分三档下降。
 
 ### MC BMIN/QoS竞争
@@ -26,8 +26,8 @@
 关键设置：
 
 - 两个流竞争同一MC；
-- P0启用BMIN和高QoS；
-- P1为背景流，QoS较低且无BMIN。
+- PARTID 0启用BMIN和高QoS；
+- PARTID 1为背景流，QoS较低且无BMIN。
 
 ### L3 CMIN/CMAX压力
 
@@ -36,8 +36,8 @@
 关键设置：
 
 - 较小L3容量和随机读压力；
-- P0配置CMIN保护；
-- P1配置较低CMAX并施加背景压力。
+- PARTID 0配置CMIN保护；
+- PARTID 1配置较低CMAX并施加背景压力。
 
 ### Mixed Overview
 
@@ -46,7 +46,7 @@
 关键设置：
 
 - 多个PARTID同时发压；
-- P0保护，P1/P2背景流；
+- PARTID 0保护，PARTID 1/PARTID 2背景流；
 - 同时启用L3、MC QoS/BMAX和CBusy。
 
 ## UI行为

@@ -5,6 +5,23 @@
 定义当前已实现的确定性系统级仿真路径、配置边界、延迟归因、CPU OSTD监控、
 控制机制比较和可复现输出契约，作为当前代码行为的机器可验证能力基线。
 ## Requirements
+
+### Requirement: 阶段命名与PARTID命名消歧
+
+规格、OpenSpec change、测试说明和UI文案 MUST 明确区分阶段命名与MPAM PARTID命名。
+
+#### Scenario: 描述阶段验收
+
+- **WHEN** 文档描述机制可信性、后续增强阶段或计划优先级
+- **THEN** 可以使用`P0`、`P1`、`P2`等阶段命名
+- **AND** 首次出现时 SHOULD 说明它表示阶段、验收或计划优先级
+
+#### Scenario: 描述MPAM标识
+
+- **WHEN** 文档、测试或UI文案描述MPAM PARTID编号
+- **THEN** MUST 写成`PARTID 0`、`PARTID 1`、`PARTID 2`或`PARTID N`
+- **AND** MUST NOT 使用`P0`、`P1`、`P2`缩写PARTID
+
 ### Requirement: 确定性系统级仿真
 
 配置和随机种子不变时，系统 MUST 确定性地执行离散事件SoC模型。
@@ -294,8 +311,8 @@ L3 MUST 使用真实set/tag/way状态决定hit/miss，并支持确定性LRU和PL
 
 #### Scenario: 两个PARTID访问同一未缓存Line
 
-- **WHEN** P0先miss且P1在fill前read同一line
-- **THEN** 只发一个MC请求，fill owner为P0，两个请求分别返回完成
+- **WHEN** PARTID 0先miss且PARTID 1在fill前read同一line
+- **THEN** 只发一个MC请求，fill owner为PARTID 0，两个请求分别返回完成
 
 ### Requirement: Fill Buffer和返回完成
 
