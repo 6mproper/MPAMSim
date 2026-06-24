@@ -2330,10 +2330,19 @@ function prepareCanvas(canvas) {
   return { ctx, width: rect.width, height: rect.height };
 }
 
+function axisLabel(label, unit) {
+  const labelText = String(label || "").trim();
+  const unitText = String(unit || "").trim();
+  if (labelText && unitText) return `${labelText} (${unitText})`;
+  return labelText || unitText;
+}
+
 function drawLineChart(canvas, series, options = {}) {
   const { ctx, width, height } = prepareCanvas(canvas);
-  const pad = { left: 48, right: 15, top: 12, bottom: 28 };
+  const pad = { left: 54, right: 15, top: 24, bottom: 34 };
   ctx.clearRect(0, 0, width, height);
+  const xAxisText = axisLabel(options.xLabel || "时间", options.xUnit || "ns");
+  const yAxisText = axisLabel(options.yLabel || "Y", options.yUnit);
   const normalizedSeries = series.map((entry) => ({
     ...entry,
     points: (entry.points || []).filter(
@@ -2349,6 +2358,10 @@ function drawLineChart(canvas, series, options = {}) {
     ctx.fillStyle = "#7b8790";
     ctx.font = "12px sans-serif";
     ctx.fillText("等待仿真数据", 16, 34);
+    ctx.fillStyle = colors.axis;
+    ctx.font = "10px sans-serif";
+    if (yAxisText) ctx.fillText(yAxisText, 16, 14);
+    if (xAxisText) ctx.fillText(xAxisText, 16, height - 10);
     return;
   }
   const maxX = Math.max(1, ...points.map((point) => point.x));
@@ -2391,7 +2404,14 @@ function drawLineChart(canvas, series, options = {}) {
   ctx.lineTo(pad.left, height - pad.bottom);
   ctx.lineTo(width - pad.right, height - pad.bottom);
   ctx.stroke();
-  ctx.fillText(formatTime(maxX), Math.max(pad.left, width - 78), height - 8);
+  ctx.fillStyle = colors.axis;
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "left";
+  if (yAxisText) ctx.fillText(yAxisText, pad.left, 12);
+  if (xAxisText) ctx.fillText(xAxisText, pad.left, height - 8);
+  ctx.textAlign = "right";
+  ctx.fillText(formatTime(maxX), width - pad.right, height - 8);
+  ctx.textAlign = "left";
 
   (options.eventXs || []).forEach((eventX) => {
     if (!Number.isFinite(eventX)) return;
@@ -2443,16 +2463,22 @@ function drawLineChart(canvas, series, options = {}) {
   });
 }
 
-function drawBarChart(canvas, bars) {
+function drawBarChart(canvas, bars, options = {}) {
   const { ctx, width, height } = prepareCanvas(canvas);
   ctx.clearRect(0, 0, width, height);
+  const xAxisText = axisLabel(options.xLabel || "类别", options.xUnit);
+  const yAxisText = axisLabel(options.yLabel || "Y", options.yUnit);
   if (!bars.length) {
     ctx.fillStyle = "#7b8790";
     ctx.font = "12px sans-serif";
     ctx.fillText("等待仿真数据", 16, 34);
+    ctx.fillStyle = colors.axis;
+    ctx.font = "10px sans-serif";
+    if (yAxisText) ctx.fillText(yAxisText, 16, 14);
+    if (xAxisText) ctx.fillText(xAxisText, 16, height - 10);
     return;
   }
-  const pad = { left: 42, right: 12, top: 12, bottom: 45 };
+  const pad = { left: 50, right: 12, top: 24, bottom: 52 };
   const maxY = Math.max(1, ...bars.map((bar) => bar.value)) * 1.1;
   const gap = 10;
   const barWidth = Math.max(16, (width - pad.left - pad.right - gap * (bars.length - 1)) / bars.length);
@@ -2479,7 +2505,11 @@ function drawBarChart(canvas, bars) {
     ctx.textAlign = "center";
     ctx.fillText(formatNumber(bar.value, 1), x + barWidth / 2, Math.max(10, y - 4));
   });
+  ctx.fillStyle = colors.axis;
+  ctx.font = "10px sans-serif";
   ctx.textAlign = "left";
+  if (yAxisText) ctx.fillText(yAxisText, pad.left, 12);
+  if (xAxisText) ctx.fillText(xAxisText, pad.left, height - 8);
 }
 
 function metricSeries(key) {
@@ -2530,7 +2560,12 @@ function renderCharts() {
       kind: "dot",
     })),
   );
-  drawLineChart($("#latencyChart"), latencySeries);
+  drawLineChart($("#latencyChart"), latencySeries, {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "P99延迟",
+    yUnit: "ns",
+  });
   const bandwidthSeries = metricSeries("throughput_gbps");
   renderLegend(
     "#bandwidthLegend",
@@ -2540,7 +2575,12 @@ function renderCharts() {
       kind: "dot",
     })),
   );
-  drawLineChart($("#bandwidthChart"), bandwidthSeries);
+  drawLineChart($("#bandwidthChart"), bandwidthSeries, {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "有效带宽",
+    yUnit: "Gbps",
+  });
 
   const queueRows = visibleRows(state.partial.msc);
   const groups = new Map();
@@ -2564,7 +2604,12 @@ function renderCharts() {
       kind: "solid",
     })),
   );
-  drawLineChart($("#queueChart"), queueSeries);
+  drawLineChart($("#queueChart"), queueSeries, {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "队列占用",
+    yUnit: "entries",
+  });
 
   const latest = latestBy(state.partial.metrics, "partid");
   const targetStimulus = collectStimulusConfigs().find(
@@ -2580,7 +2625,11 @@ function renderCharts() {
     { label: "Service", value: Number(protectedRow.avg_mem_service_delay_ns || 0), color: "#7964a5" },
     { label: "Throttle", value: Number(protectedRow.avg_throttle_delay_ns || 0), color: "#ad4e4e" },
   ] : [];
-  drawBarChart($("#delayChart"), bars);
+  drawBarChart($("#delayChart"), bars, {
+    xLabel: "延迟来源",
+    yLabel: "平均延迟",
+    yUnit: "ns",
+  });
 }
 
 function effectTarget(partid) {
@@ -2855,7 +2904,14 @@ function renderControlEffect() {
     { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("l3EffectiveCmin") },
     { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.cmax) },
     { color: "#b43a3a", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("l3EffectiveCmax") },
-  ], { yMax: 100, eventXs });
+  ], {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "L3占用比例",
+    yUnit: "%",
+    yMax: 100,
+    eventXs,
+  });
 
   renderLegend("#effectBwLegend", [
     { color: "#60717e", label: "服务实际", kind: "actual" },
@@ -2877,7 +2933,13 @@ function renderControlEffect() {
     { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmin") },
     { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmax) },
     { color: "#b43a3a", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmax") },
-  ], { eventXs });
+  ], {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "MC带宽",
+    yUnit: "Gbps",
+    eventXs,
+  });
 
   renderLegend("#effectQosLegend", [
     { color: "#697680", label: "配置QoS", kind: "configured" },
@@ -2887,7 +2949,14 @@ function renderControlEffect() {
   drawLineChart($("#effectQosChart"), [
     { color: "#697680", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.qos) },
     { color: selectedColor, width: 2.6, points: points("effectiveQos") },
-  ], { yMax: 8, eventXs });
+  ], {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "QoS",
+    yUnit: "level",
+    yMax: 8,
+    eventXs,
+  });
 
   renderLegend("#effectP99Legend", [
     { color: selectedColor, label: "实际P99", kind: "filtered" },
@@ -2897,7 +2966,13 @@ function renderControlEffect() {
   drawLineChart($("#effectP99Chart"), [
     { color: selectedColor, width: 2.6, points: points("p99") },
     { color: "#b43a3a", width: 1.5, dash: [2, 3], marker: "none", points: targetSeries(target.p99) },
-  ], { eventXs });
+  ], {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "P99延迟",
+    yUnit: "ns",
+    eventXs,
+  });
 
   const overview = Array.from({ length: 16 }, (_, partid) => {
     const rows = buildEffectRows(partid);
@@ -3077,6 +3152,10 @@ function renderControlOverview() {
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
   ]);
   drawLineChart($("#overviewL3Chart"), l3Series, {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "L3占用比例",
+    yUnit: "%",
     yMax: 100,
     eventXs,
     bands: overviewLayerEnabled("targetBand")
@@ -3125,6 +3204,10 @@ function renderControlOverview() {
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
   ]);
   drawLineChart($("#overviewMcChart"), mcSeries, {
+    xLabel: "时间",
+    xUnit: "ns",
+    yLabel: "MC带宽",
+    yUnit: "Gbps",
     yMax: mcYMax,
     eventXs,
     bands: overviewLayerEnabled("targetBand")

@@ -134,6 +134,27 @@ def test_algorithm_explanations_use_compact_body() -> None:
     assert ".algorithm-popover .algorithm-compact-lines" in styles
 
 
+def test_result_charts_declare_axis_units() -> None:
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+    for snippet in (
+        "function axisLabel(",
+        'xLabel: "时间"',
+        'xUnit: "ns"',
+        'yUnit: "ns"',
+        'yUnit: "Gbps"',
+        'yUnit: "entries"',
+        'yUnit: "%"',
+        'yUnit: "level"',
+        'xLabel: "延迟来源"',
+    ):
+        assert snippet in app_js
+    assert app_js.count("drawLineChart(") == app_js.count(
+        'xUnit: "ns"'
+    ) + 1
+
+
 def test_soc_tab_has_capability_summaries_and_mc_clock() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

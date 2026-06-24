@@ -34,6 +34,22 @@ MC或requester私有字段。
 - **WHEN** 类型化契约接入当前数据通路
 - **THEN** 现有周期表格、控制记录和最终报告保持可用
 
+### Requirement: 图表轴单位可见
+
+控制台 MUST 在所有结果图表上显示横轴和纵轴的单位或类别语义。
+
+#### Scenario: 时间序列图
+
+- **WHEN** 控制台绘制P99、带宽、队列、L3控制效果、MC控制效果、QoS或P99目标时间序列
+- **THEN** 横轴 MUST 标明时间单位
+- **AND** 纵轴 MUST 标明对应指标单位
+
+#### Scenario: 延迟分解柱状图
+
+- **WHEN** 控制台绘制延迟分解柱状图
+- **THEN** 横轴 MUST 标明类别语义
+- **AND** 纵轴 MUST 标明延迟单位
+
 ### Requirement: 控制总览区分control input和latest filtered
 
 控制总览 MUST 将控制器实际读取的锁存值显示为control input，并与latest filtered区分。
