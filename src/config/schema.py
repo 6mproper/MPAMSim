@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 class SimulationConfig:
     time_ns: int
     seed: int = 1
-    control_interval_ns: int = 100_000
+    control_interval_ns: int = 128
 
 
 @dataclass

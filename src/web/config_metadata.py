@@ -59,8 +59,8 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "ns",
         "离散事件内核的全局停止条件。",
         "增大后可观察更长稳态和恢复过程，但事件数量及运行时间近似线性增加。",
-        "10,000到5,000,000，且控制周期不能大于仿真时间。",
-        "500000表示仿真0.5 ms。",
+        "5,000到5,000,000，且控制周期不能大于仿真时间。",
+        "5000表示仿真5 us。",
     ),
     "control_interval_ns": _field(
         "控制与导出周期",
@@ -68,8 +68,8 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "ns",
         "监控收集器和closed_loop_qos策略。",
         "减小可提高可见时间分辨率，但会增加快照数量；它不是L3/MC目标256本地拍监控周期。",
-        "至少1,000，不能大于仿真时间，最多生成1,000个周期。",
-        "50000表示每50 us输出一次周期结果。",
+        "至少128，不能大于仿真时间，最多生成1,000个周期。",
+        "128表示每128 ns输出一次周期结果。",
         "当前模型已实现；目标规格将拆分L3和MC本地时钟监控周期",
     ),
     "seed": _field(
@@ -728,6 +728,16 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "增大降低振荡和写配置频率，但延长响应。",
         "1到100。",
         "3和50 us控制周期表示至少保持150 us。",
+    ),
+    "resctrl_enabled": _field(
+        "resctrl-like软件组模式",
+        "启用后，Web提交前使用CTRL_MON group、MON group、schemata、tasks和cpus_list计算每个线程的新PARTID/PMG及对应PARTID控制。",
+        "布尔",
+        "Web配置构建器的软件入口层。",
+        "开启后软件组映射会覆盖原始激励表中的PARTID/PMG，并把L3/MB schema转换为现有CPBM和MC BMAX设置。",
+        "true或false；默认false以保留原始线程配置模式。",
+        "true时thread_01可由latency组映射为PARTID 1、PMG 1。",
+        "当前模型已实现轻量resctrl-like入口，不是完整Linux resctrl文件系统",
     ),
 }
 

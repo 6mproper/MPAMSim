@@ -26,6 +26,7 @@ const state = {
   playTimer: null,
   partidConfigs: [],
   stimulusConfigs: [],
+  resctrlGroups: [],
   resourceView: "cpu",
   overviewPartid: 0,
   overviewChartLayers: {
@@ -181,6 +182,20 @@ const sectionHeadingHelp = {
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
   "MC 调度算法参数": "配置MC本地256拍监控、历史滤波、BMIN/BMAX滞回、共享buffer 3-bit QoS和可选PARTID service deficit。",
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
+  "resctrl-like 软件资源组": "使用公开resctrl风格的软件组入口配置资源策略；本阶段会翻译为内部PARTID/PMG和现有MPAM控制，不模拟完整Linux文件系统。",
+};
+
+const resctrlHelp = {
+  enabled: "启用该CTRL_MON group。root总是有效；关闭非root组后，其tasks/cpus_list不参与映射。",
+  name: "CTRL_MON group目录名。必须唯一，不能包含/；UI会显示它到内部PARTID的只读映射。",
+  partid: "内部PARTID映射。真实系统由驱动分配，本模型允许显式选择以便方案对照；所有启用组必须唯一。",
+  mode: "resctrl mode。本阶段支持shareable/exclusive标签记录，不实现pseudo-locking或严格硬件独占校验。",
+  schemata: "软件可写schema。支持L3:<domain>=<cbm>和MB:<domain>=<Gbps>两类；domain 0值会作为未列出domain的默认值。",
+  tasks: "显式任务列表，格式可用thread_01、cpu0.t1、1或1-3；优先级为tasks > cpus_list > root。",
+  cpus: "逻辑CPU默认组，格式如0-3,8；本模型把16个硬件线程槽位当作逻辑CPU 0..15。",
+  mb_limit_mode: "把MB schema转换为MC BMAX时采用softlimit或hardlimit。公开resctrl不直接暴露本模型的soft/hard实现细节，这里作为仿真开关保留。",
+  mon_groups: "MON group列表，每行name|pmg|tasks|cpus。MON group只改变PMG，不改变PARTID；PMG作用域限定在父CTRL_MON group内。",
+  remove: "删除该软件组行；root组不建议删除，若缺失构建器会自动补root。",
 };
 
 const supplementalAlgorithmHelp = {
@@ -286,6 +301,9 @@ function fillForm(values) {
   renderStimulusConfig(
     values.stimulus_configs || state.defaults.stimulus_configs || [],
   );
+  renderResctrlConfig(
+    values.resctrl_groups || state.defaults.resctrl_groups || [],
+  );
   $$("[data-param]").forEach((input) => {
     const key = input.dataset.param;
     if (!(key in values)) return;
@@ -308,6 +326,7 @@ function collectParameters() {
   });
   parameters.partid_configs = collectPartidConfigs();
   parameters.stimulus_configs = collectStimulusConfigs();
+  parameters.resctrl_groups = collectResctrlGroups();
   return parameters;
 }
 
@@ -463,6 +482,156 @@ function collectStimulusConfigs() {
       target_p99_ns: Number(value("target_p99_ns").value),
     };
   });
+}
+
+function resctrlHelpAttr(key) {
+  return `data-help="${escapeHtml(resctrlHelp[key] || "")}"`;
+}
+
+function monGroupsToText(value) {
+  if (Array.isArray(value)) {
+    return value.map((row) => [
+      row.name || "",
+      row.pmg ?? "",
+      row.tasks || "",
+      row.cpus || "",
+    ].join("|")).join("\n");
+  }
+  return String(value || "");
+}
+
+function renderResctrlConfig(rows) {
+  state.resctrlGroups = (rows || []).map((row) => ({ ...row }));
+  $("#resctrlGroupTable").innerHTML = state.resctrlGroups.map((row, index) => `
+    <tr data-resctrl-row="${index}">
+      <td><input data-resctrl-field="enabled" ${resctrlHelpAttr("enabled")} type="checkbox" ${row.enabled !== false ? "checked" : ""}></td>
+      <td><input data-resctrl-field="name" ${resctrlHelpAttr("name")} type="text" value="${escapeHtml(row.name || `group${index}`)}" spellcheck="false"></td>
+      <td><input data-resctrl-field="partid" ${resctrlHelpAttr("partid")} type="number" min="0" max="15" step="1" value="${Number(row.partid ?? index)}"></td>
+      <td><select data-resctrl-field="mode" ${resctrlHelpAttr("mode")}>
+        ${selectOptions([["shareable", "shareable"], ["exclusive", "exclusive"]], row.mode || "shareable")}
+      </select></td>
+      <td><textarea data-resctrl-field="schemata" ${resctrlHelpAttr("schemata")} spellcheck="false">${escapeHtml(row.schemata || "")}</textarea></td>
+      <td><input data-resctrl-field="tasks" ${resctrlHelpAttr("tasks")} type="text" value="${escapeHtml(row.tasks || "")}" spellcheck="false"></td>
+      <td><input data-resctrl-field="cpus" ${resctrlHelpAttr("cpus")} type="text" value="${escapeHtml(row.cpus || "")}" spellcheck="false"></td>
+      <td><select data-resctrl-field="mb_limit_mode" ${resctrlHelpAttr("mb_limit_mode")}>
+        ${selectOptions([["softlimit", "soft"], ["hardlimit", "hard"]], row.mb_limit_mode || "softlimit")}
+      </select></td>
+      <td><textarea data-resctrl-field="mon_groups" ${resctrlHelpAttr("mon_groups")} spellcheck="false">${escapeHtml(monGroupsToText(row.mon_groups))}</textarea></td>
+      <td><button type="button" class="resctrl-remove" data-remove-resctrl="${index}" ${resctrlHelpAttr("remove")}>×</button></td>
+    </tr>
+  `).join("");
+}
+
+function collectResctrlGroups() {
+  return $$("[data-resctrl-row]").map((row) => {
+    const value = (field) => row.querySelector(`[data-resctrl-field="${field}"]`);
+    return {
+      enabled: value("enabled").checked,
+      name: value("name").value.trim(),
+      partid: Number(value("partid").value),
+      mode: value("mode").value,
+      schemata: value("schemata").value,
+      tasks: value("tasks").value,
+      cpus: value("cpus").value,
+      mb_limit_mode: value("mb_limit_mode").value,
+      mon_groups: value("mon_groups").value,
+    };
+  });
+}
+
+function addResctrlGroup() {
+  const groups = collectResctrlGroups();
+  const used = new Set(groups.map((row) => Number(row.partid)));
+  const partid = Array.from({ length: 16 }, (_, index) => index)
+    .find((index) => !used.has(index)) ?? 15;
+  groups.push({
+    enabled: true,
+    name: `group${partid}`,
+    partid,
+    mode: "shareable",
+    schemata: "L3:0=ffff\nMB:0=256",
+    tasks: "",
+    cpus: "",
+    mb_limit_mode: "softlimit",
+    mon_groups: "",
+  });
+  renderResctrlConfig(groups);
+  applyContextHelp();
+  renderConfigDiagnostics();
+}
+
+function parseSlotSet(text, allowCpuName = true) {
+  const result = new Set();
+  String(text || "").split(/[;,]/).forEach((rawToken) => {
+    const token = rawToken.trim();
+    if (!token) return;
+    const add = (slot) => {
+      const value = Number(slot);
+      if (Number.isInteger(value) && value >= 0 && value <= 15) {
+        result.add(value);
+      }
+    };
+    if (/^\d+-\d+$/.test(token)) {
+      const [left, right] = token.split("-").map(Number);
+      for (let value = left; value <= right; value += 1) add(value);
+    } else if (/^thread_?\d+$/i.test(token)) {
+      add(token.replace(/^thread_?/i, ""));
+    } else if (allowCpuName && /^cpu\d+\.t\d+$/i.test(token)) {
+      const [, core, thread] = token.match(/^cpu(\d+)\.t(\d+)$/i);
+      add(Number(core) * 2 + Number(thread));
+    } else {
+      add(token);
+    }
+  });
+  return result;
+}
+
+function parseMonGroupLines(text) {
+  return String(text || "").split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const parts = line.split("|").map((part) => part.trim());
+      return {
+        name: parts[0] || `mon${index + 1}`,
+        pmg: Number(parts[1] || index + 1),
+        taskSlots: parseSlotSet(parts[2] || ""),
+        cpuSlots: parseSlotSet(parts[3] || "", false),
+      };
+    });
+}
+
+function resctrlAssignments() {
+  const groups = collectResctrlGroups()
+    .filter((row) => row.enabled || row.name === "root");
+  const root = groups.find((row) => row.name === "root") || groups[0] || {
+    name: "root",
+    partid: 0,
+    mon_groups: "",
+  };
+  const taskGroups = new Map();
+  const cpuGroups = new Map();
+  groups.forEach((group) => {
+    parseSlotSet(group.tasks).forEach((slot) => taskGroups.set(slot, group));
+    if (group.name !== "root") {
+      parseSlotSet(group.cpus, false).forEach((slot) => cpuGroups.set(slot, group));
+    }
+  });
+  const bySlot = new Map();
+  Array.from({ length: 16 }, (_, slot) => slot).forEach((slot) => {
+    const group = taskGroups.get(slot) || cpuGroups.get(slot) || root;
+    const monGroup = parseMonGroupLines(group.mon_groups).find((row) =>
+      row.taskSlots.has(slot) || row.cpuSlots.has(slot)
+    );
+    bySlot.set(slot, {
+      slot,
+      group,
+      partid: Number(group.partid || 0),
+      pmg: monGroup ? Number(monGroup.pmg || 0) : 0,
+      monGroup: monGroup?.name || "",
+    });
+  });
+  return bySlot;
 }
 
 function normalizePartidMasks() {
@@ -1787,6 +1956,7 @@ function renderAll() {
   renderExperiment();
   renderControlVerification();
   renderCausalTimeline();
+  renderResctrlMonData();
   renderPartidTable();
   renderMonitorGroupTable();
   renderMpamMonitorTable();
@@ -2184,14 +2354,159 @@ function configurationDiagnostics() {
     queueThresholds[0] > queueThresholds[1]
     || queueThresholds[1] > queueThresholds[2]
   ) add("error", "CBusy 队列阈值应满足 L1 ≤ L2 ≤ L3。");
+  resctrlDiagnostics()
+    .filter((row) => row.severity !== "ok")
+    .forEach((row) => add(row.severity, row.text));
   if (!messages.length) {
     add("ok", `配置检查通过：${stimuli.length} 个激励，${activePartids.size} 个活动 PARTID。`);
   }
   return messages;
 }
 
+function renderResctrlInfoSummary() {
+  const target = $("#resctrlInfoSummary span");
+  if (!target) return;
+  const l3 = Number($('[data-param="l3_instances"]')?.value || 1);
+  const mc = Number($('[data-param="memory_controllers"]')?.value || 1);
+  const ways = Number($('[data-param="l3_ways"]')?.value || 16);
+  const channels = Number($('[data-param="channels_per_mc"]')?.value || 1);
+  const channelGbps = Number($('[data-param="channel_bandwidth_gbps"]')?.value || 0);
+  target.textContent = `L3 domains 0..${Math.max(0, l3 - 1)} · MB domains 0..${Math.max(0, mc - 1)} · CBM ${ways}bit · MB ${formatNumber(channels * channelGbps, 1)} Gbps/domain`;
+}
+
+function resctrlDiagnostics() {
+  const enabled = Boolean($('[data-param="resctrl_enabled"]')?.checked);
+  if (!enabled) return [{ severity: "ok", text: "last_cmd_status: disabled，当前使用原始线程PARTID/PMG模式。" }];
+  const groups = collectResctrlGroups().filter((row) => row.enabled || row.name === "root");
+  const messages = [];
+  const names = new Set();
+  const partids = new Set();
+  const taskOwners = new Map();
+  const nonRootCpuOwners = new Map();
+  const add = (severity, text) => messages.push({ severity, text });
+  if (!groups.some((row) => row.name === "root")) {
+    add("warning", "缺少root group；服务端会自动补root。");
+  }
+  groups.forEach((group) => {
+    if (!group.name || group.name.includes("/")) {
+      add("error", "CTRL_MON group名称不能为空且不能包含/。");
+    }
+    if (names.has(group.name)) add("error", `CTRL_MON group重复：${group.name}`);
+    names.add(group.name);
+    if (!Number.isInteger(group.partid) || group.partid < 0 || group.partid > 15) {
+      add("error", `${group.name} PARTID必须为0..15。`);
+    }
+    if (partids.has(group.partid)) add("error", `PARTID ${group.partid}被多个CTRL_MON group使用。`);
+    partids.add(group.partid);
+    String(group.schemata || "").split("\n").filter((line) => line.trim()).forEach((line) => {
+      if (!/^(L3|MB):/i.test(line.trim())) {
+        add("error", `${group.name} schemata仅支持L3:或MB:行。`);
+      }
+    });
+    parseSlotSet(group.tasks).forEach((slot) => {
+      if (taskOwners.has(slot)) {
+        add("error", `thread_${String(slot).padStart(2, "0")}被多个tasks列表显式分配。`);
+      }
+      taskOwners.set(slot, group.name);
+    });
+    if (group.name !== "root") {
+      parseSlotSet(group.cpus, false).forEach((slot) => {
+        if (nonRootCpuOwners.has(slot)) {
+          add("error", `CPU ${slot}被多个非root cpus_list分配。`);
+        }
+        nonRootCpuOwners.set(slot, group.name);
+      });
+    }
+  });
+  if (!messages.length) {
+    const activeGroups = groups.map((row) => `${row.name}->PARTID ${row.partid}`).join(", ");
+    add("ok", `last_cmd_status: ok，${groups.length}个CTRL_MON group：${activeGroups}`);
+  }
+  return messages;
+}
+
+function renderResctrlStatus() {
+  renderResctrlInfoSummary();
+  const target = $("#resctrlLastStatus");
+  if (!target) return;
+  const diagnostics = resctrlDiagnostics();
+  const first = diagnostics.find((row) => row.severity === "error")
+    || diagnostics.find((row) => row.severity === "warning")
+    || diagnostics[0];
+  target.classList.toggle("error", first?.severity === "error");
+  target.classList.toggle("warning", first?.severity === "warning");
+  target.textContent = first?.text || "last_cmd_status: ok";
+}
+
+function renderResctrlMonData() {
+  const target = $("#resctrlMonDataTable");
+  if (!target) return;
+  const enabled = Boolean($('[data-param="resctrl_enabled"]')?.checked);
+  if (!enabled) {
+    target.innerHTML = '<tr><td colspan="6" class="empty-cell">resctrl-like模式未启用</td></tr>';
+    return;
+  }
+  const assignments = resctrlAssignments();
+  const rowsByKey = new Map();
+  assignments.forEach((assignment) => {
+    const key = `${assignment.group.name}:${assignment.partid}:${assignment.pmg}`;
+    if (!rowsByKey.has(key)) {
+      rowsByKey.set(key, {
+        group: assignment.group.name,
+        monGroup: assignment.monGroup,
+        partid: assignment.partid,
+        pmg: assignment.pmg,
+        requesters: [],
+        llc: 0,
+        mbmTotal: 0,
+        mbmLocal: 0,
+      });
+    }
+    rowsByKey.get(key).requesters.push(
+      `cpu${Math.floor(assignment.slot / 2)}.t${assignment.slot % 2}`,
+    );
+  });
+  latestBy(state.partial.msc || [], "msc_id")
+    .filter((msc) => msc.msc_type === "cache")
+    .forEach((msc) => {
+      Object.entries(msc.monitor_groups || {}).forEach(([key, values]) => {
+        const lookup = [...rowsByKey.values()].find((row) =>
+          `${row.partid}:${row.pmg}` === key
+        );
+        if (!lookup) return;
+        lookup.llc += Number(values.estimated_occupancy_bytes || 0);
+      });
+    });
+  visibleRows(state.partial.msc || [])
+    .filter((msc) => msc.msc_type === "memory_controller")
+    .forEach((msc) => {
+    Object.entries(msc.monitor_groups || {}).forEach(([key, values]) => {
+      const lookup = [...rowsByKey.values()].find((row) =>
+        `${row.partid}:${row.pmg}` === key
+      );
+      if (!lookup) return;
+      lookup.mbmTotal += Number(values.bytes || 0);
+      lookup.mbmLocal += Number(values.bytes || 0);
+    });
+  });
+  const rows = [...rowsByKey.values()]
+    .sort((left, right) => left.partid - right.partid || left.pmg - right.pmg);
+  target.innerHTML = rows.length ? rows.map((row) => `
+    <tr>
+      <td><strong>${escapeHtml(row.group)}</strong>${row.monGroup ? `<small> / ${escapeHtml(row.monGroup)}</small>` : ""}</td>
+      <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span> / G${row.pmg}</td>
+      <td>${escapeHtml(row.requesters.join(", "))}</td>
+      <td>${formatBytes(row.llc)}</td>
+      <td>${formatBytes(row.mbmTotal)}</td>
+      <td>${formatBytes(row.mbmLocal)}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="6" class="empty-cell">暂无resctrl软件组映射</td></tr>';
+}
+
 function renderConfigDiagnostics() {
   renderSocCapabilitySummaries();
+  renderResctrlStatus();
+  renderResctrlMonData();
   const diagnostics = configurationDiagnostics();
   $("#configDiagnostics").innerHTML = diagnostics.map((row) => `
     <div class="diagnostic ${row.severity}">
@@ -3770,7 +4085,9 @@ function bindEvents() {
     $("#configForm").scrollLeft = 0;
     $(".workspace").classList.toggle(
       "config-wide",
-      button.dataset.tab === "mpam" || button.dataset.tab === "traffic",
+      button.dataset.tab === "mpam"
+      || button.dataset.tab === "traffic"
+      || button.dataset.tab === "resctrl",
     );
   }));
   $$(".result-tab").forEach((button) => button.addEventListener("click", () => {
@@ -3855,6 +4172,22 @@ function bindEvents() {
   });
   $("#resetStimulusButton").addEventListener("click", () => {
     renderStimulusConfig(state.defaults.stimulus_configs || []);
+    applyContextHelp();
+    renderConfigDiagnostics();
+  });
+  $("#resetResctrlButton").addEventListener("click", () => {
+    renderResctrlConfig(state.defaults.resctrl_groups || []);
+    applyContextHelp();
+    renderConfigDiagnostics();
+  });
+  $("#addResctrlGroupButton").addEventListener("click", addResctrlGroup);
+  $("#resctrlGroupTable").addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-remove-resctrl]");
+    if (!button) return;
+    const index = Number(button.dataset.removeResctrl);
+    const groups = collectResctrlGroups();
+    groups.splice(index, 1);
+    renderResctrlConfig(groups);
     applyContextHelp();
     renderConfigDiagnostics();
   });

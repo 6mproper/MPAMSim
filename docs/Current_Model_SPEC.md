@@ -1229,6 +1229,33 @@ read_monitor
 
 UI显示软件组名称及只读的内部PARTID/PMG映射。
 
+### SW-005：当前已实现的resctrl-like入口
+
+Web控制台新增`resctrl`页签，默认关闭。启用后，配置构建器在生成YAML前执行软件组
+到硬件标签的转换：
+
+```text
+CTRL_MON group.schemata L3:<domain>=<cbm> -> 对应PARTID在每个L3 domain的CPBM
+CTRL_MON group.schemata MB:<domain>=<Gbps> -> 对应PARTID在每个MC domain的BMAX
+CTRL_MON group.tasks/cpus_list               -> 新事务PARTID
+MON group name|pmg|tasks|cpus                -> 同一PARTID作用域内的新事务PMG
+```
+
+任务归属优先级固定为：
+
+```text
+显式tasks > 非root cpus_list > root group
+```
+
+当前实现边界：
+
+- 不是完整Linux resctrl文件系统；
+- 不实现CDP、pseudo-locking、BMEC/ABMC、SMBA、PERF_PKG_MON或libvirt XML；
+- `exclusive` mode仅作为软件组模式标签显示，不做完整硬件独占校验；
+- `MB` schema单位在本模型中为每MC domain的Gbps，用于映射现有MC BMAX；
+- `mon_data`视图复用现有L3/MC监控，`llc_occupancy`为最新L3抽样占用，
+  `mbm_total_bytes`和`mbm_local_bytes`为可见时间内MC服务字节累计。
+
 ---
 
 ## 14. 监控数据契约

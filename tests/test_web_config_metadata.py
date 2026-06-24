@@ -90,6 +90,38 @@ def test_results_default_to_control_evidence_workspace() -> None:
         assert f'data-advanced-target="{advanced_target}"' in index_html
 
 
+def test_resctrl_config_workspace_is_present() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+
+    config_tabs = re.findall(r'data-tab="([^"]+)"', index_html)
+    assert "resctrl" in config_tabs
+    for snippet in (
+        'data-panel="resctrl"',
+        'data-param="resctrl_enabled"',
+        'id="resctrlGroupTable"',
+        'id="resctrlLastStatus"',
+        'id="resctrlMonDataTable"',
+        "CTRL_MON group",
+        "schemata",
+        "cpus_list",
+        "mon_data",
+    ):
+        assert snippet in index_html
+    for snippet in (
+        "function renderResctrlConfig(",
+        "function collectResctrlGroups(",
+        "function resctrlAssignments(",
+        "function renderResctrlMonData(",
+        "tasks > cpus_list > root",
+    ):
+        assert snippet in app_js
+
+
 def test_control_overview_chart_layers_are_configurable() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

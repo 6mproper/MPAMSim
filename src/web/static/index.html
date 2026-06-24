@@ -33,6 +33,7 @@
       <nav class="config-tabs" aria-label="配置分类">
         <button class="tab-button active" data-tab="soc" data-help="配置核/线程、L3、NoC 与内存控制器等系统拓扑和容量参数。">SoC</button>
         <button class="tab-button" data-tab="traffic" data-help="配置 16 个硬件线程各自的流量类型、PARTID、PMG、速率与工作集。">激励</button>
+        <button class="tab-button" data-tab="resctrl" data-help="用Linux resctrl风格的软件资源组配置CTRL_MON、MON、schemata、tasks和cpus_list，并映射到内部PARTID/PMG。">resctrl</button>
         <button class="tab-button" data-tab="mpam" data-help="配置每个 PARTID 在 L3 与内存控制器上的资源控制参数。">MPAM</button>
         <button class="tab-button" data-tab="policy" data-help="选择不控制、静态控制或基于监控反馈的慢速闭环策略。">策略</button>
       </nav>
@@ -41,8 +42,8 @@
         <section class="config-section active" data-panel="soc">
           <h2>仿真与多核</h2>
           <div class="field-grid">
-            <label>仿真时间 ns<input data-param="duration_ns" type="number" min="10000" max="5000000" step="10000"></label>
-            <label>控制周期 ns<input data-param="control_interval_ns" type="number" min="1000" step="1000"></label>
+            <label>仿真时间 ns<input data-param="duration_ns" type="number" min="5000" max="5000000" step="1000"></label>
+            <label>控制周期 ns<input data-param="control_interval_ns" type="number" min="128" step="128"></label>
             <label>随机种子<input data-param="seed" type="number" min="0" step="1"></label>
             <label>活跃核数<input data-param="active_cores" type="number" value="8" readonly></label>
             <label>每核线程<input data-param="threads_per_core" type="number" value="2" readonly></label>
@@ -160,6 +161,72 @@
                 </tr>
               </thead>
               <tbody id="stimulusConfigTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="config-section" data-panel="resctrl">
+          <div class="mpam-editor-heading">
+            <div>
+              <h2>resctrl-like 软件资源组</h2>
+              <p>轻量模拟公开resctrl入口；启用后在提交前映射为内部PARTID/PMG和现有MPAM控制。</p>
+            </div>
+            <div class="resctrl-actions">
+              <button id="addResctrlGroupButton" type="button" class="small-command" data-help="新增一个CTRL_MON group行；内部PARTID默认取当前未使用最小编号。">添加组</button>
+              <button id="resetResctrlButton" type="button" class="small-command" data-help="恢复服务端默认resctrl软件组，不影响原始MPAM和激励默认值。">重置软件组</button>
+            </div>
+          </div>
+          <label class="toggle-field resctrl-enable" data-help="关闭时使用原始线程模式；开启时，软件组的tasks/cpus_list会覆盖激励表里的PARTID/PMG，schemata会覆盖对应PARTID的CPBM和MC BMAX。">
+            <span>启用 resctrl-like 映射</span>
+            <input data-param="resctrl_enabled" type="checkbox">
+          </label>
+          <div class="resctrl-info-grid">
+            <div data-help="模拟/sys/fs/resctrl的挂载选项。本阶段仅实现基础CTRL_MON/MON、L3和MB schema；CDP、pseudo-locking、BMEC/ABMC等不会写入模型。">
+              <b>mount/options</b>
+              <span>resctrl · no cdp · no pseudo-lock · no BMEC/ABMC</span>
+            </div>
+            <div id="resctrlInfoSummary" data-help="根据当前SoC配置生成的软件可见info摘要：L3 domain来自L3实例，MB domain来自MC实例，监控事件复用现有L3/MC采样结果。">
+              <b>info</b>
+              <span>等待配置摘要</span>
+            </div>
+            <div data-help="任务归属优先级：显式tasks列表优先，其次cpus_list默认组，最后落到root group。已发事务保持原标签，新事务使用新映射。">
+              <b>assignment</b>
+              <span>tasks > cpus_list > root</span>
+            </div>
+          </div>
+          <div id="resctrlLastStatus" class="resctrl-status" data-help="类似resctrl last_cmd_status：显示当前软件组配置在前端可检查到的最后状态。">last_cmd_status: ok</div>
+          <div class="resctrl-config-wrap">
+            <table class="resctrl-config-table">
+              <thead>
+                <tr>
+                  <th>En</th>
+                  <th>CTRL_MON group</th>
+                  <th>PARTID</th>
+                  <th>mode</th>
+                  <th>schemata</th>
+                  <th>tasks</th>
+                  <th>cpus_list</th>
+                  <th>MB mode</th>
+                  <th>MON groups</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="resctrlGroupTable"></tbody>
+            </table>
+          </div>
+          <div class="monitor-group-heading resctrl-mon-heading">
+            <strong>resctrl mon_data 视图</strong>
+            <span>运行后显示llc_occupancy、mbm_total_bytes和mbm_local_bytes风格读数</span>
+          </div>
+          <div class="resource-table-wrap resctrl-mon-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>group</th><th>PARTID/PMG</th><th>requester</th>
+                  <th>llc_occupancy</th><th>mbm_total_bytes</th><th>mbm_local_bytes</th>
+                </tr>
+              </thead>
+              <tbody id="resctrlMonDataTable"><tr><td colspan="6" class="empty-cell">启用并运行仿真后显示resctrl监控读数</td></tr></tbody>
             </table>
           </div>
         </section>

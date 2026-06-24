@@ -13,6 +13,15 @@ def test_baseline_config_is_valid() -> None:
     assert len(config.memory_controllers) == 2
 
 
+def test_control_interval_minimum_is_128ns(
+    base_config,
+    config_writer,
+) -> None:
+    base_config["simulation"]["control_interval_ns"] = 127
+    with pytest.raises(ConfigError, match="at least 128 ns"):
+        load_config(config_writer(base_config))
+
+
 def test_unknown_requester_fails(base_config, config_writer) -> None:
     base_config["workloads"] = [
         {

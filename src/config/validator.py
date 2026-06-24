@@ -18,8 +18,10 @@ def _ensure_unique(values: Iterable[str], label: str) -> None:
 def validate_config(config: ProjectConfig) -> None:
     if config.simulation.time_ns <= 0:
         raise ConfigError("simulation.time_ns must be positive")
-    if config.simulation.control_interval_ns <= 0:
-        raise ConfigError("simulation.control_interval_ns must be positive")
+    if config.simulation.control_interval_ns < 128:
+        raise ConfigError(
+            "simulation.control_interval_ns must be at least 128 ns"
+        )
     if not config.caches:
         raise ConfigError("At least one L3/SLC cache is required")
     if not config.memory_controllers:

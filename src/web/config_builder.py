@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
+
+
+DEFAULT_DURATION_NS = 5_000
+DEFAULT_CONTROL_INTERVAL_NS = 128
+MIN_DURATION_NS = 5_000
+MIN_CONTROL_INTERVAL_NS = 128
 
 
 class ParameterError(ValueError):
@@ -249,10 +255,453 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
     return rows
 
 
+def _default_resctrl_groups() -> List[Dict[str, object]]:
+    return [
+        {
+            "enabled": True,
+            "name": "root",
+            "partid": 0,
+            "mode": "shareable",
+            "schemata": "L3:0=ffff\nMB:0=256",
+            "tasks": "",
+            "cpus": "0-15",
+            "mb_limit_mode": "softlimit",
+            "mon_groups": "",
+        },
+        {
+            "enabled": True,
+            "name": "latency",
+            "partid": 1,
+            "mode": "shareable",
+            "schemata": "L3:0=00ff\nMB:0=120",
+            "tasks": "thread_01",
+            "cpus": "",
+            "mb_limit_mode": "hardlimit",
+            "mon_groups": "latency_mon|1|thread_01|",
+        },
+        {
+            "enabled": True,
+            "name": "background",
+            "partid": 2,
+            "mode": "shareable",
+            "schemata": "L3:0=ff00\nMB:0=80",
+            "tasks": "thread_02,thread_03",
+            "cpus": "",
+            "mb_limit_mode": "hardlimit",
+            "mon_groups": "background_mon|1|thread_02,thread_03|",
+        },
+    ]
+
+
+def _parse_range_tokens(
+    text: object,
+    maximum: int,
+    label: str,
+) -> Set[int]:
+    result: Set[int] = set()
+    for raw_token in str(text or "").replace(";", ",").split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            left_text, right_text = token.split("-", 1)
+            left = int(left_text.strip())
+            right = int(right_text.strip())
+            if right < left:
+                raise ParameterError(f"{label} range is inverted: {token}")
+            values = range(left, right + 1)
+        else:
+            values = (int(token),)
+        for value in values:
+            if not 0 <= value <= maximum:
+                raise ParameterError(
+                    f"{label} value {value} is outside 0..{maximum}"
+                )
+            result.add(value)
+    return result
+
+
+def _task_slot_from_token(token: str) -> int:
+    text = token.strip()
+    if text.startswith("thread_"):
+        return int(text.removeprefix("thread_"))
+    if text.startswith("thread"):
+        return int(text.removeprefix("thread"))
+    if text.startswith("cpu") and ".t" in text:
+        core_text, thread_text = text.removeprefix("cpu").split(".t", 1)
+        return int(core_text) * 2 + int(thread_text)
+    return int(text)
+
+
+def _parse_task_slots(text: object) -> Set[int]:
+    result: Set[int] = set()
+    for raw_token in str(text or "").replace(";", ",").split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if "-" in token and token.replace("-", "").replace("_", "").isdigit():
+            result.update(_parse_range_tokens(token, 15, "resctrl task"))
+            continue
+        slot = _task_slot_from_token(token)
+        if not 0 <= slot <= 15:
+            raise ParameterError(
+                f"resctrl task {token} maps outside thread_00..thread_15"
+            )
+        result.add(slot)
+    return result
+
+
+def _parse_schemata(
+    text: object,
+    ways: int,
+    total_mc_bandwidth: float,
+) -> Tuple[Dict[int, str], Dict[int, float]]:
+    l3_domains: Dict[int, str] = {}
+    mb_domains: Dict[int, float] = {}
+    full_mask = (1 << ways) - 1
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            raise ParameterError(
+                f"resctrl schemata line missing resource type: {line}"
+            )
+        resource, assignments = line.split(":", 1)
+        resource = resource.strip().upper()
+        if resource not in {"L3", "MB"}:
+            raise ParameterError(
+                f"resctrl resource {resource} is not supported in this phase"
+            )
+        for raw_assignment in assignments.split(";"):
+            assignment = raw_assignment.strip()
+            if not assignment:
+                continue
+            if "=" not in assignment:
+                raise ParameterError(
+                    f"resctrl schemata assignment missing '=': {assignment}"
+                )
+            domain_text, value_text = assignment.split("=", 1)
+            domain = int(domain_text.strip())
+            if domain < 0:
+                raise ParameterError("resctrl domain id must be non-negative")
+            if resource == "L3":
+                l3_domains[domain] = _mask(
+                    value_text.strip(),
+                    ways,
+                    full_mask,
+                )
+            else:
+                value = float(value_text.strip())
+                if not 0 <= value <= total_mc_bandwidth:
+                    raise ParameterError(
+                        "resctrl MB schema must be in per-MC Gbps range"
+                    )
+                mb_domains[domain] = value
+    return l3_domains, mb_domains
+
+
+def _domain_values(
+    values: Dict[int, object],
+    count: int,
+) -> Dict[int, object]:
+    if not values:
+        return {}
+    fallback = values.get(0)
+    result: Dict[int, object] = {}
+    for index in range(count):
+        if index in values:
+            result[index] = values[index]
+        elif fallback is not None:
+            result[index] = fallback
+    return result
+
+
+def _parse_resctrl_mon_groups(raw: object) -> List[Dict[str, object]]:
+    if isinstance(raw, list):
+        rows = raw
+    else:
+        rows = []
+        for raw_line in str(raw or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            while len(parts) < 4:
+                parts.append("")
+            rows.append(
+                {
+                    "name": parts[0],
+                    "pmg": parts[1],
+                    "tasks": parts[2],
+                    "cpus": parts[3],
+                }
+            )
+    parsed = []
+    seen_names = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ParameterError("resctrl MON group must be an object")
+        name = str(row.get("name", f"mon{index}")).strip()
+        if not name or "/" in name or name in seen_names:
+            raise ParameterError("resctrl MON group names must be unique")
+        seen_names.add(name)
+        pmg = int(row.get("pmg", index + 1))
+        if not 0 <= pmg <= 15:
+            raise ParameterError("resctrl MON group PMG must be 0..15")
+        parsed.append(
+            {
+                "name": name[:32],
+                "pmg": pmg,
+                "task_slots": _parse_task_slots(row.get("tasks", "")),
+                "cpu_slots": _parse_range_tokens(
+                    row.get("cpus", ""),
+                    15,
+                    "resctrl MON cpus_list",
+                ),
+            }
+        )
+    return parsed
+
+
+def _parse_resctrl_groups(
+    raw_groups: object,
+    ways: int,
+    total_mc_bandwidth: float,
+    l3_instances: int,
+    mc_count: int,
+) -> List[Dict[str, object]]:
+    groups = raw_groups if isinstance(raw_groups, list) else []
+    if not groups:
+        groups = _default_resctrl_groups()
+    parsed = []
+    used_partids = set()
+    seen_names = set()
+    for index, raw in enumerate(groups):
+        if not isinstance(raw, dict):
+            raise ParameterError("Each resctrl group must be an object")
+        name = str(raw.get("name", f"group{index}")).strip()
+        if not name or "/" in name or name in seen_names:
+            raise ParameterError("resctrl group names must be unique")
+        seen_names.add(name)
+        enabled = bool(raw.get("enabled", True)) or name == "root"
+        if not enabled:
+            continue
+        partid = int(raw.get("partid", index))
+        if partid < 0 or partid > 15 or partid in used_partids:
+            raise ParameterError(
+                "resctrl CTRL_MON groups require unique PARTID 0..15"
+            )
+        used_partids.add(partid)
+        mode = str(raw.get("mode", "shareable"))
+        if mode not in {"shareable", "exclusive"}:
+            raise ParameterError(
+                "resctrl mode supports shareable or exclusive in this phase"
+            )
+        limit_mode = str(raw.get("mb_limit_mode", "softlimit"))
+        if limit_mode not in {"softlimit", "hardlimit"}:
+            raise ParameterError(
+                "resctrl MB limit mode must be softlimit or hardlimit"
+            )
+        l3_schema, mb_schema = _parse_schemata(
+            raw.get("schemata", ""),
+            ways,
+            total_mc_bandwidth,
+        )
+        parsed.append(
+            {
+                "name": name[:32],
+                "partid": partid,
+                "mode": mode,
+                "mb_limit_mode": limit_mode,
+                "task_slots": _parse_task_slots(raw.get("tasks", "")),
+                "cpu_slots": _parse_range_tokens(
+                    raw.get("cpus", ""),
+                    15,
+                    "resctrl cpus_list",
+                ),
+                "l3_cpbm_by_domain": _domain_values(
+                    l3_schema,
+                    l3_instances,
+                ),
+                "mc_bmax_by_domain": _domain_values(
+                    mb_schema,
+                    mc_count,
+                ),
+                "mon_groups": _parse_resctrl_mon_groups(
+                    raw.get("mon_groups", "")
+                ),
+            }
+        )
+    if not any(group["name"] == "root" for group in parsed):
+        full_mask = (1 << ways) - 1
+        width = max(1, math.ceil(ways / 4))
+        parsed.insert(
+            0,
+            {
+                "name": "root",
+                "partid": 0,
+                "mode": "shareable",
+                "mb_limit_mode": "softlimit",
+                "task_slots": set(),
+                "cpu_slots": set(range(16)),
+                "l3_cpbm_by_domain": {
+                    index: f"{full_mask:0{width}x}"
+                    for index in range(l3_instances)
+                },
+                "mc_bmax_by_domain": {
+                    index: total_mc_bandwidth
+                    for index in range(mc_count)
+                },
+                "mon_groups": [],
+            },
+        )
+    return parsed
+
+
+def _apply_resctrl_groups(
+    values: Dict[str, object],
+    ways: int,
+    total_mc_bandwidth: float,
+    max_outstanding: int,
+    l3_instances: int,
+    mc_count: int,
+) -> Dict[str, object]:
+    if not bool(values.get("resctrl_enabled", False)):
+        return values
+    translated = dict(values)
+    partid_rows = copy.deepcopy(
+        values.get("partid_configs")
+        if isinstance(values.get("partid_configs"), list)
+        else _default_partid_configs(ways, total_mc_bandwidth, max_outstanding)
+    )
+    stimulus_rows = copy.deepcopy(
+        values.get("stimulus_configs")
+        if isinstance(values.get("stimulus_configs"), list)
+        else _default_stimulus_configs()
+    )
+    groups = _parse_resctrl_groups(
+        values.get("resctrl_groups"),
+        ways,
+        total_mc_bandwidth,
+        l3_instances,
+        mc_count,
+    )
+    root = next(
+        (group for group in groups if group["name"] == "root"),
+        groups[0],
+    )
+    task_groups: Dict[int, Dict[str, object]] = {}
+    cpu_groups: Dict[int, Dict[str, object]] = {}
+    for group in groups:
+        for slot in group["task_slots"]:
+            if slot in task_groups:
+                raise ParameterError(
+                    f"resctrl task thread_{slot:02d} appears in multiple groups"
+                )
+            task_groups[slot] = group
+        if group["name"] == "root":
+            continue
+        for slot in group["cpu_slots"]:
+            if slot in cpu_groups:
+                raise ParameterError(
+                    f"resctrl CPU {slot} appears in multiple non-root groups"
+                )
+            cpu_groups[slot] = group
+
+    rows_by_partid = {
+        int(row.get("partid", index)): row
+        for index, row in enumerate(partid_rows)
+        if isinstance(row, dict)
+    }
+    full_mask = (1 << ways) - 1
+    width = max(1, math.ceil(ways / 4))
+    for group in groups:
+        partid = int(group["partid"])
+        row = rows_by_partid.setdefault(
+            partid,
+            {"partid": partid, "name": f"partid_{partid}"},
+        )
+        l3_domains = group["l3_cpbm_by_domain"]
+        mc_domains = group["mc_bmax_by_domain"]
+        row.update(
+            {
+                "name": group["name"],
+                "monitor_enable": True,
+                "cpbm_enable": bool(l3_domains),
+                "cmin_enable": False,
+                "cmax_enable": False,
+                "cmin": 0.0,
+                "cmax": 100.0,
+                "cpbm": (
+                    str(l3_domains.get(0))
+                    if l3_domains
+                    else f"{full_mask:0{width}x}"
+                ),
+                "l3_cpbm_by_domain": l3_domains,
+                "bmin_enable": False,
+                "bmax_enable": bool(mc_domains),
+                "bmin_gbps": 0.0,
+                "bmax_gbps": (
+                    float(mc_domains.get(0))
+                    if mc_domains
+                    else total_mc_bandwidth
+                ),
+                "mc_bmax_by_domain": mc_domains,
+                "limit_mode": group["mb_limit_mode"],
+                "mc_qos_enable": False,
+                "mc_qos": 3,
+                "cbusy_enable": False,
+                "cbusy_l1_ostd": max(
+                    1,
+                    min(
+                        max_outstanding,
+                        math.ceil(max_outstanding * 0.75),
+                    ),
+                ),
+                "cbusy_l2_ostd": max(
+                    1,
+                    min(
+                        max_outstanding,
+                        math.ceil(max_outstanding * 0.50),
+                    ),
+                ),
+                "cbusy_l3_ostd": max(
+                    1,
+                    min(
+                        max_outstanding,
+                        math.ceil(max_outstanding * 0.125),
+                    ),
+                ),
+            }
+        )
+
+    def monitor_pmg_for(group: Dict[str, object], slot: int) -> int:
+        for mon_group in group["mon_groups"]:
+            if (
+                slot in mon_group["task_slots"]
+                or slot in mon_group["cpu_slots"]
+            ):
+                return int(mon_group["pmg"])
+        return 0
+
+    for index, row in enumerate(stimulus_rows):
+        if not isinstance(row, dict):
+            continue
+        slot = int(row.get("slot", index))
+        group = task_groups.get(slot) or cpu_groups.get(slot) or root
+        row["partid"] = int(group["partid"])
+        row["pmg"] = monitor_pmg_for(group, slot)
+
+    translated["partid_configs"] = partid_rows
+    translated["stimulus_configs"] = stimulus_rows
+    return translated
+
+
 def default_parameters() -> Dict[str, object]:
     return {
-        "duration_ns": 500_000,
-        "control_interval_ns": 50_000,
+        "duration_ns": DEFAULT_DURATION_NS,
+        "control_interval_ns": DEFAULT_CONTROL_INTERVAL_NS,
         "seed": 1234,
         "active_cores": 8,
         "threads_per_core": 2,
@@ -324,6 +773,8 @@ def default_parameters() -> Dict[str, object]:
         "max_bw_step_percent": 10,
         "p99_hysteresis": 0.1,
         "min_hold_intervals": 3,
+        "resctrl_enabled": False,
+        "resctrl_groups": _default_resctrl_groups(),
         "partid_configs": _default_partid_configs(),
         "stimulus_configs": _default_stimulus_configs(),
     }
@@ -408,8 +859,8 @@ def _preset_base() -> Dict[str, object]:
     parameters = copy.deepcopy(default_parameters())
     parameters.update(
         {
-            "duration_ns": 120_000,
-            "control_interval_ns": 20_000,
+            "duration_ns": DEFAULT_DURATION_NS,
+            "control_interval_ns": DEFAULT_CONTROL_INTERVAL_NS,
             "policy": "static_mpam",
             "memory_controllers": 1,
             "channels_per_mc": 1,
@@ -467,7 +918,6 @@ def control_effect_presets() -> List[Dict[str, object]]:
     qos_bmin = _preset_base()
     qos_bmin.update(
         {
-            "duration_ns": 160_000,
             "mc_queue_depth": 64,
             "mc_bmin_qos_promote": 2,
             "mc_softlimit_qos_demote": 2,
@@ -518,9 +968,8 @@ def control_effect_presets() -> List[Dict[str, object]]:
     l3_pressure = _preset_base()
     l3_pressure.update(
         {
-            "duration_ns": 150_000,
             "l3_instances": 1,
-            "l3_sets": 512,
+            "l3_sets": 128,
             "l3_ways": 8,
             "l3_queue_depth": 64,
             "channel_bandwidth_gbps": 64,
@@ -551,7 +1000,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
             "name": "partid1_cmax_limited",
             "cpbm_enable": True,
             "cmax_enable": True,
-            "cmax": 25.0,
+            "cmax": 15.0,
             "cpbm": "ff",
         }
     )
@@ -568,7 +1017,6 @@ def control_effect_presets() -> List[Dict[str, object]]:
     mixed = _preset_base()
     mixed.update(
         {
-            "duration_ns": 180_000,
             "l3_instances": 1,
             "l3_sets": 1024,
             "l3_ways": 8,
@@ -760,10 +1208,16 @@ def _parse_partid_configs(
                 "cmin": cmin,
                 "cmax": cmax,
                 "cpbm": cpbm,
+                "l3_cpbm_by_domain": dict(
+                    raw.get("l3_cpbm_by_domain", {})
+                ),
                 "bmin_enable": bool(raw.get("bmin_enable", True)),
                 "bmax_enable": bool(raw.get("bmax_enable", True)),
                 "bmin_gbps": bmin,
                 "bmax_gbps": bmax,
+                "mc_bmax_by_domain": dict(
+                    raw.get("mc_bmax_by_domain", {})
+                ),
                 "limit_mode": limit_mode,
                 "mc_qos_enable": bool(
                     raw.get(
@@ -1056,13 +1510,13 @@ def build_config(
     values = {**defaults, **parameters}
 
     duration_ns = _integer(
-        values, "duration_ns", 500_000, 10_000, 5_000_000
+        values, "duration_ns", DEFAULT_DURATION_NS, MIN_DURATION_NS, 5_000_000
     )
     control_interval_ns = _integer(
         values,
         "control_interval_ns",
-        50_000,
-        1_000,
+        DEFAULT_CONTROL_INTERVAL_NS,
+        MIN_CONTROL_INTERVAL_NS,
         duration_ns,
     )
     seed = _integer(
@@ -1366,13 +1820,21 @@ def build_config(
     total_mc_bandwidth = (
         channels_per_mc * channel_bandwidth_gbps
     )
+    values = _apply_resctrl_groups(
+        values,
+        l3_ways,
+        total_mc_bandwidth,
+        max_outstanding,
+        l3_instances,
+        mc_count,
+    )
     partid_configs = _parse_partid_configs(
-        parameters,
+        values,
         l3_ways,
         total_mc_bandwidth,
         max_outstanding,
     )
-    stimulus_configs = _parse_stimulus_configs(parameters)
+    stimulus_configs = _parse_stimulus_configs(values)
     workloads = _build_workloads(stimulus_configs)
 
     interval_count = math.ceil(
@@ -1521,7 +1983,10 @@ def build_config(
                     "partid": row["partid"],
                     "cmin": row["cmin"],
                     "cmax": row["cmax"],
-                    "cpbm": row["cpbm"],
+                    "cpbm": row["l3_cpbm_by_domain"].get(
+                        index,
+                        row["cpbm"],
+                    ),
                     "cmin_enable": row["cmin_enable"],
                     "cmax_enable": row["cmax_enable"],
                     "cpbm_enable": row["cpbm_enable"],
@@ -1539,7 +2004,10 @@ def build_config(
                 {
                     "partid": row["partid"],
                     "bmin": row["bmin_gbps"],
-                    "bmax": row["bmax_gbps"],
+                    "bmax": row["mc_bmax_by_domain"].get(
+                        index,
+                        row["bmax_gbps"],
+                    ),
                     "bmin_enable": row["bmin_enable"],
                     "bmax_enable": row["bmax_enable"],
                     "limit_mode": row["limit_mode"],
@@ -1644,6 +2112,14 @@ def build_config(
                 for row in partid_configs
             ],
             "msc_controls": cache_controls + mc_controls,
+        },
+        "software": {
+            "resctrl": {
+                "enabled": bool(values.get("resctrl_enabled", False)),
+                "groups": copy.deepcopy(
+                    values.get("resctrl_groups", [])
+                ),
+            }
         },
         "workloads": workloads,
         "policies": [

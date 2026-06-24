@@ -174,7 +174,7 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
     simulation = SimulationConfig(
         time_ns=int(simulation_raw.get("time_ns", 1_000_000)),
         seed=int(simulation_raw.get("seed", 1)),
-        control_interval_ns=int(simulation_raw.get("control_interval_ns", 100_000)),
+        control_interval_ns=int(simulation_raw.get("control_interval_ns", 128)),
     )
 
     soc = raw.get("soc", {})

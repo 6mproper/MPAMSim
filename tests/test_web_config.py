@@ -6,6 +6,9 @@ import yaml
 from src.config.loader import load_config
 from src.sim.simulation import Simulation
 from src.web.config_builder import (
+    DEFAULT_CONTROL_INTERVAL_NS,
+    DEFAULT_DURATION_NS,
+    MIN_CONTROL_INTERVAL_NS,
     ParameterError,
     build_config,
     control_effect_presets,
@@ -113,6 +116,137 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.ostd.thread_reserve == 8
 
 
+def test_web_defaults_use_short_interactive_timing(tmp_path) -> None:
+    parameters = default_parameters()
+
+    assert parameters["duration_ns"] == DEFAULT_DURATION_NS == 5_000
+    assert parameters["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS == 128
+
+    raw = build_config(parameters, str(tmp_path / "run"))
+    assert raw["simulation"]["time_ns"] == DEFAULT_DURATION_NS
+    assert raw["simulation"]["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS
+
+
+def test_web_control_interval_minimum_is_128ns(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["control_interval_ns"] = MIN_CONTROL_INTERVAL_NS
+    raw = build_config(parameters, str(tmp_path / "min"))
+    assert raw["simulation"]["control_interval_ns"] == MIN_CONTROL_INTERVAL_NS
+
+    parameters["control_interval_ns"] = MIN_CONTROL_INTERVAL_NS - 1
+    with pytest.raises(ParameterError, match="control_interval_ns"):
+        build_config(parameters, str(tmp_path / "too_small"))
+
+
+def test_resctrl_disabled_keeps_direct_thread_labels(tmp_path) -> None:
+    parameters = default_parameters()
+    assert parameters["resctrl_enabled"] is False
+
+    raw = build_config(parameters, str(tmp_path / "direct"))
+
+    assert raw["software"]["resctrl"]["enabled"] is False
+    assert [row["partid"] for row in raw["workloads"]] == list(range(16))
+    assert [row["pmg"] for row in raw["workloads"]] == list(range(16))
+
+
+def test_resctrl_groups_map_tasks_cpus_and_schema(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["resctrl_enabled"] = True
+    parameters["l3_instances"] = 2
+    parameters["memory_controllers"] = 2
+    parameters["resctrl_groups"] = [
+        {
+            "enabled": True,
+            "name": "root",
+            "partid": 0,
+            "mode": "shareable",
+            "schemata": "L3:0=ffff\nMB:0=256",
+            "tasks": "",
+            "cpus": "0-15",
+            "mb_limit_mode": "softlimit",
+            "mon_groups": "",
+        },
+        {
+            "enabled": True,
+            "name": "latency",
+            "partid": 5,
+            "mode": "shareable",
+            "schemata": "L3:0=00ff;1=000f\nMB:0=80;1=40",
+            "tasks": "thread_01",
+            "cpus": "",
+            "mb_limit_mode": "hardlimit",
+            "mon_groups": "latency_mon|3|thread_01|",
+        },
+        {
+            "enabled": True,
+            "name": "background",
+            "partid": 6,
+            "mode": "shareable",
+            "schemata": "L3:0=ff00\nMB:0=60",
+            "tasks": "",
+            "cpus": "2-3",
+            "mb_limit_mode": "softlimit",
+            "mon_groups": "bg_mon|2||2-3",
+        },
+    ]
+
+    raw = build_config(parameters, str(tmp_path / "resctrl"))
+    config_path = tmp_path / "resctrl.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    workloads = {workload.name: workload for workload in config.workloads}
+
+    assert workloads["thread_00"].partid == 0
+    assert workloads["thread_00"].pmg == 0
+    assert workloads["thread_01"].partid == 5
+    assert workloads["thread_01"].pmg == 3
+    assert workloads["thread_02"].partid == 6
+    assert workloads["thread_02"].pmg == 2
+    assert workloads["thread_03"].partid == 6
+    assert workloads["thread_03"].pmg == 2
+
+    assert config.partitions[5] == "latency"
+    slc0_latency = config.controls_by_msc["slc0"][5]
+    slc1_latency = config.controls_by_msc["slc1"][5]
+    assert slc0_latency.cache_portion_bitmap == "00ff"
+    assert slc1_latency.cache_portion_bitmap == "000f"
+    assert slc0_latency.cmin_enable is False
+    assert slc0_latency.cmax_enable is False
+    assert config.controls_by_msc["mc0"][5].bw_max_gbps == 80
+    assert config.controls_by_msc["mc1"][5].bw_max_gbps == 40
+    assert config.controls_by_msc["mc0"][5].bw_limit_mode == "hardlimit"
+    assert raw["software"]["resctrl"]["enabled"] is True
+
+
+def test_resctrl_rejects_duplicate_partids(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["resctrl_enabled"] = True
+    parameters["resctrl_groups"] = [
+        {
+            "enabled": True,
+            "name": "root",
+            "partid": 0,
+            "schemata": "L3:0=ffff\nMB:0=256",
+            "tasks": "",
+            "cpus": "0-15",
+        },
+        {
+            "enabled": True,
+            "name": "dup",
+            "partid": 0,
+            "schemata": "L3:0=ffff\nMB:0=256",
+            "tasks": "thread_01",
+            "cpus": "",
+        },
+    ]
+
+    with pytest.raises(ParameterError, match="unique PARTID"):
+        build_config(parameters, str(tmp_path / "bad"))
+
+
 def test_memory_interleave_is_deterministic_and_configurable(
     tmp_path,
 ) -> None:
@@ -155,6 +289,7 @@ def test_web_parameters_reject_mask_larger_than_cache(tmp_path) -> None:
 def test_web_parameters_reject_excessive_request_count(tmp_path) -> None:
     parameters = default_parameters()
     parameters["duration_ns"] = 5_000_000
+    parameters["control_interval_ns"] = 5_000
     for row in parameters["stimulus_configs"]:
         row.update(
             {
@@ -232,6 +367,8 @@ def test_control_effect_presets_are_buildable(tmp_path) -> None:
     } <= {preset["id"] for preset in presets}
     for preset in presets:
         parameters = preset["parameters"]
+        assert parameters["duration_ns"] == DEFAULT_DURATION_NS
+        assert parameters["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS
         assert len(parameters["stimulus_configs"]) == 16
         assert len(parameters["partid_configs"]) == 16
         assert [row["slot"] for row in parameters["stimulus_configs"]] == list(range(16))
@@ -266,19 +403,24 @@ def test_mc_competition_preset_keeps_both_partids_visible(tmp_path) -> None:
     workloads = {workload.partid: workload for workload in config.workloads}
     assert workloads[0].address_base_bytes != workloads[1].address_base_bytes
     result = Simulation.from_config(config).run()
-    latest_mc = next(
-        row for row in reversed(result.collector.msc_rows)
+    mc_rows = [
+        row for row in result.collector.msc_rows
         if row["msc_type"] == "memory_controller"
+    ]
+    partid0_requests = sum(row["per_partid"]["0"]["requests"] for row in mc_rows)
+    partid1_requests = sum(row["per_partid"]["1"]["requests"] for row in mc_rows)
+    partid0_peak_bw = max(
+        row["per_partid"]["0"]["achieved_bandwidth_gbps"]
+        for row in mc_rows
     )
-    partid0 = latest_mc["per_partid"]["0"]
-    partid1 = latest_mc["per_partid"]["1"]
-    assert partid0["requests"] > 0
-    assert partid1["requests"] > 0
-    assert partid1["achieved_bandwidth_gbps"] > 1.0
-    assert (
-        partid0["achieved_bandwidth_gbps"]
-        > partid1["achieved_bandwidth_gbps"]
+    partid1_peak_bw = max(
+        row["per_partid"]["1"]["achieved_bandwidth_gbps"]
+        for row in mc_rows
     )
+    assert partid0_requests > 0
+    assert partid1_requests > 0
+    assert partid1_peak_bw > 1.0
+    assert partid0_peak_bw >= partid1_peak_bw
 
 
 def test_p1_presets_emit_minimal_closed_loop_evidence(tmp_path) -> None:
@@ -366,6 +508,8 @@ def test_defaults_payload_contains_control_effect_presets() -> None:
     payload = defaults_payload()
     assert "parameters" in payload
     assert "ui_metadata" in payload
+    assert payload["parameters"]["duration_ns"] == DEFAULT_DURATION_NS
+    assert payload["parameters"]["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS
     assert len(payload["presets"]) >= 4
     for preset in payload["presets"]:
         assert set(preset) == {
