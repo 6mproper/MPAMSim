@@ -122,6 +122,29 @@ def test_resctrl_config_workspace_is_present() -> None:
         assert snippet in app_js
 
 
+def test_mpam_rows_show_resctrl_managed_badge() -> None:
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+
+    for snippet in (
+        "由resctrl接管",
+        "function updateResctrlManagedRows(",
+        "function resctrlManagedPartids(",
+        "data-resctrl-managed-badge",
+    ):
+        assert snippet in app_js
+    for snippet in (
+        ".resctrl-managed-badge",
+        ".resctrl-managed-row",
+        ".partid-cell",
+    ):
+        assert snippet in styles
+
+
 def test_control_overview_chart_layers_are_configurable() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

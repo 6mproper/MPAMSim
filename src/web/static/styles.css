@@ -728,7 +728,7 @@ input[readonly] {
 }
 
 .mpam-config-table {
-  min-width: 1000px;
+  min-width: 1040px;
   table-layout: fixed;
 }
 
@@ -739,7 +739,7 @@ input[readonly] {
   text-align: center;
 }
 
-.mpam-config-table th:nth-child(1) { width: 35px; }
+.mpam-config-table th:nth-child(1) { width: 68px; }
 .mpam-config-table th:nth-child(2) { width: 92px; }
 .mpam-config-table th:nth-child(3) { width: 34px; }
 .mpam-config-table th:nth-child(4),
@@ -794,6 +794,12 @@ input[readonly] {
   text-align: center;
 }
 
+.partid-cell {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
 .partid-chip {
   width: 25px;
   height: 20px;
@@ -802,6 +808,27 @@ input[readonly] {
   color: #fff;
   border-radius: 3px;
   font-weight: 800;
+}
+
+.resctrl-managed-row {
+  background: #fffaf0;
+}
+
+.resctrl-managed-row td:first-child {
+  border-left: 3px solid var(--amber);
+}
+
+.resctrl-managed-badge {
+  max-width: 58px;
+  padding: 1px 3px;
+  color: #795300;
+  background: #fff3c4;
+  border: 1px solid #d4a33a;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: normal;
 }
 
 .mask-preview div {

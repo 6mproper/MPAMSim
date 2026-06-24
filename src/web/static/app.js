@@ -344,7 +344,12 @@ function renderPartidConfig(rows) {
   state.partidConfigs = rows.map((row) => ({ ...row }));
   $("#partidConfigTable").innerHTML = state.partidConfigs.map((row) => `
     <tr data-partid-row="${row.partid}">
-      <td><span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span></td>
+      <td>
+        <div class="partid-cell">
+          <span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span>
+          <span class="resctrl-managed-badge" data-resctrl-managed-badge hidden>由resctrl接管</span>
+        </div>
+      </td>
       <td><input data-field="name" ${configHelpAttributes("partid", "name")} type="text" value="${escapeHtml(row.name)}" spellcheck="false"></td>
       <td><input data-field="monitor_enable" ${configHelpAttributes("partid", "monitor_enable")} type="checkbox" ${row.monitor_enable ? "checked" : ""}></td>
       <td>${controlField("cmin_enable", row.cmin_enable, "cmin", row.cmin, 'type="number" min="0" max="100" step="0.1"')}</td>
@@ -369,6 +374,7 @@ function renderPartidConfig(rows) {
       </td>
     </tr>
   `).join("");
+  updateResctrlManagedRows();
 }
 
 function controlField(enableField, enabled, valueField, value, attributes) {
@@ -520,6 +526,7 @@ function renderResctrlConfig(rows) {
       <td><button type="button" class="resctrl-remove" data-remove-resctrl="${index}" ${resctrlHelpAttr("remove")}>×</button></td>
     </tr>
   `).join("");
+  updateResctrlManagedRows();
 }
 
 function collectResctrlGroups() {
@@ -632,6 +639,41 @@ function resctrlAssignments() {
     });
   });
   return bySlot;
+}
+
+function resctrlManagedPartids() {
+  const managed = new Map();
+  const enabled = Boolean($('[data-param="resctrl_enabled"]')?.checked);
+  if (!enabled) return managed;
+  collectResctrlGroups()
+    .filter((row) => row.enabled || row.name === "root")
+    .forEach((row) => {
+      const partid = Number(row.partid);
+      if (!Number.isInteger(partid) || partid < 0 || partid > 15) return;
+      const groups = managed.get(partid) || [];
+      groups.push(row.name || `group${partid}`);
+      managed.set(partid, groups);
+    });
+  return managed;
+}
+
+function updateResctrlManagedRows() {
+  const managed = resctrlManagedPartids();
+  $$("[data-partid-row]").forEach((row) => {
+    const partid = Number(row.dataset.partidRow);
+    const groupNames = managed.get(partid) || [];
+    const active = groupNames.length > 0;
+    row.classList.toggle("resctrl-managed-row", active);
+    const badge = row.querySelector("[data-resctrl-managed-badge]");
+    if (!badge) return;
+    badge.hidden = !active;
+    if (active) {
+      const detail = `由resctrl接管：${groupNames.join(", ")}。启用resctrl时，该PARTID的CPBM/BMAX和线程PARTID/PMG由软件组转换结果覆盖；MPAM页签字段保留为直接模式配置参考。`;
+      setHelp(badge, detail);
+    } else {
+      delete badge.dataset.help;
+    }
+  });
 }
 
 function normalizePartidMasks() {
@@ -2507,6 +2549,7 @@ function renderConfigDiagnostics() {
   renderSocCapabilitySummaries();
   renderResctrlStatus();
   renderResctrlMonData();
+  updateResctrlManagedRows();
   const diagnostics = configurationDiagnostics();
   $("#configDiagnostics").innerHTML = diagnostics.map((row) => `
     <div class="diagnostic ${row.severity}">

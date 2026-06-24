@@ -121,6 +121,13 @@ MPAM配置页。
 - **THEN** 控制台 MUST 在提交前把软件组映射为现有16线程PARTID/PMG配置和16组PARTID控制
 - **AND** MUST NOT 新增独立仿真运行模式或专用结果通路
 
+#### Scenario: MPAM行提示软件接管
+
+- **WHEN** 用户启用resctrl-like模式
+- **THEN** MPAM页签中被启用CTRL_MON group映射到的PARTID行 MUST 显示“由resctrl接管”
+- **AND** 提示 SHOULD 标明对应软件组名称
+- **AND** 关闭resctrl-like模式后 MUST 隐藏该提示
+
 ### Requirement: resctrl-like软件接口可见
 
 resctrl-like页签 MUST 显示软件可见的mount/options、info、控制组树、内部
