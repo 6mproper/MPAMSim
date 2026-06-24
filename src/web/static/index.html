@@ -393,7 +393,7 @@
                 <legend>曲线</legend>
                 <label data-help="目标带：L3显示CMIN/CMAX允许占用比例，MC显示BMIN/BMAX带宽范围；这是用户配置的控制目标。"><input data-overview-layer="targetBand" type="checkbox" checked><span>目标带</span></label>
                 <label data-help="control input：控制器实际读取的已发布保存值；L3是抽样占用，MC是滤波带宽。"><input data-overview-layer="controlInput" type="checkbox" checked><span>control input</span></label>
-                <label data-help="latest filtered：本地监控边界最新发布的滤波监控值；主要用于MC带宽等速率类监控，默认关闭以减少重叠。"><input data-overview-layer="filtered" type="checkbox"><span>latest filtered</span></label>
+                <label data-help="published monitor：L3显示最新发布的sampled-owner快照；MC显示latest filtered带宽。该层默认关闭以减少重叠。"><input data-overview-layer="filtered" type="checkbox"><span>published monitor</span></label>
                 <label data-help="actual：验证用真实观测值；L3为物理实际缓存占比，MC为实际服务带宽，不直接作为控制输入。"><input data-overview-layer="actual" type="checkbox" checked><span>actual</span></label>
                 <label data-help="raw：未滤波MPAM采样值；用于观察抽样误差和滤波滞后，默认关闭以减少曲线重叠。"><input data-overview-layer="raw" type="checkbox"><span>raw</span></label>
                 <label data-help="控制事件：橙色竖线标记控制逻辑在该周期产生状态或参数动作，帮助对齐因果链。"><input data-overview-layer="events" type="checkbox" checked><span>控制事件</span></label>

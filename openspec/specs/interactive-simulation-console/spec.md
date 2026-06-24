@@ -59,19 +59,22 @@ MC或requester私有字段。
 
 ### Requirement: 控制总览区分control input和latest filtered
 
-控制总览 MUST 将控制器实际读取的锁存值显示为control input，并与latest filtered区分。
+控制总览 MUST 将控制器实际读取的锁存值显示为control input。L3 occupancy MUST 把最新发布值显示为
+sampled owner或published sampled occupancy；MC bandwidth等速率量 MAY 继续使用latest filtered。
 
 #### Scenario: L3和MC主图
 
 - **WHEN** 用户查看控制总览
 - **THEN** 主线默认 SHOULD 显示control input
-- **AND** latest filtered SHOULD 可选显示
+- **AND** L3 latest published sampled owner SHOULD 可选显示
+- **AND** MC latest filtered bandwidth SHOULD 可选显示
 - **AND** actual、raw和控制事件仍按显示层开关控制
 
 #### Scenario: 文案区分
 
 - **WHEN** UI解释filtered、control input、actual或raw
-- **THEN** filtered MUST 表示最新发布滤波监控值
+- **THEN** L3 occupancy文案 MUST 说明filtered字段在当前实现中等价于最新发布的sampled-owner快照
+- **AND** MC bandwidth文案 MUST 说明filtered表示最新发布滤波带宽
 - **AND** control input MUST 表示控制器读取的锁存监控值
 - **AND** actual MUST 标注为验证用观测值，不得描述为控制输入
 

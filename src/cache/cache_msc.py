@@ -106,8 +106,8 @@ class CacheMSC(Component):
     incompatible_capabilities = ("probabilistic_cache_hit",)
     approximations = (
         "sparse allocation of untouched all-invalid sets",
-        "one sampled set per eight-set monitor group",
-        "configurable fixed or rotating sampled-set offset",
+        "sampled-owner counter bank per set-group offset",
+        "configurable fixed or rotating sampled-owner offset",
     )
 
     def __init__(
@@ -152,6 +152,12 @@ class CacheMSC(Component):
             Tuple[int, int], Dict[str, float]
         ] = defaultdict(_cache_counters)
         self._monitor_sampled_bytes: DefaultDict[int, int] = defaultdict(int)
+        self._sampled_owner_counters: DefaultDict[
+            int, DefaultDict[int, int]
+        ] = defaultdict(lambda: defaultdict(int))
+        self._sampled_group_owner_counters: DefaultDict[
+            int, DefaultDict[Tuple[int, int], int]
+        ] = defaultdict(lambda: defaultdict(int))
         self._raw_sampled_counts: DefaultDict[int, float] = defaultdict(float)
         self._filtered_sampled_counts: DefaultDict[
             int, float
@@ -491,6 +497,12 @@ class CacheMSC(Component):
             if old_line.owner_partid == request.partid:
                 self._increment(request, "self_replacements")
         self._touch_sequence += 1
+        self._update_sampled_owner_counters(
+            set_index=set_index,
+            old_line=old_line,
+            new_partid=request.partid,
+            new_pmg=request.pmg,
+        )
         ways[victim] = CacheLine(
             valid=True,
             tag=tag,
@@ -688,6 +700,45 @@ class CacheMSC(Component):
             == self._sample_offset()
         )
 
+    def _sampling_counter_offset(self, set_index: int) -> int:
+        return set_index % self.config.monitor_group_sets
+
+    def _bump_counter(
+        self,
+        counter: DefaultDict,
+        key: object,
+        delta: int,
+    ) -> None:
+        counter[key] += delta
+        if counter[key] <= 0:
+            counter.pop(key, None)
+
+    def _update_sampled_owner_counters(
+        self,
+        *,
+        set_index: int,
+        old_line: CacheLine,
+        new_partid: int,
+        new_pmg: int,
+    ) -> None:
+        offset = self._sampling_counter_offset(set_index)
+        owner_counter = self._sampled_owner_counters[offset]
+        group_counter = self._sampled_group_owner_counters[offset]
+        if old_line.valid and old_line.owner_partid is not None:
+            self._bump_counter(
+                owner_counter,
+                old_line.owner_partid,
+                -1,
+            )
+            if old_line.owner_pmg is not None:
+                self._bump_counter(
+                    group_counter,
+                    (old_line.owner_partid, old_line.owner_pmg),
+                    -1,
+                )
+        self._bump_counter(owner_counter, new_partid, 1)
+        self._bump_counter(group_counter, (new_partid, new_pmg), 1)
+
     def _advance_sampling_offset(self) -> None:
         self._monitor_cycle_index += 1
         if self.config.sampling_mode != "rotating":
@@ -788,7 +839,7 @@ class CacheMSC(Component):
         return dict(counts)
 
     def _sampled_owner_counts(self) -> Dict[int, int]:
-        return self._owner_counts(sampled_only=True)
+        return dict(self._sampled_owner_counters[self._sample_offset()])
 
     def _control_owner_counts(self) -> Dict[int, float]:
         return dict(self._control_sampled_counts)
@@ -799,20 +850,9 @@ class CacheMSC(Component):
     def _sampled_group_owner_counts(
         self,
     ) -> Dict[Tuple[int, int], int]:
-        counts: DefaultDict[Tuple[int, int], int] = defaultdict(int)
-        for set_index, ways in self._sets.items():
-            if not self._is_sample_set(set_index):
-                continue
-            for line in ways:
-                if (
-                    line.valid
-                    and line.owner_partid is not None
-                    and line.owner_pmg is not None
-                ):
-                    counts[
-                        (line.owner_partid, line.owner_pmg)
-                    ] += 1
-        return dict(counts)
+        return dict(
+            self._sampled_group_owner_counters[self._sample_offset()]
+        )
 
     def _known_monitor_partids(self) -> List[int]:
         return sorted(

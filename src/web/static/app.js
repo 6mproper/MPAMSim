@@ -201,7 +201,7 @@ const resctrlHelp = {
 const supplementalAlgorithmHelp = {
   "l3-allocation": {
     title: "L3 sampled-owner 分配算法",
-    body: "每 8 个 set 只观察第一个 set 的各 way owner。替换时先检查请求者的全局 sampled ownership 是否达到 CMAX；未达到时优先空 way，再选择全局占用高于其 CMIN 配额的 owner 中最老的 way。该方法验证控制趋势，不等同于逐 tag 精确硬件实现。",
+    body: "L3用sampled-owner counter bank近似MPAM occupancy：fill或replacement发生时按set_index mod 8增减owner_count[offset][PARTID]；监控周期只读取当前offset的counter bank。rotating只切换读取的offset，不表示一个周期扫描所有tag/way。",
   },
   "effect-view": {
     title: "如何识别控制效果",
@@ -3456,7 +3456,7 @@ function renderControlOverview() {
     <div class="overview-metric-grid">
       ${overviewMetric("CMIN / CMAX", formatTargetRange(target.cmin, target.cmax, "%"))}
       ${overviewMetric("Control Input", latest ? `${formatNumber(latest.l3ControlShare, 2)}%` : "--", "锁存读取值")}
-      ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.l3FilteredShare, 2)}%` : "--", "最新发布")}
+      ${overviewMetric("Published Sampled", latest ? `${formatNumber(latest.l3FilteredShare, 2)}%` : "--", "最新发布")}
       ${overviewMetric("Physical Actual", latest ? `${formatNumber(latest.l3ActualShare, 2)}%` : "--", "验证误差")}
       ${overviewMetric("Allocation Denial", formatNumber(l3.allocationDenials || 0, 0))}
       ${overviewMetric("Hit Rate", `${((l3.hitRate || 0) * 100).toFixed(2)}%`)}
@@ -3504,7 +3504,7 @@ function renderControlOverview() {
   renderLegend("#overviewL3Legend", [
     ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
     ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "published sampled", kind: "filtered" }] : []),
     ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
     ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
@@ -3556,7 +3556,7 @@ function renderControlOverview() {
   renderLegend("#overviewMcLegend", [
     ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
     ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" }] : []),
     ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
     ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),

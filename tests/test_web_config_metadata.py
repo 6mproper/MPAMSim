@@ -149,6 +149,9 @@ def test_control_overview_chart_layers_are_configurable() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"
     ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
     layers = re.findall(r'data-overview-layer="([^"]+)"', index_html)
     assert layers == [
         "targetBand",
@@ -164,6 +167,18 @@ def test_control_overview_chart_layers_are_configurable() -> None:
             rf'<input data-overview-layer="{layer}"'
         )
         assert re.search(pattern, index_html), layer
+    for snippet in (
+        "published monitor",
+        "sampled-owner",
+    ):
+        assert snippet in index_html
+    for snippet in (
+        "Published Sampled",
+        "published sampled",
+        "latest filtered BW",
+        "sampled-owner counter bank",
+    ):
+        assert snippet in app_js
 
 
 def test_l3_same_line_merge_is_unchecked_by_default() -> None:

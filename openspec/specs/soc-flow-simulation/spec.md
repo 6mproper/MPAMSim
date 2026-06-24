@@ -161,7 +161,8 @@ P1成功 MUST 以控制动作闭环和证据完整性判断，不得要求任意
 
 - **WHEN** L3或MC导出刚发布的滤波监控值
 - **THEN** 对应`MonitorSample.semantic` MUST 为`filtered_monitor`
-- **AND** UI MUST 标注为latest filtered或最新发布监控值
+- **AND** L3 occupancy UI MUST 标注为published sampled owner或最新发布sampled-owner
+- **AND** MC bandwidth UI MAY 标注为latest filtered bandwidth
 
 #### Scenario: L3 sampled control语义
 

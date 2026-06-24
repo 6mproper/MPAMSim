@@ -762,11 +762,20 @@ l3_monitor_period_cycles: 256
 
 ### L3-MON-002：1/8 set采样
 
-每连续`monitor_group_sets`个set为一组，只读取组内一个采样offset对应set的所有way。
-采样方式可配：
+每连续`monitor_group_sets`个set为一组。当前实现采用硬件可解释的sampled-owner
+counter bank，而不是在监控边界瞬时扫描大量tag/way：
 
-- `fixed_first`：固定读取组内offset 0，对应早期“每8个set取第一个set”的近似监控；
-- `rotating`：每隔`sampling_rotation_period_monitor_cycles`个L3监控周期，组内采样offset加1并取模。
+```text
+offset = set_index mod monitor_group_sets
+owner_count[offset][PARTID]
+owner_count_by_pmg[offset][PARTID, PMG]
+```
+
+line owner在fill、replacement或后续invalidate路径变化时增量更新对应offset counter。
+监控边界只读取当前offset对应的counter bank。采样方式可配：
+
+- `fixed_first`：固定读取组内offset 0 counter bank，对应早期“每8个set取第一个set”的近似监控；
+- `rotating`：每隔`sampling_rotation_period_monitor_cycles`个L3监控周期，组内采样offset加1并取模，读取新的offset counter bank。
 
 ```text
 group = floor(set_index / monitor_group_sets)
@@ -794,7 +803,7 @@ control_input[k+1] = sampled_occupancy[k]
 UI可以同时显示：
 
 - `actual_occupancy`：全set真实owner占用，仅用于观测；
-- `raw_sampled_occupancy`：当前采样offset看到的owner占用；
+- `raw_sampled_occupancy`：当前采样offset counter bank看到的owner占用；
 - `control_sampled_occupancy`：控制器后续窗口读取的MPAM监控值。
 
 交织和采样会天然导致`raw_sampled_occupancy`与`actual_occupancy`不一致，这是模型要显式展示的误差来源。
@@ -1415,7 +1424,7 @@ outcome_reason
 | 有效目标 | 阶梯虚线 |
 | 实际值 | 细实线 |
 | 原始监控 | 带点线 |
-| 滤波监控 | 粗实线 |
+| 发布监控 | 粗实线，L3为sampled-owner快照，MC为latest filtered bandwidth |
 | 控制事件 | 垂直标记 |
 
 支持单个或多个PARTID、实例或聚合视图、统一游标和缩放。
@@ -1609,9 +1618,9 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - CPU在分配TxnID和OSTD前检查REQ源link槽。
 - 真实L3 set/tag/way状态和确定性LRU/tree-PLRU；
 - MSHR同line read合并、fill buffer readiness和fill延迟；
-- CPBM/CMIN/CMAX、actual occupancy和1/8抽样监控共享同一line状态；
+- CPBM/CMIN/CMAX、actual occupancy和sampled-owner counter bank共享同一line owner来源；
 - actual与sample估计误差、merge、fill、eviction和bypass证据。
-- L3独立clock、256拍raw/latest filtered/control input owner和访问带宽监控；
+- L3独立clock、256拍raw/published/control input sampled-owner和访问带宽监控；
 - CMIN/CMAX只读取锁存control input sampled-owner，physical actual仅观测；
 - linear/XOR地址到MC交织，在CPU OSTD准入前确定home MC。
 - 每MC固定深度共享buffer和全深度ready候选；
@@ -1631,10 +1640,10 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 | CPU | 已实现两级OSTD、三种Core策略、目标MC限制、REQ Ring准入和可配源队列 | 后续补充OSTD lifetime直方图 |
 | 激励 | 已拆分地址、操作、依赖、到达和发射选择，并保留type兼容预设 | 后续增加可配stride、hotset比例和多链UI |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
-| L3 | 已实现真实set/tag/way、MSHR、fill、physical/raw/latest filtered/control input抽样误差和CMIN/CMAX输入 | 后续增加跨line child transaction |
+| L3 | 已实现真实set/tag/way、MSHR、fill、sampled-owner counter bank、physical/raw/published/control input抽样误差和CMIN/CMAX输入 | 后续增加跨line child transaction |
 | MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
 | CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的目标MC/PARTID状态 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
-| 监控 | L3/MC快照已包含actual/raw/latest filtered/control input和local cycle，内部控制事件已带稳定因果ID | 后续增加更完整的本地监控周期浏览器视图 |
+| 监控 | L3快照包含actual/raw/published/control sampled-owner，MC快照包含actual/raw/latest filtered/control input bandwidth和local cycle，内部控制事件已带稳定因果ID | 后续增加更完整的本地监控周期浏览器视图 |
 | UI | 多页签和大表 | 配置驱动单工作区 |
 
 ### 17.3 已被目标规格取代

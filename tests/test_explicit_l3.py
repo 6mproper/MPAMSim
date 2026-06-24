@@ -290,3 +290,31 @@ def test_l3_rotating_sampling_changes_sample_offset() -> None:
 
     assert cache._sample_offset() == 1
     assert cache._sampled_owner_counts()[4] == 1
+
+
+def test_l3_sampled_owner_counter_bank_tracks_replacement() -> None:
+    _, cache, _, _ = _cache(
+        _config(
+            sets=8,
+            ways=1,
+            monitor_cycles=8,
+            history_weight=0,
+            current_weight=1,
+            sampling_mode="fixed_first",
+        )
+    )
+    first = _request(1, 0, partid=1)
+    second_same_set = _request(2, 8 * 64, partid=2)
+
+    assert cache._allocate_fill(first)
+    assert cache._sampled_owner_counts()[1] == 1
+    assert cache._sampled_group_owner_counts()[(1, 1)] == 1
+
+    assert cache._allocate_fill(second_same_set)
+
+    counts = cache._sampled_owner_counts()
+    group_counts = cache._sampled_group_owner_counts()
+    assert counts.get(1, 0) == 0
+    assert counts[2] == 1
+    assert group_counts.get((1, 1), 0) == 0
+    assert group_counts[(2, 2)] == 1
