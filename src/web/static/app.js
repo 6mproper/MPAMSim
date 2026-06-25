@@ -111,7 +111,7 @@ const headerHelp = {
   "Throttle ns": "最新周期内 hard limit 等待累计时间。",
   "OSTD Current / Peak": "采样时刻当前 outstanding requests，以及该控制周期内观察到的峰值。",
   "Core Pool / ID OSTD": "该 PARTID 所在 Core 的共享池总占用/峰值/上限，以及 Core 内该 PARTID 的合计占用；共享池总占用包含其他 PARTID。",
-  "Home MC ID OSTD": "按目标 MC 分开的 Core/PARTID outstanding、周期峰值、有效 CBusy cap 与等级；MC0 的反馈不限制发往 MC1 的请求。",
+  "Home MC ID OSTD": "按目标 MC 分开的 Core/PARTID outstanding 和周期峰值；CBusy 源端动作按 PARTID 聚合，目标 MC 只作为路由和诊断维度。",
   "OSTD Util %": "当前 outstanding 除以该 PARTID 所关联 requester 的最大 outstanding 容量之和。",
   "Issued / Completed": "仿真开始以来该 PARTID 在 CPU requester 侧累计发出和完成的请求数。",
   "Backpressure ns": "requester 因 outstanding 达到上限而延迟发出的累计时间。",
@@ -181,7 +181,7 @@ const sectionHeadingHelp = {
   "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
   "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
   "MC 调度算法参数": "配置MC本地256拍监控、历史滤波、BMIN/BMAX滞回、共享buffer 3-bit QoS和可选PARTID service deficit。",
-  "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播和逐级恢复行为。",
+  "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播、CPU/L3响应开关和逐级恢复行为。",
   "resctrl-like 软件资源组": "使用公开resctrl风格的软件组入口配置资源策略；本阶段会翻译为内部PARTID/PMG和现有MPAM控制，不模拟完整Linux文件系统。",
 };
 
@@ -3438,7 +3438,7 @@ function renderControlOverview() {
 
   $("#overviewCpuCard").innerHTML = `
     <div class="overview-status-row">
-      ${overviewStatus(cpuLimited ? "源头受限" : "源头放行", destinationText || "无目标MC反馈", cpuLimited ? "warn" : "good")}
+      ${overviewStatus(cpuLimited ? "源头受限" : "源头放行", destinationText || "无MC反馈来源", cpuLimited ? "warn" : "good")}
     </div>
     <div class="overview-metric-grid">
       ${overviewMetric("Configured OSTD", formatNumber(cpu.maxOutstanding || 0, 0))}

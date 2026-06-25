@@ -83,6 +83,8 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.caches[0].sampling_rotation_period_monitor_cycles == 1
     assert config.caches[0].history_weight == 0.75
     assert config.caches[0].current_weight == 0.25
+    assert config.caches[0].cbusy_response_enable is True
+    assert config.ostd.cbusy_response_enable is True
     assert config.controls_by_msc["slc0"][0].cpbm_enable is True
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000

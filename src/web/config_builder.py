@@ -45,6 +45,25 @@ def _integer(
     )
 
 
+def _boolean(
+    values: Dict[str, object],
+    name: str,
+    default: bool,
+) -> bool:
+    value = values.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raise ParameterError(f"{name} must be boolean")
+
+
 def _choice(
     values: Dict[str, object],
     name: str,
@@ -763,6 +782,8 @@ def default_parameters() -> Dict[str, object]:
         "cbusy_sample_ns": 1_000,
         "cbusy_feedback_latency_ns": 50,
         "cbusy_release_hold_samples": 3,
+        "cpu_cbusy_response_enable": True,
+        "l3_cbusy_response_enable": True,
         "cbusy_l1_bw_ratio": 1.0,
         "cbusy_l2_bw_ratio": 1.1,
         "cbusy_l3_bw_ratio": 1.25,
@@ -1799,6 +1820,16 @@ def build_config(
         1,
         1_000,
     )
+    cpu_cbusy_response_enable = _boolean(
+        values,
+        "cpu_cbusy_response_enable",
+        True,
+    )
+    l3_cbusy_response_enable = _boolean(
+        values,
+        "l3_cbusy_response_enable",
+        True,
+    )
     cbusy_bw_ratios = [
         _number(values, "cbusy_l1_bw_ratio", 1.0, 0.01, 10),
         _number(values, "cbusy_l2_bw_ratio", 1.1, 0.01, 10),
@@ -1934,6 +1965,7 @@ def build_config(
             "monitor_period_cycles": l3_monitor_period_cycles,
             "history_weight": l3_history_weight,
             "current_weight": l3_current_weight,
+            "cbusy_response_enable": l3_cbusy_response_enable,
             "shared_by_cores": cache_core_map[cache_id],
         }
         for cache_id in cache_core_map
@@ -2097,6 +2129,7 @@ def build_config(
                 "core_max_outstanding": core_max_outstanding,
                 "core_ostd_policy": core_ostd_policy,
                 "thread_ostd_reserve": thread_ostd_reserve,
+                "cbusy_response_enable": cpu_cbusy_response_enable,
             },
             "core_attach_nodes": core_attach_nodes,
             "explicit": [],

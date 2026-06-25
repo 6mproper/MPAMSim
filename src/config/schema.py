@@ -44,6 +44,7 @@ class CacheConfig:
     monitor_period_cycles: int = 256
     history_weight: float = 0.75
     current_weight: float = 0.25
+    cbusy_response_enable: bool = True
 
 
 @dataclass
@@ -119,6 +120,7 @@ class OstdConfig:
     core_max_outstanding: int
     core_policy: str = "shared"
     thread_reserve: int = 1
+    cbusy_response_enable: bool = True
 
 
 @dataclass

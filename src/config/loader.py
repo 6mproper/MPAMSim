@@ -237,6 +237,9 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             ),
             history_weight=float(item.get("history_weight", 0.75)),
             current_weight=float(item.get("current_weight", 0.25)),
+            cbusy_response_enable=bool(
+                item.get("cbusy_response_enable", True)
+            ),
         )
         for item in soc.get("caches", [])
     ]
@@ -353,6 +356,9 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
         ),
         thread_reserve=int(
             requester_defaults.get("thread_ostd_reserve", 1)
+        ),
+        cbusy_response_enable=bool(
+            requester_defaults.get("cbusy_response_enable", True)
         ),
     )
 

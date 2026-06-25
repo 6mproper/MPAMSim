@@ -26,6 +26,7 @@ def _pool(
 def _requester(
     pool: CoreOstdPool,
     thread_id: str = "cpu0.t0",
+    cbusy_response_enable: bool = True,
 ) -> RequesterRuntime:
     return RequesterRuntime(
         config=RequesterConfig(
@@ -39,6 +40,7 @@ def _requester(
         core_pool=pool,
         configured_partids=(1,),
         destination_mc_ids=("mc0", "mc1"),
+        cbusy_response_enable=cbusy_response_enable,
     )
 
 
@@ -104,7 +106,7 @@ def test_pending_threads_use_deterministic_round_robin() -> None:
     assert pool.block_reason("cpu0.t0") == "core_round_robin"
 
 
-def test_cbusy_only_limits_matching_destination_mc() -> None:
+def test_cbusy_limits_same_partid_across_destinations() -> None:
     requester = _requester(_pool(maximum=8))
     requester.set_cbusy("mc0", partid=1, level=3, cap=1)
 
@@ -115,11 +117,11 @@ def test_cbusy_only_limits_matching_destination_mc() -> None:
     requester.on_generated(1)
     assert not requester.can_issue(1, "mc0")
     assert requester.last_block_reason(1, "mc0") == "cbusy"
-    assert requester.can_issue(1, "mc1")
-    requester.on_issue(1, "mc1")
+    assert not requester.can_issue(1, "mc1")
+    assert requester.last_block_reason(1, "mc1") == "cbusy"
 
     assert requester.outstanding_by_partid_mc[(1, "mc0")] == 1
-    assert requester.outstanding_by_partid_mc[(1, "mc1")] == 1
+    assert requester.outstanding_by_partid_mc[(1, "mc1")] == 0
 
 
 def test_cbusy_cap_is_shared_by_same_partid_on_two_threads() -> None:
@@ -134,7 +136,26 @@ def test_cbusy_cap_is_shared_by_same_partid_on_two_threads() -> None:
     thread0.on_issue(1, "mc0")
     assert not thread1.can_issue(1, "mc0")
     assert thread1.last_block_reason(1, "mc0") == "cbusy"
-    assert thread1.can_issue(1, "mc1")
+    assert not thread1.can_issue(1, "mc1")
+    assert thread1.last_block_reason(1, "mc1") == "cbusy"
+
+
+def test_cpu_cbusy_response_can_be_disabled() -> None:
+    requester = _requester(
+        _pool(maximum=8),
+        cbusy_response_enable=False,
+    )
+    requester.set_cbusy("mc0", partid=1, level=3, cap=1)
+
+    for mc_id in ("mc0", "mc1"):
+        requester.on_generated(1)
+        assert requester.can_issue(1, mc_id)
+        requester.on_issue(1, mc_id)
+
+    assert requester.cbusy_level(1) == 3
+    assert requester.effective_max_outstanding(1) == (
+        requester.config.max_outstanding
+    )
 
 
 def test_multiple_workloads_keep_thread_pending_until_all_admit() -> None:

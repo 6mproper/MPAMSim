@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.cache.cache_msc import CacheMSC
-from src.config.schema import CacheConfig
+from src.config.schema import CacheConfig, MPAMSettingConfig
 from src.contracts.transaction import Transaction
 from src.mpam.settings import SettingsTable
 from src.sim.kernel import SimulationKernel
@@ -71,17 +71,22 @@ def _request(
     )
 
 
-def _cache(config: CacheConfig):
+def _cache(
+    config: CacheConfig,
+    settings: SettingsTable | None = None,
+    on_control_event=None,
+):
     kernel = SimulationKernel()
     returned = []
     misses = []
     cache = CacheMSC(
         kernel,
         config,
-        SettingsTable(),
+        settings or SettingsTable(),
         seed=1,
         on_hit=returned.append,
         on_miss=misses.append,
+        on_control_event=on_control_event,
     )
     return kernel, cache, returned, misses
 
@@ -318,3 +323,93 @@ def test_l3_sampled_owner_counter_bank_tracks_replacement() -> None:
     assert counts[2] == 1
     assert group_counts.get((1, 1), 0) == 0
     assert group_counts[(2, 2)] == 1
+
+
+def test_l3_cbusy_response_blocks_new_same_partid_mshr() -> None:
+    events = []
+
+    def record_event(**event):
+        events.append(event)
+
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(
+                partid=1,
+                cbusy_enable=True,
+                cbusy_l1_ostd=1,
+                cbusy_l2_ostd=1,
+                cbusy_l3_ostd=1,
+            )
+        ]
+    )
+    kernel, cache, _, misses = _cache(
+        _config(merge=False),
+        settings=settings,
+        on_control_event=record_event,
+    )
+    learned = _request(10, 0, partid=1)
+    learned.return_cbusy_source = "mc0"
+    learned.return_cbusy_level = 3
+    learned.return_cbusy_monitor_sample_id = "mc0:cbusy:p1"
+    learned.return_cbusy_decision_id = "decision:mc0:cbusy:p1"
+    cache.receive(learned)
+    kernel.run(2)
+    _fill(kernel, cache, learned)
+
+    first_blocked_by_cap = _request(11, 64, partid=1)
+    second_blocked_by_cap = _request(12, 128, partid=1)
+    cache.receive(first_blocked_by_cap)
+    kernel.run(kernel.now_ns + 2)
+    cache.receive(second_blocked_by_cap)
+    kernel.run(kernel.now_ns + 2)
+
+    assert misses[-1] is first_blocked_by_cap
+    assert second_blocked_by_cap not in misses
+    assert cache.mshr_occupancy == 1
+    snapshot = cache.monitor_snapshot(kernel.now_ns).payload
+    values = snapshot["per_partid"]["1"]
+    assert values["cbusy_level"] == 3
+    assert values["cbusy_mshr_cap"] == 1
+    assert values["cbusy_mshr_blocks"] == 1
+    assert values["cbusy_mshr_occupancy"] == 1
+    assert events[-1]["event_type"] == "return_sideband_observed"
+    assert events[-1]["policy"] == "l3_cbusy_mshr"
+
+
+def test_l3_cbusy_response_can_be_disabled() -> None:
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(
+                partid=1,
+                cbusy_enable=True,
+                cbusy_l1_ostd=1,
+                cbusy_l2_ostd=1,
+                cbusy_l3_ostd=1,
+            )
+        ]
+    )
+    config = _config(merge=False)
+    config.cbusy_response_enable = False
+    kernel, cache, _, misses = _cache(config, settings=settings)
+    learned = _request(20, 0, partid=1)
+    learned.return_cbusy_source = "mc0"
+    learned.return_cbusy_level = 3
+    cache.receive(learned)
+    kernel.run(2)
+    _fill(kernel, cache, learned)
+
+    first = _request(21, 64, partid=1)
+    second = _request(22, 128, partid=1)
+    cache.receive(first)
+    kernel.run(kernel.now_ns + 2)
+    cache.receive(second)
+    kernel.run(kernel.now_ns + 2)
+
+    assert first in misses
+    assert second in misses
+    assert cache.mshr_occupancy == 2
+    snapshot = cache.monitor_snapshot(kernel.now_ns).payload
+    values = snapshot["per_partid"]["1"]
+    assert values["cbusy_response_enable"] is False
+    assert values["cbusy_level"] == 0
+    assert values["cbusy_mshr_cap"] == config.mshr_entries

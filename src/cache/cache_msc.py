@@ -55,6 +55,7 @@ def _cache_counters() -> Dict[str, float]:
         "merged_misses": 0,
         "mshr_allocations": 0,
         "mshr_full_events": 0,
+        "cbusy_mshr_blocks": 0,
         "fill_completions": 0,
         "fill_buffer_full_events": 0,
         "redundant_memory_fetches": 0,
@@ -77,6 +78,7 @@ class CacheMSC(Component):
         "cpbm_control",
         "cmin_control",
         "cmax_control",
+        "cbusy_mshr_response",
     )
     required_monitors = (
         "actual_occupancy",
@@ -176,6 +178,13 @@ class CacheMSC(Component):
         self._sampling_offset = 0
         self._last_sampling_offset = 0
         self._control_state_by_partid: Dict[int, Dict[str, bool]] = {}
+        self._cbusy_level_by_partid: DefaultDict[int, int] = defaultdict(int)
+        self._cbusy_mshr_cap_by_partid: DefaultDict[int, int] = defaultdict(
+            lambda: self.config.mshr_entries
+        )
+        self._cbusy_transitions_by_partid: DefaultDict[int, int] = (
+            defaultdict(int)
+        )
         self.kernel.schedule(
             self.monitor_period_ns,
             self._publish_mpam_monitor,
@@ -197,6 +206,55 @@ class CacheMSC(Component):
     @property
     def fill_buffer_occupancy(self) -> int:
         return self._fill_buffer_occupancy
+
+    def _cbusy_response_enabled(self, partid: int) -> bool:
+        setting = self.settings.lookup(partid)
+        return bool(
+            self.enforce_controls
+            and self.config.cbusy_response_enable
+            and setting.cbusy_enable
+        )
+
+    def _cbusy_level(self, partid: int) -> int:
+        return self._cbusy_level_by_partid.get(partid, 0)
+
+    def _cbusy_mshr_cap(
+        self,
+        partid: int,
+        level: Optional[int] = None,
+    ) -> int:
+        if not self._cbusy_response_enabled(partid):
+            return self.config.mshr_entries
+        effective_level = (
+            self._cbusy_level(partid) if level is None else level
+        )
+        if effective_level <= 0:
+            return self.config.mshr_entries
+        setting = self.settings.lookup(partid)
+        cap = {
+            1: setting.cbusy_l1_ostd,
+            2: setting.cbusy_l2_ostd,
+            3: setting.cbusy_l3_ostd,
+        }.get(effective_level, setting.cbusy_l3_ostd)
+        return max(1, min(self.config.mshr_entries, int(cap)))
+
+    def _partid_mshr_occupancy(self, partid: int) -> int:
+        return sum(
+            1
+            for entry in self._mshrs.values()
+            if entry.owner_request.partid == partid
+        )
+
+    def _cbusy_blocks_mshr(self, request: Request) -> bool:
+        if not self._cbusy_response_enabled(request.partid):
+            return False
+        level = self._cbusy_level(request.partid)
+        if level <= 0:
+            return False
+        return (
+            self._partid_mshr_occupancy(request.partid)
+            >= self._cbusy_mshr_cap(request.partid, level)
+        )
 
     def receive(self, request: Request) -> None:
         request.cache_id = self.component_id
@@ -369,6 +427,12 @@ class CacheMSC(Component):
             )
             self._increment(request, "mshr_full_events")
             return
+        if self._cbusy_blocks_mshr(request):
+            self._mshr_wait_queue.append(
+                (request, self.kernel.now_ns)
+            )
+            self._increment(request, "cbusy_mshr_blocks")
+            return
         self._allocate_mshr(request)
 
     def _allocate_mshr(self, request: Request) -> None:
@@ -412,6 +476,7 @@ class CacheMSC(Component):
         if not transaction_ids:
             del self._mshr_by_line[entry.line_address]
 
+        self._observe_return_cbusy(entry.owner_request)
         self._allocate_fill(entry.owner_request)
         self._increment(entry.owner_request, "fill_completions")
         for waiter in entry.waiters:
@@ -446,16 +511,77 @@ class CacheMSC(Component):
         self._drain_mshr_wait_queue()
 
     def _drain_mshr_wait_queue(self) -> None:
-        while (
-            self._mshr_wait_queue
-            and self.mshr_occupancy < self.config.mshr_entries
-        ):
+        attempts = len(self._mshr_wait_queue)
+        for _ in range(attempts):
+            if (
+                not self._mshr_wait_queue
+                or self.mshr_occupancy >= self.config.mshr_entries
+            ):
+                break
             request, wait_start = self._mshr_wait_queue.popleft()
             request.timing.mshr_fill_delay_ns += max(
                 0.0,
                 self.kernel.now_ns - wait_start,
             )
             self._handle_miss(request)
+
+    def _observe_return_cbusy(self, request: Request) -> None:
+        partid = request.partid
+        if not self._cbusy_response_enabled(partid):
+            return
+        level = max(0, min(3, int(request.return_cbusy_level or 0)))
+        old_level = self._cbusy_level(partid)
+        old_cap = self._cbusy_mshr_cap(partid, old_level)
+        new_cap = self._cbusy_mshr_cap(partid, level)
+        self._cbusy_level_by_partid[partid] = level
+        self._cbusy_mshr_cap_by_partid[partid] = new_cap
+        if old_level != level:
+            self._cbusy_transitions_by_partid[partid] += 1
+        if (
+            self.on_control_event is None
+            or (old_level == level and old_cap == new_cap)
+        ):
+            return
+        monitor_sample_id = (
+            f"{self.component_id}:cbusy_return:"
+            f"{request.transaction_id}:partid:{partid}"
+        )
+        self.on_control_event(
+            resource_id=self.component_id,
+            partid=partid,
+            event_type="return_sideband_observed",
+            field="l3_cbusy_level",
+            old_state=old_level,
+            new_state=level,
+            policy="l3_cbusy_mshr",
+            reason=f"L3 PARTID MSHR cap {new_cap}",
+            monitor_sample_id=monitor_sample_id,
+            decision_id=f"decision:{monitor_sample_id}:l3_cbusy_mshr",
+            action_effective_time_ns=self.kernel.now_ns,
+            details={
+                "control_input_metric": "return_cbusy_level",
+                "control_input_value": level,
+                "control_input_unit": "level",
+                "transaction_id": request.transaction_id,
+                "feedback_source_msc": request.return_cbusy_source,
+                "source_monitor_sample_id": (
+                    request.return_cbusy_monitor_sample_id
+                ),
+                "source_decision_id": request.return_cbusy_decision_id,
+                "source_sample_time_ns": (
+                    request.return_cbusy_sample_time_ns
+                ),
+                "old_mshr_cap": old_cap,
+                "mshr_cap": new_cap,
+                "partid_mshr_occupancy": (
+                    self._partid_mshr_occupancy(partid)
+                ),
+                "transport": "rsp_dat_sideband",
+                "partid_attribution": "mshr_owner_request",
+            },
+            outcome_state="active" if level > 0 else "released",
+            outcome_reason="L3 CBusy MSHR response updated",
+        )
 
     def _allocate_fill(self, request: Request) -> bool:
         set_index = self._set_index(request.addr)
@@ -861,6 +987,7 @@ class CacheMSC(Component):
             | set(self._sampled_owner_counts())
             | set(self._filtered_sampled_counts)
             | set(self._control_sampled_counts)
+            | set(self._cbusy_level_by_partid)
         )
 
     def _publish_mpam_monitor(self) -> None:
@@ -1143,6 +1270,18 @@ class CacheMSC(Component):
                 ),
                 "monitor_enable": setting.monitor_enable,
                 "enforcement_enabled": self.enforce_controls,
+                "cbusy_response_enable": (
+                    self._cbusy_response_enabled(partid)
+                ),
+                "cbusy_level": self._cbusy_level(partid),
+                "cbusy_mshr_cap": self._cbusy_mshr_cap(partid),
+                "cbusy_mshr_occupancy": (
+                    self._partid_mshr_occupancy(partid)
+                ),
+                "cbusy_mshr_blocks": values["cbusy_mshr_blocks"],
+                "cbusy_transitions": (
+                    self._cbusy_transitions_by_partid[partid]
+                ),
             }
 
         monitor_groups = {}
@@ -1242,6 +1381,7 @@ class CacheMSC(Component):
             "monitor_period_ns": self.monitor_period_ns,
             "history_weight": self.config.history_weight,
             "current_weight": self.config.current_weight,
+            "cbusy_response_enable": self.config.cbusy_response_enable,
             "instantiated_set_count": len(self._sets),
             "sampled_set_count": sum(
                 int(self._is_sample_set(set_index))

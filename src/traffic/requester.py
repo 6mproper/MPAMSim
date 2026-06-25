@@ -240,6 +240,7 @@ class RequesterRuntime:
     core_pool: CoreOstdPool
     configured_partids: Tuple[int, ...] = ()
     destination_mc_ids: Tuple[str, ...] = ()
+    cbusy_response_enable: bool = True
     outstanding: int = 0
     issued: int = 0
     completed: int = 0
@@ -329,8 +330,6 @@ class RequesterRuntime:
     def cbusy_level(self, partid: int, mc_id: str = "") -> int:
         self._ensure_partid(partid)
         feedback = self.cbusy_feedback_by_partid[partid]
-        if mc_id:
-            return feedback.get(mc_id, (0, self.config.max_outstanding))[0]
         return max((level for level, _ in feedback.values()), default=0)
 
     def effective_max_outstanding(
@@ -339,19 +338,9 @@ class RequesterRuntime:
         mc_id: str = "",
     ) -> int:
         self._ensure_partid(partid)
+        if not self.cbusy_response_enable:
+            return self.config.max_outstanding
         feedback = self.cbusy_feedback_by_partid[partid]
-        if mc_id:
-            level, cap = feedback.get(
-                mc_id,
-                (0, self.config.max_outstanding),
-            )
-            return max(
-                1,
-                min(
-                    self.config.max_outstanding,
-                    cap if level > 0 else self.config.max_outstanding,
-                ),
-            )
         level = self.cbusy_level(partid)
         caps = [
             cap
@@ -375,11 +364,12 @@ class RequesterRuntime:
         self._ensure_partid_mc(partid, mc_id)
         if self.outstanding >= self.config.max_outstanding:
             return "thread_ostd"
-        level = self.cbusy_level(partid, mc_id)
-        effective = self.effective_max_outstanding(partid, mc_id)
+        level = self.cbusy_level(partid)
+        effective = self.effective_max_outstanding(partid)
         if (
-            level > 0
-            and self.core_pool.partid_mc_outstanding(partid, mc_id)
+            self.cbusy_response_enable
+            and level > 0
+            and self.core_pool.outstanding_by_partid.get(partid, 0)
             >= effective
         ):
             return "cbusy"

@@ -50,7 +50,7 @@ def _returned_request(requester_id: str, mc_id: str) -> Transaction:
     return request
 
 
-def test_cbusy_return_sideband_updates_only_return_destination(
+def test_cbusy_return_sideband_updates_requester_partid_response(
     tmp_path,
 ) -> None:
     simulation = Simulation.from_config(
@@ -64,11 +64,38 @@ def test_cbusy_return_sideband_updates_only_return_destination(
     cpu1 = simulation.requesters["cpu0.t1"]
     assert cpu0.cbusy_level(3, "mc0") == 2
     assert cpu0.effective_max_outstanding(3, "mc0") == 5
-    assert cpu0.cbusy_level(3, "mc1") == 0
+    assert cpu0.cbusy_level(3, "mc1") == 2
+    assert cpu0.effective_max_outstanding(3, "mc1") == 5
     assert cpu1.cbusy_level(3, "mc0") == 0
     assert simulation.collector.control_rows[-1]["event_type"] == (
         "return_sideband_delivered"
     )
+    assert simulation.collector.control_rows[-1]["field"] == (
+        "partid_cbusy_level"
+    )
+    assert simulation.collector.control_rows[-1]["details"][
+        "feedback_source_msc"
+    ] == "mc0"
     assert simulation.collector.control_rows[-1]["details"][
         "transport"
     ] == "rsp_dat_sideband"
+
+
+def test_cpu_cbusy_return_sideband_can_be_observed_without_response(
+    tmp_path,
+) -> None:
+    config = _config_with_two_same_partid_threads(tmp_path)
+    config.ostd.cbusy_response_enable = False
+    simulation = Simulation.from_config(config)
+    returned = _returned_request("cpu0.t0", "mc0")
+
+    simulation._deliver_return_cbusy(returned)
+
+    cpu0 = simulation.requesters["cpu0.t0"]
+    assert cpu0.cbusy_level(3) == 2
+    assert cpu0.effective_max_outstanding(3) == (
+        cpu0.config.max_outstanding
+    )
+    assert simulation.collector.control_rows[-1]["details"][
+        "cpu_response_enable"
+    ] is False

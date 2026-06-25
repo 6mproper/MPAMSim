@@ -185,6 +185,9 @@ class Simulation:
                     )
                 ),
                 destination_mc_ids=destination_mc_ids,
+                cbusy_response_enable=(
+                    config.ostd.cbusy_response_enable
+                ),
             )
             for item in config.requesters
         }
@@ -513,9 +516,9 @@ class Simulation:
         level = max(0, min(3, int(request.return_cbusy_level)))
         cap = int(request.return_cbusy_ostd_cap or 0)
         requester = self.requesters[request.requester_id]
-        key = (request.requester_id, msc_id, partid)
-        old_level = self._delivered_cbusy_levels.get(key, 0)
-        old_cap = requester.effective_max_outstanding(partid, msc_id)
+        key = (request.requester_id, partid)
+        old_level = requester.cbusy_level(partid)
+        old_cap = requester.effective_max_outstanding(partid)
         self._delivered_cbusy_levels[key] = level
         requester.set_cbusy(
             msc_id,
@@ -523,17 +526,18 @@ class Simulation:
             level,
             cap if level > 0 else requester.config.max_outstanding,
         )
-        new_cap = requester.effective_max_outstanding(partid, msc_id)
-        if old_level == 0 and level == 0:
+        new_level = requester.cbusy_level(partid)
+        new_cap = requester.effective_max_outstanding(partid)
+        if old_level == 0 and new_level == 0:
             return
         self.collector.record_control(
             self._control_event(
                 resource_id=msc_id,
                 partid=partid,
                 event_type="return_sideband_delivered",
-                field="cbusy_level",
+                field="partid_cbusy_level",
                 old_state=old_level,
-                new_state=level,
+                new_state=new_level,
                 policy="mc_cbusy",
                 reason=f"effective OSTD cap {new_cap}",
                 monitor_sample_id=request.return_cbusy_monitor_sample_id,
@@ -545,8 +549,13 @@ class Simulation:
                     "sample_time_ns": (
                         request.return_cbusy_sample_time_ns
                     ),
+                    "feedback_source_msc": msc_id,
+                    "source_cbusy_level": level,
                     "old_effective_ostd_cap": old_cap,
                     "effective_ostd_cap": new_cap,
+                    "cpu_response_enable": (
+                        requester.cbusy_response_enable
+                    ),
                     "transport": "rsp_dat_sideband",
                 },
             )
