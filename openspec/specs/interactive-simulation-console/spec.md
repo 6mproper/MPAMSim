@@ -140,11 +140,11 @@ UI MUST 避免把目标达成或未达成表述为自动通过或失败。
 - **WHEN** 编辑器初始化
 - **THEN** 每个硬件线程恰好出现一次
 
-### Requirement: resctrl-like软件组配置页
+### Requirement: MPAM页签内resctrl-like软件组配置区
 
-控制台 MUST 提供可选resctrl-like页签，让用户通过CTRL_MON group、MON group、
+控制台 MUST 在MPAM页签内提供可选resctrl-like配置区，让用户通过CTRL_MON group、MON group、
 `schemata`、`tasks`和`cpus_list`配置软件资源组，同时保留原始线程模式和原始
-MPAM配置页。
+MPAM直接配置区。控制台 MUST NOT 保留独立resctrl页签。
 
 #### Scenario: 默认不改变原始模式
 
@@ -167,7 +167,7 @@ MPAM配置页。
 
 ### Requirement: resctrl-like软件接口可见
 
-resctrl-like页签 MUST 显示软件可见的mount/options、info、控制组树、内部
+MPAM页签内的resctrl-like配置区 MUST 显示软件可见的mount/options、info、控制组树、内部
 PARTID/PMG映射、`last_cmd_status`诊断和`mon_data`风格监控读数。
 
 #### Scenario: 软件组映射可解释

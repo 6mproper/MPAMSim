@@ -4294,8 +4294,7 @@ function bindEvents() {
     $(".workspace").classList.toggle(
       "config-wide",
       button.dataset.tab === "mpam"
-      || button.dataset.tab === "traffic"
-      || button.dataset.tab === "resctrl",
+      || button.dataset.tab === "traffic",
     );
   }));
   $$(".result-tab").forEach((button) => button.addEventListener("click", () => {

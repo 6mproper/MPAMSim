@@ -105,7 +105,7 @@ def test_results_default_to_control_evidence_workspace() -> None:
         assert f'data-advanced-target="{advanced_target}"' in index_html
 
 
-def test_resctrl_config_workspace_is_present() -> None:
+def test_resctrl_config_workspace_is_inside_mpam_tab() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"
     ).read_text(encoding="utf-8")
@@ -114,9 +114,10 @@ def test_resctrl_config_workspace_is_present() -> None:
     ).read_text(encoding="utf-8")
 
     config_tabs = re.findall(r'data-tab="([^"]+)"', index_html)
-    assert "resctrl" in config_tabs
+    assert "resctrl" not in config_tabs
+    assert 'data-panel="resctrl"' not in index_html
+    assert 'data-tab="mpam"' in index_html
     for snippet in (
-        'data-panel="resctrl"',
         'data-param="resctrl_enabled"',
         'id="resctrlGroupTable"',
         'id="resctrlLastStatus"',
@@ -127,6 +128,10 @@ def test_resctrl_config_workspace_is_present() -> None:
         "mon_data",
     ):
         assert snippet in index_html
+    mpam_start = index_html.index('data-panel="mpam"')
+    resctrl_start = index_html.index('id="resctrlGroupTable"')
+    partid_start = index_html.index('id="partidConfigTable"')
+    assert mpam_start < resctrl_start < partid_start
     for snippet in (
         "function renderResctrlConfig(",
         "function collectResctrlGroups(",
