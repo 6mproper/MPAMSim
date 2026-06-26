@@ -241,6 +241,32 @@ def test_l3_same_line_merge_is_unchecked_by_default() -> None:
     assert "checked" not in match.group(1)
 
 
+def test_context_help_and_algorithm_explanations_open_on_click_only() -> None:
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+
+    assert 'document.addEventListener("click", (event) =>' in app_js
+    assert "showAlgorithmPopover(target);" in app_js
+    assert "showHelp(target);" in app_js
+    for forbidden in (
+        'document.addEventListener("mouseover"',
+        'document.addEventListener("mouseout"',
+        'document.addEventListener("focusin"',
+        'document.addEventListener("focusout"',
+        'addEventListener("mouseenter"',
+        'addEventListener("mouseleave"',
+        "algorithmTimer",
+        "algorithmPinned",
+    ):
+        assert forbidden not in app_js
+    assert "[data-help] {\n  cursor: pointer;" in styles
+    assert "[data-algorithm] {\n  cursor: pointer;" in styles
+
+
 def test_l3_qos_scheduler_is_explicit_switch_control() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

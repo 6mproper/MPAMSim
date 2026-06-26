@@ -7,7 +7,7 @@
 
 #### Scenario: 查看MSHR说明
 
-- **WHEN** 用户指向MSHR、fill或merge配置
+- **WHEN** 用户点击MSHR、fill或merge配置
 - **THEN** 显示分配、等待、合并、owner、完成、前向进展和监控证据
 
 #### Scenario: 默认关闭merge开关

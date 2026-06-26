@@ -78,8 +78,8 @@ It provides:
   memory-controller bandwidth/limit events. Columns marked `Σ` are sums
   across all configured L3 or memory-controller instances.
 - Contextual help on configuration categories, fields, abbreviated table
-  columns, policies, and result views. Hover and keyboard focus use the same
-  tooltip content.
+  columns, policies, and result views. Help opens on click and closes on
+  repeat click, outside click, close button, or Escape.
 - Anchored, scrollable algorithm popovers for L3 allocation, CMIN/CMAX,
   BMIN/BMAX, MC QoS, and control-effect interpretation.
 - A live `PARTID+PMG` monitor-group table updated at control intervals. It

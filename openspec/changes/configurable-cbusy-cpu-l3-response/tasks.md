@@ -11,7 +11,7 @@
 - [x] 2.2 RequesterRuntime按PARTID聚合CBusy cap，关闭响应时不收紧effective OSTD。
 - [x] 2.3 CacheMSC在fill返回时学习CBusy，并按PARTID cap限制新miss MSHR分配。
 - [x] 2.4 控制事件保留feedback source MSC用于证据追踪。
-- [x] 2.5 UI增加配置项和完整hover说明。
+- [x] 2.5 UI增加配置项和完整点击说明。
 
 ## 3. 验证
 

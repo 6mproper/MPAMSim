@@ -7,5 +7,5 @@ raw/latest filtered/control input BW、UNDER/OVER/HARD状态、candidate、grant
 
 #### Scenario: 查看Hard BMAX说明
 
-- **WHEN** 用户指向hard limit或MC monitor配置
+- **WHEN** 用户点击hard limit或MC monitor配置
 - **THEN** 说明上一周期输入、过冲、整周期门控、滞回释放和buffer增长

@@ -2248,11 +2248,11 @@ canvas {
 }
 
 [data-help] {
-  cursor: help;
+  cursor: pointer;
 }
 
 [data-algorithm] {
-  cursor: help;
+  cursor: pointer;
   text-decoration: underline dotted #83949f;
   text-underline-offset: 3px;
 }

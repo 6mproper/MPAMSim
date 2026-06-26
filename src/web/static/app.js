@@ -4063,9 +4063,7 @@ function applyContextHelp() {
   auditConfigHelpCoverage();
 }
 
-let algorithmTimer = null;
 let algorithmTarget = null;
-let algorithmPinned = false;
 
 function positionAlgorithmPopover(target) {
   const popover = $("#algorithmPopover");
@@ -4105,13 +4103,11 @@ function positionAlgorithmPopover(target) {
   popover.style.top = `${top}px`;
 }
 
-function showAlgorithmPopover(target, pin = false) {
+function showAlgorithmPopover(target) {
   const entry = algorithmHelp[target?.dataset.algorithm];
   if (!entry) return;
-  clearTimeout(algorithmTimer);
   hideHelp();
   algorithmTarget = target;
-  algorithmPinned = pin;
   $("#algorithmPopoverTitle").textContent = entry.title;
   $("#algorithmPopoverBody").innerHTML = renderAlgorithmBody(entry);
   const popover = $("#algorithmPopover");
@@ -4143,73 +4139,39 @@ function renderAlgorithmBody(entry) {
   return `<p class="algorithm-compact-lines">${escapeHtml(lines.join("\n"))}</p>`;
 }
 
-function scheduleAlgorithmPopover(target) {
-  clearTimeout(algorithmTimer);
-  algorithmTimer = setTimeout(
-    () => showAlgorithmPopover(target, false),
-    250,
-  );
-}
-
-function hideAlgorithmPopover(force = false) {
-  clearTimeout(algorithmTimer);
-  if (algorithmPinned && !force) return;
-  algorithmPinned = false;
+function hideAlgorithmPopover(target = null) {
+  if (target && target !== algorithmTarget) return;
   algorithmTarget = null;
   $("#algorithmPopover").classList.remove("visible");
   $("#algorithmPopover").setAttribute("aria-hidden", "true");
 }
 
 function bindAlgorithmEvents() {
-  document.addEventListener("mouseover", (event) => {
-    const target = event.target.closest?.("[data-algorithm]");
-    if (target && target !== algorithmTarget && !algorithmPinned) {
-      scheduleAlgorithmPopover(target);
-    }
-  });
-  document.addEventListener("mouseout", (event) => {
-    const target = event.target.closest?.("[data-algorithm]");
-    if (
-      target
-      && !target.contains(event.relatedTarget)
-      && !$("#algorithmPopover").contains(event.relatedTarget)
-      && !algorithmPinned
-    ) {
-      hideAlgorithmPopover();
-    }
-  });
   document.addEventListener("click", (event) => {
     const target = event.target.closest?.("[data-algorithm]");
-    if (target) showAlgorithmPopover(target, true);
-  });
-  document.addEventListener("focusin", (event) => {
-    const target = event.target.closest?.("[data-algorithm]");
-    if (target && target !== algorithmTarget) {
-      showAlgorithmPopover(target, false);
+    if (target) {
+      if (target === algorithmTarget) {
+        hideAlgorithmPopover(target);
+      } else {
+        showAlgorithmPopover(target);
+      }
+      return;
     }
-  });
-  document.addEventListener("focusout", (event) => {
-    const target = event.target.closest?.("[data-algorithm]");
     if (
-      target
-      && !target.contains(event.relatedTarget)
-      && !$("#algorithmPopover").contains(event.relatedTarget)
-      && !algorithmPinned
+      algorithmTarget
+      && !$("#algorithmPopover").contains(event.target)
     ) {
       hideAlgorithmPopover();
     }
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") hideAlgorithmPopover(true);
-  });
-  $("#algorithmPopover").addEventListener("mouseleave", () => {
-    if (!algorithmPinned) hideAlgorithmPopover();
+    if (event.key === "Escape") hideAlgorithmPopover();
   });
   $("#algorithmPopoverClose").addEventListener(
     "click",
     (event) => {
       event.stopPropagation();
-      hideAlgorithmPopover(true);
+      hideAlgorithmPopover();
     },
   );
 }
@@ -4250,6 +4212,7 @@ function positionHelp(target) {
 function showHelp(target) {
   if (!target?.dataset.help) return;
   if (target.closest?.("[data-algorithm]")) return;
+  hideAlgorithmPopover();
   activeHelpTarget = target;
   const tooltip = $("#helpTooltip");
   tooltip.textContent = target.dataset.help;
@@ -4269,31 +4232,28 @@ function bindHelpTarget(target) {
   target.removeAttribute("title");
   if (target.dataset.helpBound === "true") return;
   target.dataset.helpBound = "true";
-  target.addEventListener("mouseenter", () => showHelp(target));
-  target.addEventListener("mouseleave", () => hideHelp(target));
-  target.addEventListener("focusin", () => showHelp(target));
-  target.addEventListener("focusout", () => hideHelp(target));
 }
 
 function bindHelpEvents() {
-  document.addEventListener("mouseover", (event) => {
+  document.addEventListener("click", (event) => {
     const target = event.target.closest?.("[data-help]");
-    if (target && target !== activeHelpTarget) showHelp(target);
-  });
-  document.addEventListener("mouseout", (event) => {
-    const target = event.target.closest?.("[data-help]");
+    if (target && !target.closest?.("[data-algorithm]")) {
+      if (target === activeHelpTarget) {
+        hideHelp(target);
+      } else {
+        showHelp(target);
+      }
+      return;
+    }
     if (
-      target
-      && !target.contains(event.relatedTarget)
-    ) hideHelp(target);
+      activeHelpTarget
+      && !$("#helpTooltip").contains(event.target)
+    ) {
+      hideHelp();
+    }
   });
-  document.addEventListener("focusin", (event) => {
-    const target = event.target.closest?.("[data-help]");
-    if (target) showHelp(target);
-  });
-  document.addEventListener("focusout", (event) => {
-    const target = event.target.closest?.("[data-help]");
-    if (target) hideHelp(target);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideHelp();
   });
 }
 

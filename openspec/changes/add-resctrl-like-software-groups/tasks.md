@@ -16,7 +16,7 @@
 - [x] 3.1 新增resctrl配置页签和紧凑软件组编辑表。
 - [x] 3.2 显示mount/options、info、group树、内部PARTID/PMG映射和last_cmd_status。
 - [x] 3.3 显示resctrl风格`mon_data`，复用现有监控结果。
-- [x] 3.4 每个新增配置控件提供指向解释。
+- [x] 3.4 每个新增配置控件提供点击解释。
 
 ## 4. 验证
 

@@ -11,11 +11,11 @@ CMIN, proportional CMAX, BMIN, BMAX, 3-bit MC QoS, and CBusy.
 ## ADDED Requirements
 
 ### Requirement: Structured Algorithm Explanations
-The console SHALL show an anchored algorithm explanation when the pointer
-hovers over a tagged control, flow stage, or result metric.
+The console SHALL show an anchored algorithm explanation when the user clicks
+a tagged control, flow stage, or result metric.
 
 #### Scenario: Inspect an algorithm
-- **WHEN** the pointer rests on CMIN, CMAX, BMIN, BMAX, MC QoS, CBusy, or OSTD
+- **WHEN** the user clicks CMIN, CMAX, BMIN, BMAX, MC QoS, CBusy, or OSTD
 - **THEN** the window shows formula, activation rules, monitor evidence, model version, and boundary without overlapping the target
 
 ### Requirement: PARTID Control-Effect Overview

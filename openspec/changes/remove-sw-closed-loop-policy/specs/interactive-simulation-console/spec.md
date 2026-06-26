@@ -27,10 +27,10 @@
 
 ### Requirement: 结构化算法说明
 
-指向控制字段时，控制台 MUST 显示输入、保存状态、更新周期、决策规则、动作点、
+点击控制字段时，控制台 MUST 显示输入、保存状态、更新周期、决策规则、动作点、
 恢复、交互优先级、前向进展、可观察证据和模型边界。
 
-#### Scenario: 指向控制字段
+#### Scenario: 点击控制字段
 
-- **WHEN** 用户指向或focus CMIN、CMAX、CPBM、BMIN、BMAX、MC QoS、CBusy或OSTD配置
+- **WHEN** 用户点击CMIN、CMAX、CPBM、BMIN、BMAX、MC QoS、CBusy或OSTD配置
 - **THEN** 显示完整控制逻辑并标明当前实现与目标规格的差异

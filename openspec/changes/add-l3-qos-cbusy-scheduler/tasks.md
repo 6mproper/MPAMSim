@@ -10,7 +10,7 @@
 - [x] 2.2 CacheMSC lookup入口队列按effective QoS选择请求，平级FIFO。
 - [x] 2.3 CacheMSC MSHR等待队列按effective QoS选择可准入请求，CBusy cap阻塞请求不阻塞其他可准入请求。
 - [x] 2.4 L3监控导出base/effective QoS、CBusy demote、candidate/grant证据。
-- [x] 2.5 UI配置和hover说明更新。
+- [x] 2.5 UI配置和点击说明更新。
 
 ## 3. 验证
 
