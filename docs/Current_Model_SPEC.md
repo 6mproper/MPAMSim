@@ -190,8 +190,8 @@ P1成功标准：
 flowchart LR
     CFG["配置与场景"] --> VAL["统一Schema与三级诊断"]
     VAL --> K["确定性离散事件内核"]
-    K --> SRC["16线程激励"]
-    SRC --> CPU["8核共享OSTD / RN"]
+    K --> SRC["硬件线程激励"]
+    SRC --> CPU["可配置多核共享OSTD / RN"]
     CPU --> REQ["双向REQ Ring"]
     REQ --> L3["L3 HN: Set/Tag/Way + MSHR"]
     L3 -->|Miss REQ| MC["MC SN: Buffer + QoS + BMIN/BMAX"]
@@ -329,7 +329,7 @@ UI不得维护隐藏默认值。
 
 - 仿真时长、seed和验证等级；
 - CPU/L3/MC/NoC时钟；
-- 16线程激励及PARTID/PMG；
+- 由SoC拓扑展开的硬件线程激励及PARTID/PMG；
 - CPBM、CMIN、CMAX；
 - BMIN、BMAX、MC QoS、CBusy；
 - 监控周期和滤波权重。
@@ -1306,7 +1306,7 @@ UI显示软件组名称及只读的内部PARTID/PMG映射。
 
 ### SW-005：当前已实现的resctrl-like入口
 
-Web控制台新增`resctrl`页签，默认关闭。启用后，配置构建器在生成YAML前执行软件组
+Web控制台在`MPAM`页签内提供resctrl-like配置区，默认关闭。启用后，配置构建器在生成YAML前执行软件组
 到硬件标签的转换：
 
 ```text
@@ -1472,7 +1472,7 @@ outcome_reason
 ```
 
 其中`parameters`必须等价于当前Web表单通过`collectParameters()`提交给仿真后端的参数集，
-包含SoC、16线程激励、resctrl-like软件组、MPAM PARTID表和控制模式参数。
+包含SoC、硬件线程激励、resctrl-like软件组、MPAM PARTID表和控制模式参数。
 
 导入规则：
 
@@ -1700,7 +1700,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - 类型化`Transaction`、路由、延迟和MC仲裁状态；
 - 类型化监控快照、样本、控制决策和控制事件；
 - 组件能力声明、注册和兼容性校验；
-- 8核16线程的Thread/Core两级OSTD；
+- 可配置核数和每核线程数的Thread/Core两级OSTD；
 - `shared`、`static_partition`和`reserve_borrow` Core策略；
 - 按PARTID保存CBusy反馈和准入状态，并按`(PARTID, home MC)`保留outstanding和stall诊断；
 - `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。

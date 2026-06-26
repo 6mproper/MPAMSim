@@ -9,7 +9,7 @@ proposal、design、delta spec和tasks。
 当前已完成：
 
 1. 类型化Transaction、监控和组件能力契约；
-2. 8核16线程、Thread/Core两级OSTD和三种Core共享策略；
+2. 可配置核数/每核线程数、Thread/Core两级OSTD和三种Core共享策略；
 3. REQ/RSP/DAT三条独立双向bufferless ring；
 4. 真实L3 set/tag/way、LRU/PLRU、MSHR、fill buffer和同line read合并；
 5. L3每256本地拍raw/filtered监控，CMIN/CMAX读取上一发布值；

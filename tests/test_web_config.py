@@ -127,6 +127,111 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.ostd.thread_reserve == 8
 
 
+def test_web_parameters_shrink_stimulus_for_4c2t(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["active_cores"] = 4
+    parameters["threads_per_core"] = 2
+
+    raw = build_config(parameters, str(tmp_path / "run_4c2t"))
+    config_path = tmp_path / "web_4c2t.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+
+    expected_requesters = {
+        f"cpu{core}.t{thread}"
+        for core in range(4)
+        for thread in range(2)
+    }
+    assert len(config.requesters) == 8
+    assert len(config.workloads) == 8
+    assert {workload.requesters[0] for workload in config.workloads} == expected_requesters
+    assert {requester.id for requester in config.requesters} == expected_requesters
+    assert len(config.partitions) == 16
+    assert [workload.partid for workload in config.workloads] == list(range(8))
+
+
+def test_web_parameters_shrink_topology_to_1c1t(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["active_cores"] = 1
+    parameters["threads_per_core"] = 1
+
+    raw = build_config(parameters, str(tmp_path / "run_1c1t"))
+    config_path = tmp_path / "web_1c1t.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+
+    assert [requester.id for requester in config.requesters] == ["cpu0.t0"]
+    assert [workload.requesters[0] for workload in config.workloads] == ["cpu0.t0"]
+    assert len(config.caches) == 1
+    assert config.clusters[0].l3 == "slc0"
+
+
+def test_web_parameters_expand_stimulus_for_16c2t(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["active_cores"] = 16
+    parameters["threads_per_core"] = 2
+
+    raw = build_config(parameters, str(tmp_path / "run_16c2t"))
+    config_path = tmp_path / "web_16c2t.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+
+    expected_requesters = {
+        f"cpu{core}.t{thread}"
+        for core in range(16)
+        for thread in range(2)
+    }
+    assert len(config.requesters) == 32
+    assert len(config.workloads) == 32
+    assert {workload.requesters[0] for workload in config.workloads} == expected_requesters
+    assert {requester.id for requester in config.requesters} == expected_requesters
+    assert len(config.partitions) == 16
+    assert [workload.partid for workload in config.workloads[:16]] == list(range(16))
+    assert [workload.partid for workload in config.workloads[16:]] == list(range(16))
+
+
+def test_resctrl_cpu_thread_tokens_follow_threads_per_core(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["active_cores"] = 4
+    parameters["threads_per_core"] = 4
+    parameters["resctrl_enabled"] = True
+    parameters["resctrl_groups"] = [
+        {
+            "enabled": True,
+            "name": "root",
+            "partid": 0,
+            "schemata": "L3:0=fffff\nMB:0=256",
+            "tasks": "",
+            "cpus": "0-15",
+        },
+        {
+            "enabled": True,
+            "name": "latency",
+            "partid": 5,
+            "schemata": "L3:0=fffff\nMB:0=80",
+            "tasks": "cpu1.t3",
+            "cpus": "",
+            "mon_groups": "latency_mon|3|cpu1.t3|",
+        },
+    ]
+
+    raw = build_config(parameters, str(tmp_path / "resctrl_4t"))
+    workloads = {workload["name"]: workload for workload in raw["workloads"]}
+
+    assert workloads["thread_07"]["requesters"] == ["cpu1.t3"]
+    assert workloads["thread_07"]["partid"] == 5
+    assert workloads["thread_07"]["pmg"] == 3
+
+
 def test_web_defaults_use_short_interactive_timing(tmp_path) -> None:
     parameters = default_parameters()
 

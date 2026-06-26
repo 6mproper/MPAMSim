@@ -176,11 +176,11 @@ const resultTabHelp = {
   "控制记录": "显示L3、MC和CBusy等硬件机制在各采样周期产生的控制事件。",
 };
 const sectionHeadingHelp = {
-  "仿真与多核": "定义运行时间、采样周期以及 8 核 16 线程 requester 的公共约束。",
+  "仿真与多核": "定义运行时间、采样周期以及SoC核数、每核线程和requester OSTD公共约束。",
   "L3 / SLC": "定义共享缓存实例、几何、抽样监控粒度和固定查询延迟。",
   "NoC": "定义抽象互连的 router、链路、队列和虚通道容量。",
   "Memory Controller": "定义内存控制器数量、通道带宽、服务延迟和队列深度。",
-  "16 线程独立激励": "为8核16线程分别配置标签、地址行为、速率、请求大小、读写比例、工作集和P99目标。",
+  "硬件线程独立激励": "为SoC核数和每核线程展开出的requester分别配置标签、地址行为、速率、请求大小、读写比例、工作集和P99目标。",
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 百分比、MC 带宽、3-bit QoS 和监控开关。",
   "控制模式": "选择无控制或有控制；有控制会执行当前配置中已开启的硬件机制。",
   "MC 调度算法参数": "配置MC本地256拍监控、历史滤波、BMIN/BMAX滞回、共享buffer 3-bit QoS和可选PARTID service deficit。",
@@ -195,7 +195,7 @@ const resctrlHelp = {
   mode: "resctrl mode。本阶段支持shareable/exclusive标签记录，不实现pseudo-locking或严格硬件独占校验。",
   schemata: "软件可写schema。支持L3:<domain>=<cbm>和MB:<domain>=<Gbps>两类；domain 0值会作为未列出domain的默认值。",
   tasks: "显式任务列表，格式可用thread_01、cpu0.t1、1或1-3；优先级为tasks > cpus_list > root。",
-  cpus: "逻辑CPU默认组，格式如0-3,8；本模型把16个硬件线程槽位当作逻辑CPU 0..15。",
+  cpus: "逻辑CPU默认组，格式如0-3,8；本模型把SoC页签展开出的硬件线程槽位当作逻辑CPU 0..N-1。",
   mb_limit_mode: "把MB schema转换为MC BMAX时采用softlimit或hardlimit。公开resctrl不直接暴露本模型的soft/hard实现细节，这里作为仿真开关保留。",
   mon_groups: "MON group列表，每行name|pmg|tasks|cpus。MON group只改变PMG，不改变PARTID；PMG作用域限定在父CTRL_MON group内。",
   remove: "删除该软件组行；root组不建议删除，若缺失构建器会自动补root。",
@@ -298,6 +298,13 @@ function setStatus(status, message, progress = 0) {
 }
 
 function fillForm(values) {
+  $$("[data-param]").forEach((input) => {
+    const key = input.dataset.param;
+    if (!(key in values)) return;
+    if (input.type === "radio") input.checked = input.value === String(values[key]);
+    else if (input.type === "checkbox") input.checked = Boolean(values[key]);
+    else input.value = values[key];
+  });
   renderPartidConfig(
     values.partid_configs || state.defaults.partid_configs || [],
   );
@@ -307,13 +314,6 @@ function fillForm(values) {
   renderResctrlConfig(
     values.resctrl_groups || state.defaults.resctrl_groups || [],
   );
-  $$("[data-param]").forEach((input) => {
-    const key = input.dataset.param;
-    if (!(key in values)) return;
-    if (input.type === "radio") input.checked = input.value === String(values[key]);
-    else if (input.type === "checkbox") input.checked = Boolean(values[key]);
-    else input.value = values[key];
-  });
   clampDependentInputs();
   renderSocCapabilitySummaries();
 }
@@ -438,6 +438,103 @@ function selectOptions(values, selected) {
   ).join("");
 }
 
+function activeCoreCount() {
+  return Math.max(1, Math.min(16, Number($('[data-param="active_cores"]')?.value || 8)));
+}
+
+function threadsPerCoreCount() {
+  return Math.max(1, Math.min(4, Number($('[data-param="threads_per_core"]')?.value || 2)));
+}
+
+function hardwareThreadCount() {
+  return activeCoreCount() * threadsPerCoreCount();
+}
+
+function moduloPartid(value, fallback) {
+  const parsed = Number(value);
+  const base = Number.isFinite(parsed) ? parsed : fallback;
+  return ((Math.trunc(base) % 16) + 16) % 16;
+}
+
+function requesterForSlot(slot) {
+  const threadsPerCore = threadsPerCoreCount();
+  return `cpu${Math.floor(slot / threadsPerCore)}.t${slot % threadsPerCore}`;
+}
+
+function defaultStimulusRow(slot) {
+  const workloadTypes = ["mixed_rw", "pointer_chase", "stream", "random_read"];
+  const workloadType = workloadTypes[slot % workloadTypes.length];
+  const typeDefaults = {
+    stream: {
+      address_pattern: "sequential",
+      dependency_mode: "independent",
+      issue_selection: "fifo",
+    },
+    pointer_chase: {
+      address_pattern: "pointer_chase",
+      dependency_mode: "pointer_chain",
+      issue_selection: "fifo",
+    },
+    random_read: {
+      address_pattern: "uniform_random",
+      dependency_mode: "independent",
+      issue_selection: "fifo",
+    },
+    mixed_rw: {
+      address_pattern: "uniform_random",
+      dependency_mode: "independent",
+      issue_selection: "eligible_scan",
+    },
+  }[workloadType];
+  const row = {
+    slot,
+    enabled: true,
+    requester: requesterForSlot(slot),
+    partid: slot % 16,
+    pmg: slot % 16,
+    workload_type: workloadType,
+    ...typeDefaults,
+    source_queue_depth: typeDefaults.issue_selection === "eligible_scan" ? 4 : 1,
+    eligible_scan_depth: typeDefaults.issue_selection === "eligible_scan" ? 4 : 1,
+    rate_value: 6.0,
+    rate_unit: "gbps",
+    request_size_bytes: 64,
+    read_ratio: workloadType === "mixed_rw" ? 0.75 : 1.0,
+    working_set_mb: workloadType === "pointer_chase" ? 64 : 256,
+    address_base_mb: slot * 256,
+    target_p99_ns: 0.0,
+  };
+  if (slot === 1) {
+    row.rate_value = 4.0;
+    row.rate_unit = "mrps";
+    row.working_set_mb = 64;
+    row.target_p99_ns = 500.0;
+  }
+  if (slot === 2) {
+    row.rate_value = 12.0;
+    row.rate_unit = "gbps";
+    row.working_set_mb = 1024;
+    row.read_ratio = 0.8;
+  }
+  return row;
+}
+
+function normalizeStimulusRows(rows) {
+  const bySlot = new Map(
+    (rows || [])
+      .filter((row) => row && Number.isInteger(Number(row.slot)))
+      .map((row) => [Number(row.slot), { ...row }]),
+  );
+  return Array.from({ length: hardwareThreadCount() }, (_, slot) => {
+    const row = { ...defaultStimulusRow(slot), ...(bySlot.get(slot) || {}) };
+    row.slot = slot;
+    row.requester = requesterForSlot(slot);
+    row.partid = moduloPartid(row.partid, slot);
+    row.pmg = moduloPartid(row.pmg, slot);
+    return row;
+  });
+}
+
 function partidColor(partid) {
   const index = Number(partid);
   return partidPalette[
@@ -520,7 +617,7 @@ function collectPartidConfigs() {
 }
 
 function renderStimulusConfig(rows) {
-  state.stimulusConfigs = rows.map((row) => ({ ...row }));
+  state.stimulusConfigs = normalizeStimulusRows(rows);
   const partidOptions = Array.from(
     { length: 16 },
     (_, partid) => [partid, `PARTID ${partid}`],
@@ -576,7 +673,7 @@ function collectStimulusConfigs() {
     return {
       slot,
       enabled: value("enabled").checked,
-      requester: `cpu${Math.floor(slot / 2)}.t${slot % 2}`,
+      requester: requesterForSlot(slot),
       partid: Number(value("partid").value),
       pmg: Number(value("pmg").value),
       workload_type: value("workload_type").value,
@@ -683,12 +780,13 @@ function addResctrlGroup() {
 
 function parseSlotSet(text, allowCpuName = true) {
   const result = new Set();
+  const maxSlot = hardwareThreadCount() - 1;
   String(text || "").split(/[;,]/).forEach((rawToken) => {
     const token = rawToken.trim();
     if (!token) return;
     const add = (slot) => {
       const value = Number(slot);
-      if (Number.isInteger(value) && value >= 0 && value <= 15) {
+      if (Number.isInteger(value) && value >= 0 && value <= maxSlot) {
         result.add(value);
       }
     };
@@ -699,7 +797,7 @@ function parseSlotSet(text, allowCpuName = true) {
       add(token.replace(/^thread_?/i, ""));
     } else if (allowCpuName && /^cpu\d+\.t\d+$/i.test(token)) {
       const [, core, thread] = token.match(/^cpu(\d+)\.t(\d+)$/i);
-      add(Number(core) * 2 + Number(thread));
+      add(Number(core) * threadsPerCoreCount() + Number(thread));
     } else {
       add(token);
     }
@@ -739,7 +837,7 @@ function resctrlAssignments() {
     }
   });
   const bySlot = new Map();
-  Array.from({ length: 16 }, (_, slot) => slot).forEach((slot) => {
+  Array.from({ length: hardwareThreadCount() }, (_, slot) => slot).forEach((slot) => {
     const group = taskGroups.get(slot) || cpuGroups.get(slot) || root;
     const monGroup = parseMonGroupLines(group.mon_groups).find((row) =>
       row.taskSlots.has(slot) || row.cpuSlots.has(slot)
@@ -814,7 +912,11 @@ function normalizePartidMasks() {
 }
 
 function clampDependentInputs() {
-  const cores = Number($('[data-param="active_cores"]').value || 8);
+  const active = $('[data-param="active_cores"]');
+  active.value = Math.max(1, Math.min(16, Number(active.value || 8)));
+  const cores = Number(active.value || 8);
+  const threads = $('[data-param="threads_per_core"]');
+  threads.value = Math.max(1, Math.min(4, Number(threads.value || 2)));
   const l3 = $('[data-param="l3_instances"]');
   l3.max = Math.min(8, cores);
   if (Number(l3.value) > Number(l3.max)) l3.value = l3.max;
@@ -823,6 +925,22 @@ function clampDependentInputs() {
   if (Number(interval.value) > Number(interval.max)) interval.value = interval.max;
   normalizePartidMasks();
   normalizeCbusyCaps();
+}
+
+function syncStimulusTopology() {
+  clampDependentInputs();
+  renderStimulusConfig(collectStimulusConfigs());
+  renderResctrlInfoSummary();
+  applyContextHelp();
+  renderConfigDiagnostics();
+  renderSocCapabilitySummaries();
+}
+
+function bindTopologyInput(selector) {
+  const input = $(selector);
+  if (!input) return;
+  input.addEventListener("input", syncStimulusTopology);
+  input.addEventListener("change", syncStimulusTopology);
 }
 
 function normalizeCbusyCaps() {
@@ -4415,6 +4533,8 @@ function bindEvents() {
     renderAll();
   });
   $('[data-param="duration_ns"]').addEventListener("input", clampDependentInputs);
+  bindTopologyInput('[data-param="active_cores"]');
+  bindTopologyInput('[data-param="threads_per_core"]');
   $('[data-param="max_outstanding"]').addEventListener("input", normalizeCbusyCaps);
   $('[data-param="l3_ways"]').addEventListener("input", normalizePartidMasks);
   $("#partidConfigTable").addEventListener("change", (event) => {

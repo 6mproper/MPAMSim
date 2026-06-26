@@ -165,8 +165,12 @@ def _default_partid_configs(
     return rows
 
 
-def _thread_requester(slot: int) -> str:
-    return f"cpu{slot // 2}.t{slot % 2}"
+def _hardware_threads(active_cores: int, threads_per_core: int) -> int:
+    return active_cores * threads_per_core
+
+
+def _thread_requester(slot: int, threads_per_core: int = 2) -> str:
+    return f"cpu{slot // threads_per_core}.t{slot % threads_per_core}"
 
 
 def _stimulus_defaults_for_type(workload_type: str) -> Dict[str, object]:
@@ -215,7 +219,10 @@ def _stimulus_defaults_for_type(workload_type: str) -> Dict[str, object]:
     return dict(mapping.get(workload_type, mapping["stream"]))
 
 
-def _default_stimulus_configs() -> List[Dict[str, object]]:
+def _default_stimulus_configs(
+    active_cores: int = 8,
+    threads_per_core: int = 2,
+) -> List[Dict[str, object]]:
     rows = []
     workload_types = [
         "mixed_rw",
@@ -223,15 +230,15 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
         "stream",
         "random_read",
     ]
-    for slot in range(16):
+    for slot in range(_hardware_threads(active_cores, threads_per_core)):
         workload_type = workload_types[slot % len(workload_types)]
         type_defaults = _stimulus_defaults_for_type(workload_type)
         row = {
             "slot": slot,
             "enabled": True,
-            "requester": _thread_requester(slot),
-            "partid": slot,
-            "pmg": slot,
+            "requester": _thread_requester(slot, threads_per_core),
+            "partid": slot % 16,
+            "pmg": slot % 16,
             "workload_type": workload_type,
             **type_defaults,
             "source_queue_depth": (
@@ -257,22 +264,24 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
             "target_p99_ns": 0.0,
         }
         rows.append(row)
-    rows[1].update(
-        {
-            "rate_value": 4.0,
-            "rate_unit": "mrps",
-            "working_set_mb": 64,
-            "target_p99_ns": 500.0,
-        }
-    )
-    rows[2].update(
-        {
-            "rate_value": 12.0,
-            "rate_unit": "gbps",
-            "working_set_mb": 1024,
-            "read_ratio": 0.8,
-        }
-    )
+    if len(rows) > 1:
+        rows[1].update(
+            {
+                "rate_value": 4.0,
+                "rate_unit": "mrps",
+                "working_set_mb": 64,
+                "target_p99_ns": 500.0,
+            }
+        )
+    if len(rows) > 2:
+        rows[2].update(
+            {
+                "rate_value": 12.0,
+                "rate_unit": "gbps",
+                "working_set_mb": 1024,
+                "read_ratio": 0.8,
+            }
+        )
     return rows
 
 
@@ -360,7 +369,7 @@ def _parse_range_tokens(
     return result
 
 
-def _task_slot_from_token(token: str) -> int:
+def _task_slot_from_token(token: str, threads_per_core: int) -> int:
     text = token.strip()
     if text.startswith("thread_"):
         return int(text.removeprefix("thread_"))
@@ -368,23 +377,28 @@ def _task_slot_from_token(token: str) -> int:
         return int(text.removeprefix("thread"))
     if text.startswith("cpu") and ".t" in text:
         core_text, thread_text = text.removeprefix("cpu").split(".t", 1)
-        return int(core_text) * 2 + int(thread_text)
+        return int(core_text) * threads_per_core + int(thread_text)
     return int(text)
 
 
-def _parse_task_slots(text: object) -> Set[int]:
+def _parse_task_slots(
+    text: object,
+    active_cores: int,
+    threads_per_core: int,
+) -> Set[int]:
     result: Set[int] = set()
+    max_slot = _hardware_threads(active_cores, threads_per_core) - 1
     for raw_token in str(text or "").replace(";", ",").split(","):
         token = raw_token.strip()
         if not token:
             continue
         if "-" in token and token.replace("-", "").replace("_", "").isdigit():
-            result.update(_parse_range_tokens(token, 15, "resctrl task"))
+            result.update(_parse_range_tokens(token, max_slot, "resctrl task"))
             continue
-        slot = _task_slot_from_token(token)
-        if not 0 <= slot <= 15:
+        slot = _task_slot_from_token(token, threads_per_core)
+        if not 0 <= slot <= max_slot:
             raise ParameterError(
-                f"resctrl task {token} maps outside thread_00..thread_15"
+                f"resctrl task {token} maps outside thread_00..thread_{max_slot:02d}"
             )
         result.add(slot)
     return result
@@ -456,7 +470,11 @@ def _domain_values(
     return result
 
 
-def _parse_resctrl_mon_groups(raw: object) -> List[Dict[str, object]]:
+def _parse_resctrl_mon_groups(
+    raw: object,
+    active_cores: int,
+    threads_per_core: int,
+) -> List[Dict[str, object]]:
     if isinstance(raw, list):
         rows = raw
     else:
@@ -492,10 +510,14 @@ def _parse_resctrl_mon_groups(raw: object) -> List[Dict[str, object]]:
             {
                 "name": name[:32],
                 "pmg": pmg,
-                "task_slots": _parse_task_slots(row.get("tasks", "")),
+                "task_slots": _parse_task_slots(
+                    row.get("tasks", ""),
+                    active_cores,
+                    threads_per_core,
+                ),
                 "cpu_slots": _parse_range_tokens(
                     row.get("cpus", ""),
-                    15,
+                    _hardware_threads(active_cores, threads_per_core) - 1,
                     "resctrl MON cpus_list",
                 ),
             }
@@ -509,6 +531,8 @@ def _parse_resctrl_groups(
     total_mc_bandwidth: float,
     l3_instances: int,
     mc_count: int,
+    active_cores: int,
+    threads_per_core: int,
 ) -> List[Dict[str, object]]:
     groups = raw_groups if isinstance(raw_groups, list) else []
     if not groups:
@@ -553,10 +577,14 @@ def _parse_resctrl_groups(
                 "partid": partid,
                 "mode": mode,
                 "mb_limit_mode": limit_mode,
-                "task_slots": _parse_task_slots(raw.get("tasks", "")),
+                "task_slots": _parse_task_slots(
+                    raw.get("tasks", ""),
+                    active_cores,
+                    threads_per_core,
+                ),
                 "cpu_slots": _parse_range_tokens(
                     raw.get("cpus", ""),
-                    15,
+                    _hardware_threads(active_cores, threads_per_core) - 1,
                     "resctrl cpus_list",
                 ),
                 "l3_cpbm_by_domain": _domain_values(
@@ -568,7 +596,9 @@ def _parse_resctrl_groups(
                     mc_count,
                 ),
                 "mon_groups": _parse_resctrl_mon_groups(
-                    raw.get("mon_groups", "")
+                    raw.get("mon_groups", ""),
+                    active_cores,
+                    threads_per_core,
                 ),
             }
         )
@@ -583,7 +613,9 @@ def _parse_resctrl_groups(
                 "mode": "shareable",
                 "mb_limit_mode": "softlimit",
                 "task_slots": set(),
-                "cpu_slots": set(range(16)),
+                "cpu_slots": set(
+                    range(_hardware_threads(active_cores, threads_per_core))
+                ),
                 "l3_cpbm_by_domain": {
                     index: f"{full_mask:0{width}x}"
                     for index in range(l3_instances)
@@ -605,6 +637,8 @@ def _apply_resctrl_groups(
     max_outstanding: int,
     l3_instances: int,
     mc_count: int,
+    active_cores: int,
+    threads_per_core: int,
 ) -> Dict[str, object]:
     if not bool(values.get("resctrl_enabled", False)):
         return values
@@ -615,9 +649,11 @@ def _apply_resctrl_groups(
         else _default_partid_configs(ways, total_mc_bandwidth, max_outstanding)
     )
     stimulus_rows = copy.deepcopy(
-        values.get("stimulus_configs")
-        if isinstance(values.get("stimulus_configs"), list)
-        else _default_stimulus_configs()
+        _normalize_stimulus_configs(
+            values.get("stimulus_configs"),
+            active_cores,
+            threads_per_core,
+        )
     )
     groups = _parse_resctrl_groups(
         values.get("resctrl_groups"),
@@ -625,6 +661,8 @@ def _apply_resctrl_groups(
         total_mc_bandwidth,
         l3_instances,
         mc_count,
+        active_cores,
+        threads_per_core,
     )
     root = next(
         (group for group in groups if group["name"] == "root"),
@@ -735,6 +773,34 @@ def _apply_resctrl_groups(
     translated["partid_configs"] = partid_rows
     translated["stimulus_configs"] = stimulus_rows
     return translated
+
+
+def _normalize_stimulus_configs(
+    raw_rows: object,
+    active_cores: int,
+    threads_per_core: int,
+) -> List[Dict[str, object]]:
+    defaults = _default_stimulus_configs(active_cores, threads_per_core)
+    if not isinstance(raw_rows, list):
+        return defaults
+    rows_by_slot: Dict[int, Dict[str, object]] = {}
+    for index, raw in enumerate(raw_rows):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            slot = int(raw.get("slot", index))
+        except (TypeError, ValueError):
+            continue
+        rows_by_slot[slot] = copy.deepcopy(raw)
+    normalized = []
+    for slot, default_row in enumerate(defaults):
+        row = {**default_row, **rows_by_slot.get(slot, {})}
+        row["slot"] = slot
+        row["requester"] = _thread_requester(slot, threads_per_core)
+        row["partid"] = int(row.get("partid", slot % 16)) % 16
+        row["pmg"] = int(row.get("pmg", slot % 16)) % 16
+        normalized.append(row)
+    return normalized
 
 
 def default_parameters() -> Dict[str, object]:
@@ -1300,11 +1366,15 @@ def _parse_partid_configs(
 
 def _parse_stimulus_configs(
     parameters: Dict[str, object],
+    active_cores: int = 8,
+    threads_per_core: int = 2,
 ) -> List[Dict[str, object]]:
     raw_rows = parameters.get("stimulus_configs")
-    if not isinstance(raw_rows, list) or len(raw_rows) != 16:
+    expected_slots = _hardware_threads(active_cores, threads_per_core)
+    if not isinstance(raw_rows, list) or len(raw_rows) != expected_slots:
         raise ParameterError(
-            "stimulus_configs must contain exactly 16 thread rows"
+            "stimulus_configs must contain exactly "
+            f"{expected_slots} thread rows"
         )
     parsed = []
     seen = set()
@@ -1321,9 +1391,10 @@ def _parse_stimulus_configs(
                 "Each stimulus configuration must be an object"
             )
         slot = int(raw.get("slot", index))
-        if slot < 0 or slot > 15 or slot in seen:
+        if slot < 0 or slot >= expected_slots or slot in seen:
             raise ParameterError(
-                "Stimulus slots must uniquely cover 0..15"
+                "Stimulus slots must uniquely cover "
+                f"0..{expected_slots - 1}"
             )
         seen.add(slot)
         enabled = bool(raw.get("enabled", True))
@@ -1478,7 +1549,7 @@ def _parse_stimulus_configs(
             {
                 "slot": slot,
                 "enabled": enabled,
-                "requester": _thread_requester(slot),
+                "requester": _thread_requester(slot, threads_per_core),
                 "partid": partid,
                 "pmg": pmg,
                 "workload_type": workload_type,
@@ -1499,9 +1570,10 @@ def _parse_stimulus_configs(
                 "target_p99_ns": target_p99,
             }
         )
-    if seen != set(range(16)):
+    if seen != set(range(expected_slots)):
         raise ParameterError(
-            "Stimulus slots must cover every value 0..15"
+            "Stimulus slots must cover every value "
+            f"0..{expected_slots - 1}"
         )
     enabled_rows = [row for row in parsed if row["enabled"]]
     if not enabled_rows:
@@ -1575,16 +1647,19 @@ def build_config(
         values, "seed", 1234, 0, 2_147_483_647
     )
     active_cores = _integer(
-        values, "active_cores", 8, 8, 8
+        values, "active_cores", 8, 1, 16
     )
     threads_per_core = _integer(
-        values, "threads_per_core", 2, 2, 2
+        values, "threads_per_core", 2, 1, 4
     )
-    l3_instances = _integer(
-        values,
-        "l3_instances",
-        2,
-        1,
+    l3_instances = min(
+        _integer(
+            values,
+            "l3_instances",
+            2,
+            1,
+            8,
+        ),
         min(active_cores, 8),
     )
     l3_sets = _integer(
@@ -1906,6 +1981,8 @@ def build_config(
         max_outstanding,
         l3_instances,
         mc_count,
+        active_cores,
+        threads_per_core,
     )
     partid_configs = _parse_partid_configs(
         values,
@@ -1913,7 +1990,16 @@ def build_config(
         total_mc_bandwidth,
         max_outstanding,
     )
-    stimulus_configs = _parse_stimulus_configs(values)
+    values["stimulus_configs"] = _normalize_stimulus_configs(
+        values.get("stimulus_configs"),
+        active_cores,
+        threads_per_core,
+    )
+    stimulus_configs = _parse_stimulus_configs(
+        values,
+        active_cores,
+        threads_per_core,
+    )
     workloads = _build_workloads(stimulus_configs)
 
     interval_count = math.ceil(

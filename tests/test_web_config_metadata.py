@@ -142,6 +142,27 @@ def test_resctrl_config_workspace_is_inside_mpam_tab() -> None:
         assert snippet in app_js
 
 
+def test_soc_thread_topology_controls_drive_stimulus_rows() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-param="active_cores" type="number" min="1" max="16"' in index_html
+    assert 'data-param="threads_per_core" type="number" min="1" max="4"' in index_html
+    assert 'data-param="active_cores" type="number" value="8" readonly' not in index_html
+    assert 'data-param="threads_per_core" type="number" value="2" readonly' not in index_html
+    for snippet in (
+        "function hardwareThreadCount(",
+        "function requesterForSlot(",
+        "function normalizeStimulusRows(",
+        "function syncStimulusTopology(",
+    ):
+        assert snippet in app_js
+
+
 def test_mpam_rows_show_resctrl_managed_badge() -> None:
     app_js = (
         PROJECT_ROOT / "src/web/static/app.js"

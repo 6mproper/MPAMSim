@@ -2,7 +2,7 @@
 
 ### Requirement: 直接配置
 
-控制台 MUST 允许用户配置SoC、16线程激励、policy和16组PARTID控制，
+控制台 MUST 允许用户配置SoC、由SoC拓扑展开的硬件线程激励、policy和16组PARTID控制，
 无需修改源码。控制台初始默认值 MUST 使用可手动开启的无快反馈基线：
 
 - `l3_qos_scheduler_enable=false`

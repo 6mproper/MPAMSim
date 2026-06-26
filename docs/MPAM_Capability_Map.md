@@ -50,7 +50,7 @@ sources:
 | ACPI MPAM discovery | Firmware describes MSC topology | Not implemented | YAML/topology JSON serve as the model-side description |
 | PE-side BW control | Shape injection before the memory system | Partial behavioral implementation | Per-PARTID MC CBusy can clamp requester effective OSTD; no architected PE bandwidth register/token-bucket model |
 | CBusy feedback | Per-PARTID downstream pressure feedback | Implemented approximately, four configurable levels | MC bandwidth/queue detector, delayed feedback, max-across-MC aggregation, and stepwise release |
-| HW_SCALE | Scale same-PARTID PE limits by active PE count | Not implemented | The new 16-thread stimulus enables future experiments |
+| HW_SCALE | Scale same-PARTID PE limits by active PE count | Not implemented | The topology-expanded hardware-thread stimulus enables future experiments |
 | SMMU/device tagging | Assign PARTID/PMG to DMA and internal accesses | Generic requester interface reserved | Web scenario currently instantiates CPU threads only |
 | MSC domains/DCTRL | Local namespace translation and default controls | Not implemented | Future chiplet/domain extension |
 | Closed-loop policy | Monitor, decide, and update controls | Implemented as slow loop | P99-driven MC BMAX/QoS policy with hysteresis and hold time |
@@ -58,7 +58,7 @@ sources:
 ## 3. Current End-to-End Closed Loop
 
 ```text
-16 hardware-thread stimuli
+Topology-expanded hardware-thread stimuli
   -> requester with PARTID/PMG
   -> NoC queue with neutral arbitration
   -> L3 CPBM/CMIN/CMAX plus sampled CSU/traffic

@@ -214,12 +214,18 @@ P1成功 MUST 以控制动作闭环和证据完整性判断，不得要求任意
 
 ### Requirement: 独立硬件线程workload
 
-Web配置构建器 MUST 为16线程矩阵中每个启用行生成一个workload，并绑定固定requester。
+Web配置构建器 MUST 为`active_cores × threads_per_core`矩阵中每个启用行生成一个workload，
+并绑定由slot和每核线程数计算出的固定requester。
 
 #### Scenario: 启用全部激励
 
-- **WHEN** 16行全部启用
-- **THEN** resolved config包含16个workload并绑定16个不同CPU线程requester
+- **WHEN** 4C2T拓扑的8行全部启用
+- **THEN** resolved config包含8个workload并绑定8个不同CPU线程requester
+
+#### Scenario: 扩展16C2T拓扑
+
+- **WHEN** 16C2T拓扑使用默认激励
+- **THEN** resolved config包含32个workload并绑定32个不同CPU线程requester
 
 #### Scenario: 关闭一个激励
 

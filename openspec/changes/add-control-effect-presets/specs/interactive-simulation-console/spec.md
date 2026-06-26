@@ -17,7 +17,7 @@
 #### Scenario: 应用MC控制预设
 
 - **WHEN** 用户选择并应用MC BMAX/CBusy预设
-- **THEN** SoC参数、16线程激励、16 PARTID控制表和策略字段更新
+- **THEN** SoC参数、硬件线程激励、16 PARTID控制表和策略字段更新
 - **AND** 仿真状态仍保持ready或当前状态，不创建新的运行任务
 
 ### Requirement: 预设可构建

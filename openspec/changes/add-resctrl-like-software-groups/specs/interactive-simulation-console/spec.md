@@ -8,12 +8,12 @@ Web控制台 MUST 提供可选resctrl-like页签，让用户通过CTRL_MON group
 
 - **WHEN** 控制台加载默认配置
 - **THEN** resctrl-like模式 MUST 默认为关闭
-- **AND** 16线程激励仍直接使用原始PARTID/PMG配置
+- **AND** 当前SoC拓扑展开出的硬件线程激励仍直接使用原始PARTID/PMG配置
 
 #### Scenario: 启用软件资源组
 
 - **WHEN** 用户启用resctrl-like模式并提交仿真
-- **THEN** 控制台 MUST 在提交前把软件组映射为现有16线程PARTID/PMG配置和16组PARTID控制
+- **THEN** 控制台 MUST 在提交前把软件组映射为当前硬件线程PARTID/PMG配置和16组PARTID控制
 - **AND** MUST NOT 新增独立仿真运行模式或专用结果通路
 
 ### Requirement: resctrl-like软件接口可见

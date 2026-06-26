@@ -7,7 +7,7 @@
 - 新增可选resctrl-like软件资源组配置页签，保留原始线程和MPAM页签。
 - 支持CTRL_MON group、MON group、`schemata`、`tasks`、`cpus_list`和`mon_data`视图。
 - 按公开resctrl语义实现任务优先于CPU默认组、否则落到root组。
-- 在提交仿真前把软件组映射为现有16线程`PARTID/PMG`和16组PARTID控制，不新增仿真数据面。
+- 在提交仿真前把软件组映射为当前硬件线程`PARTID/PMG`和16组PARTID控制，不新增仿真数据面。
 - UI显示软件组到内部PARTID/PMG的只读映射和`last_cmd_status`风格诊断。
 
 ## 非目标

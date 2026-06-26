@@ -2,7 +2,7 @@
 
 ### Requirement: 直接配置
 
-控制台 MUST 允许用户配置SoC、16线程激励、仿真时序、policy和16组PARTID控制，
+控制台 MUST 允许用户配置SoC、由SoC拓扑展开的硬件线程激励、仿真时序、policy和16组PARTID控制，
 无需修改源码。
 
 #### Scenario: 配置非默认PARTID

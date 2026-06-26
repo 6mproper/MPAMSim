@@ -3,7 +3,7 @@
 ## Purpose
 
 定义当前已实现的本地Web控制台，用于配置、运行、动态观察、验证和导出SoC流控与
-MPAM仿真，并规定16线程、16组PARTID、因果时间线和上下文帮助等交互能力。
+MPAM仿真，并规定由SoC拓扑展开的硬件线程、16组PARTID、因果时间线和上下文帮助等交互能力。
 ## Requirements
 ### Requirement: 配置文件导入导出
 
@@ -31,7 +31,7 @@ MPAM仿真，并规定16线程、16组PARTID、因果时间线和上下文帮助
 
 ### Requirement: 直接配置
 
-控制台 MUST 允许用户配置SoC、16线程激励、仿真时序、policy和16组PARTID控制，
+控制台 MUST 允许用户配置SoC、由SoC拓扑展开的硬件线程激励、仿真时序、policy和16组PARTID控制，
 无需修改源码。
 
 #### Scenario: 配置非默认PARTID
@@ -131,14 +131,21 @@ UI MUST 避免把目标达成或未达成表述为自动通过或失败。
 - **WHEN** 仿真任务成功完成
 - **THEN** UI提供该任务的HTML报告链接
 
-### Requirement: 16线程激励编辑器
+### Requirement: 动态硬件线程激励编辑器
 
-控制台 MUST 显示16行，固定映射`cpu0.t0`到`cpu7.t1`。
+控制台 MUST 根据SoC页签的`active_cores × threads_per_core`显示激励行，并按slot稳定映射到
+`cpuN.tM` requester。修改SoC核数或每核线程数后，控制台 MUST 自动裁剪或补齐激励行；
+16组PARTID控制表 MUST 保持固定。
 
 #### Scenario: 检查映射
 
-- **WHEN** 编辑器初始化
-- **THEN** 每个硬件线程恰好出现一次
+- **WHEN** `active_cores=4`且`threads_per_core=2`
+- **THEN** 编辑器 MUST 显示8行并覆盖`cpu0.t0`到`cpu3.t1`
+
+#### Scenario: 扩展到16C2T
+
+- **WHEN** `active_cores=16`且`threads_per_core=2`
+- **THEN** 编辑器 MUST 显示32行并覆盖`cpu0.t0`到`cpu15.t1`
 
 ### Requirement: MPAM页签内resctrl-like软件组配置区
 
@@ -150,12 +157,12 @@ MPAM直接配置区。控制台 MUST NOT 保留独立resctrl页签。
 
 - **WHEN** 控制台加载默认配置
 - **THEN** resctrl-like模式 MUST 默认为关闭
-- **AND** 16线程激励仍直接使用原始PARTID/PMG配置
+- **AND** 当前SoC拓扑展开出的硬件线程激励仍直接使用原始PARTID/PMG配置
 
 #### Scenario: 启用软件资源组
 
 - **WHEN** 用户启用resctrl-like模式并提交仿真
-- **THEN** 控制台 MUST 在提交前把软件组映射为现有16线程PARTID/PMG配置和16组PARTID控制
+- **THEN** 控制台 MUST 在提交前把软件组映射为当前硬件线程PARTID/PMG配置和16组PARTID控制
 - **AND** MUST NOT 新增独立仿真运行模式或专用结果通路
 
 #### Scenario: MPAM行提示软件接管

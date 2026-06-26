@@ -91,17 +91,14 @@ Supported workload types:
 - `phase_based`
 - `replay_trace` as a future extension.
 
-### 3.1 Interactive 8-Core / 16-Thread Matrix
+### 3.1 Interactive Hardware-Thread Matrix
 
-The local console uses a fixed reference topology of eight cores and two
-hardware threads per core. It exposes 16 stimulus rows with the mapping:
+The local console expands the SoC topology into one stimulus row per hardware
+thread. The row count is `active_cores * threads_per_core`, and row `N` maps
+to:
 
 ```text
-row 0  -> cpu0.t0
-row 1  -> cpu0.t1
-...
-row 14 -> cpu7.t0
-row 15 -> cpu7.t1
+cpu{floor(N / threads_per_core)}.t{N % threads_per_core}
 ```
 
 Every enabled row creates one independent workload and configures:
@@ -113,9 +110,9 @@ Every enabled row creates one independent workload and configures:
 - working-set size.
 - optional P99 target.
 
-Defaults map row N to PARTID N and PMG N. This is an experiment default, not
-an architectural restriction: multiple rows may share one PARTID while using
-different PMGs.
+Defaults map row N to `PARTID (N mod 16)` and `PMG (N mod 16)`. This is an
+experiment default, not an architectural restriction: multiple rows may share
+one PARTID while using different PMGs.
 
 ## 4. Injection Controls
 
