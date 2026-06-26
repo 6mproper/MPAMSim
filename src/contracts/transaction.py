@@ -83,7 +83,9 @@ class TransactionTiming:
 @dataclass
 class McArbitrationState:
     base_qos: int = 0
+    raw_effective_qos: int = 0
     effective_qos: int = 0
+    qos_mapping_enabled: bool = False
     aging_steps: int = 0
     bmin_promoted: bool = False
     soft_demoted: bool = False

@@ -777,6 +777,7 @@ def default_parameters() -> Dict[str, object]:
         "mc_qos_aging_max_steps": 3,
         "mc_bmin_qos_promote": 2,
         "mc_softlimit_qos_demote": 2,
+        "mc_qos_map_8_to_4_enable": False,
         "max_outstanding": 32,
         "core_max_outstanding": 48,
         "core_ostd_policy": "shared",
@@ -1785,6 +1786,11 @@ def build_config(
     mc_softlimit_qos_demote = _integer(
         values, "mc_softlimit_qos_demote", 2, 0, 7
     )
+    mc_qos_map_8_to_4_enable = _boolean(
+        values,
+        "mc_qos_map_8_to_4_enable",
+        False,
+    )
     max_outstanding = _integer(
         values, "max_outstanding", 32, 1, 1024
     )
@@ -2009,6 +2015,7 @@ def build_config(
             "qos_aging_max_steps": mc_qos_aging_max_steps,
             "bmin_qos_promote": mc_bmin_qos_promote,
             "softlimit_qos_demote": mc_softlimit_qos_demote,
+            "qos_map_8_to_4_enable": mc_qos_map_8_to_4_enable,
             "cbusy_sample_ns": cbusy_sample_ns,
             "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,
             "cbusy_release_hold_samples": cbusy_release_hold_samples,

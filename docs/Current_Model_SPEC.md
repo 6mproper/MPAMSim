@@ -4,16 +4,17 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | 已确认的目标架构与实现基线 |
-| 文档日期 | 2026-06-23 |
-| 当前代码基线 | `4237166`之后的P0机制可信性审视 |
+| 文档状态 | 唯一主规格：已确认的目标架构、实现基线和后续变更事实来源 |
+| 文档日期 | 2026-06-26 |
+| 当前代码基线 | `main`分支持续更新；第17章记录当前实现状态 |
 | 仿真方法 | 确定性离散事件仿真 |
 | 参考拓扑 | 8核、每核2线程、16个硬件线程、16个PARTID |
 | 研究重点 | 系统流控、MPAM监控与控制、控制动态和PPA折中 |
 | 暂不覆盖 | 完整一致性、完整CHI协议、CPU流水线、精确DRAM时序 |
 
-本文是后续代码修改的权威规格。当前代码尚未全部实现本文目标行为，
-第17章明确列出当前实现与目标规格的差异。
+本文是后续代码修改的唯一主规格。当前代码尚未全部实现本文目标行为，
+第17章明确列出当前实现与目标规格的差异。OpenSpec change只记录本次变更动机、
+增量需求和验收任务；变更合入后，长期有效的模型事实必须回写到本文。
 
 ### 0.1 文档语言
 
@@ -39,7 +40,15 @@
   不得缩写为`P0`、`P1`、`P2`。
 - UI文案、预设配置、测试说明和OpenSpec change都必须遵守该约定。
 
-### 0.4 基本原则
+### 0.4 规格组织原则
+
+- `docs/Current_Model_SPEC.md`是人工和AI继续开发时的唯一完整规格入口。
+- `openspec/specs/`只保留可机器校验的requirement摘要，不承载完整模型叙述。
+- `openspec/changes/`只保留变更提案、任务和差异验收，不作为长期事实来源。
+- 行为变更必须先写OpenSpec增量，再把合入后的稳定结论同步回本文。
+- 当OpenSpec delta与本文冲突时，以本文的最新合入版本为准；未合入变更以对应OpenSpec change为准。
+
+### 0.5 基本原则
 
 1. 验证控制是否按规则生效，不假设控制目标必然达到。
 2. 控制器只能读取规格允许的硬件信号或MPAM监控值。
@@ -48,7 +57,7 @@
 5. 控制效果必须能沿时间轴被用户观察和解释。
 6. 新特性通过模块接口和策略扩展，不在主仿真流程堆积特例。
 
-### 0.5 P0完成定义
+### 0.6 P0完成定义
 
 P0是**机制可信性验收**，不是**控制效果达标验收**。
 P0完成只需要满足：
@@ -70,7 +79,7 @@ P0还必须包含监控、滤波、控制和动作的双缓冲时序门槛：
 - 控制器不得读取窗口内尚未发布的监控或actual/debug状态；
 - 控制动作的`action_effective_time_ns`不得早于对应control input锁存边界。
 
-### 0.6 P1目标定义
+### 0.7 P1目标定义
 
 P1是**最小闭环MVP**，不是完整SoC仿真扩展。
 P1在P0机制可信的基础上，只要求跑通三条最小闭环场景：
@@ -948,15 +957,41 @@ AND not ordering_blocked
 0..7，7最高
 ```
 
-只影响MC调度。
+该配置是软件和MPAM设置表可见的基础档位，只影响MC调度，不赋予NoC上Ring、
+下Ring或传输优先级。
 
-### MC-006：同QoS仲裁
+### MC-006：可选8级到4级映射
+
+MC可以配置是否把最终计算出的8级raw effective QoS压缩成4级实际仲裁档位：
+
+```yaml
+mc_qos_map_8_to_4_enable: false
+```
+
+关闭时：
+
+```text
+final_qos = raw_effective_qos
+```
+
+开启时：
+
+```text
+raw:   0 1 2 3 4 5 6 7
+final: 0 1 1 1 2 2 2 3
+```
+
+该映射发生在`base + BMIN - soft BMAX + service deficit`计算并钳位到0..7之后。
+MC共享buffer的最终候选比较使用`final_qos`，而不是`raw_effective_qos`。
+UI和监控必须同时显示raw 8级值和实际参与仲裁的final值，以便识别低PPA映射导致的档位合并。
+
+### MC-007：同QoS仲裁
 
 默认使用`rotating_buffer_scan`：
 
 - 保存一个buffer slot轮询指针；
 - 从上次授权位置之后开始扫描；
-- 在最高QoS候选中选择第一个；
+- 在最高`final_qos`候选中选择第一个；
 - 不需要每entry年龄比较。
 
 ---
@@ -1061,7 +1096,7 @@ OVER_BMAX -> 下一个控制周期内该PARTID所有entry不可服务
 ### MC-CTRL-007：有效QoS
 
 ```text
-effective_qos = clamp(
+raw_effective_qos = clamp(
     base_qos
   + bmin_promote
   - soft_bmax_demote
@@ -1069,7 +1104,15 @@ effective_qos = clamp(
     0,
     7
 )
+
+if mc_qos_map_8_to_4_enable:
+    effective_qos = map_8_to_4(raw_effective_qos)
+else:
+    effective_qos = raw_effective_qos
 ```
+
+其中`effective_qos`是MC最终实际仲裁档位；`raw_effective_qos`是映射前的8级计算值。
+映射表为`0,1,2,3,4,5,6,7 -> 0,1,1,1,2,2,2,3`。
 
 ### MC-CTRL-008：可选service deficit
 
@@ -1103,7 +1146,8 @@ aging_max_qos_steps:
 - BMIN/BMAX目标及assert/release阈值；
 - raw/filtered/actual带宽；
 - UNDER_BMIN、OVER_BMAX、HARD_BLOCK；
-- base和effective QoS；
+- base、raw effective QoS和final effective QoS；
+- QoS 8级到4级映射开关和映射事件；
 - candidate数量和授权；
 - QoS饱和；
 - buffer深度；
@@ -1625,7 +1669,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - linear/XOR地址到MC交织，在CPU OSTD准入前确定home MC。
 - 每MC固定深度共享buffer和全深度ready候选；
 - 同line read/read可重排，任何含write的较新事务等待较老事务；
-- 3-bit base/effective QoS和同档rotating slot scan；
+- 3-bit base/raw effective QoS、可选8级到4级final QoS映射和同档rotating slot scan；
 - 每256个MC本地拍发布raw/latest filtered带宽，BMIN/BMAX读取锁存control input；
 - BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
 - 可选每PARTID饱和service-deficit计数器；
@@ -1641,7 +1685,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 | 激励 | 已拆分地址、操作、依赖、到达和发射选择，并保留type兼容预设 | 后续增加可配stride、hotset比例和多链UI |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
 | L3 | 已实现真实set/tag/way、MSHR、fill、sampled-owner counter bank、physical/raw/published/control input抽样误差和CMIN/CMAX输入 | 后续增加跨line child transaction |
-| MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
+| MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、可选8级到4级QoS映射、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
 | CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的目标MC/PARTID状态 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
 | 监控 | L3快照包含actual/raw/published/control sampled-owner，MC快照包含actual/raw/latest filtered/control input bandwidth和local cycle，内部控制事件已带稳定因果ID | 后续增加更完整的本地监控周期浏览器视图 |
 | UI | 多页签和大表 | 配置驱动单工作区 |

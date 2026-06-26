@@ -113,10 +113,10 @@ the 16 configurable PARTIDs. See `docs/MPAM_Capability_Map.md` for the model's
 implemented, approximated, reserved, and out-of-scope MPAM capabilities.
 
 The authoritative Chinese architecture and implementation specification is
-`docs/Current_Model_SPEC.md`. It defines the target model, current
-implementation status, migration constraints, configuration, monitoring, and
-verification contracts. Update it through the OpenSpec workflow when behavior
-changes.
+`docs/Current_Model_SPEC.md`. It is the single long-lived source of truth for
+the model. OpenSpec changes record proposals, deltas, and acceptance tasks;
+after a behavior change is accepted, the stable model facts must be folded back
+into `docs/Current_Model_SPEC.md`.
 
 For AI continuation, follow `docs/AI_Continuation_Plan.md` in order. The
 repo-local `.codex/skills/soc-flow-mpam/SKILL.md` records the architecture
@@ -132,6 +132,6 @@ openspec show <change-name>
 openspec validate --all --strict --no-interactive
 ```
 
-Main capability contracts live under `openspec/specs/`. Completed change
-proposals, designs, delta specs, and implementation tasks are retained under
-`openspec/changes/archive/`.
+Main capability requirement summaries live under `openspec/specs/` for machine
+validation. Completed change proposals, designs, delta specs, and
+implementation tasks are retained under `openspec/changes/archive/`.

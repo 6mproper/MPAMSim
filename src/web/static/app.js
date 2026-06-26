@@ -1600,8 +1600,11 @@ function aggregateMcResources() {
     bmaxByMsc: new Map(),
     modeByMsc: new Map(),
     qosByMsc: new Map(),
+    rawEffectiveQosWeighted: 0,
     effectiveQosWeighted: 0,
     effectiveQosRequests: 0,
+    qosMapEnabled: false,
+    qosMappingEvents: 0,
     configuredBminByMsc: new Map(),
     configuredBmaxByMsc: new Map(),
     configuredQosByMsc: new Map(),
@@ -1648,9 +1651,16 @@ function aggregateMcResources() {
         target.bmaxByMsc.set(String(row.msc_id), values.bmax_gbps);
         target.modeByMsc.set(String(row.msc_id), values.limit_mode);
         target.qosByMsc.set(String(row.msc_id), values.base_qos);
+        target.rawEffectiveQosWeighted += Number(
+          values.raw_effective_qos_avg
+          ?? values.effective_qos_avg
+          ?? 0,
+        ) * Number(values.requests || 0);
         target.effectiveQosWeighted += Number(values.effective_qos_avg || 0)
           * Number(values.requests || 0);
         target.effectiveQosRequests += Number(values.requests || 0);
+        target.qosMapEnabled ||= Boolean(values.qos_map_8_to_4_enable);
+        target.qosMappingEvents += Number(values.qos_mapping_events || 0);
         target.configuredBminByMsc.set(
           String(row.msc_id),
           values.configured_bmin_gbps,
@@ -1775,6 +1785,9 @@ function aggregateMcResources() {
     row.qos = singleValue(new Set(row.qosByMsc.values()));
     row.effectiveQos = (
       row.effectiveQosWeighted / Math.max(1, row.effectiveQosRequests)
+    );
+    row.rawEffectiveQos = (
+      row.rawEffectiveQosWeighted / Math.max(1, row.effectiveQosRequests)
     );
     row.configuredBmin = [...row.configuredBminByMsc.values()]
       .filter((value) => value != null)
@@ -1995,7 +2008,14 @@ function renderResourceMonitor() {
         <td>${controlValue(row.bminEnabled, row.hasBmin ? row.bmin : 0, row.configuredBmin, (value) => formatNumber(value, 1))}</td>
         <td>${controlValue(row.bmaxEnabled, row.hasBmax ? row.bmax : 0, row.configuredBmax, (value) => formatNumber(value, 1))}</td>
         <td>${row.bmaxEnabled ? escapeHtml(row.mode) : '<span class="control-value disabled">off</span>'}</td>
-        <td>${controlValue(row.qosEnabled, `${row.qos} / ${formatNumber(row.effectiveQos, 2)}`, `${row.configuredQos} / -`, (value) => escapeHtml(value))}<small>${formatNumber(row.qosSaturation, 0)} saturated</small></td>
+        <td>${controlValue(
+          row.qosEnabled,
+          `${row.qos} / ${formatNumber(row.effectiveQos, 2)}`,
+          `${row.configuredQos} / -`,
+          (value) => escapeHtml(value),
+        )}<small>${row.qosMapEnabled
+          ? `raw ${formatNumber(row.rawEffectiveQos, 2)} -> final ${formatNumber(row.effectiveQos, 2)} · ${formatNumber(row.qosMappingEvents, 0)} mapped`
+          : `${formatNumber(row.qosSaturation, 0)} saturated`}</small></td>
         <td>${formatNumber(row.softPenaltyEvents, 0)} soft penalty / ${formatNumber(row.hardBlocks, 0)} hard <small>${formatNumber(row.softRequests, 0)} selected over · ${formatNumber(row.requests, 0)} req</small></td>
       </tr>`);
   }
@@ -2159,7 +2179,7 @@ function renderControlVerification() {
     || ($$("[data-partid-row]").length
       ? collectParameters()
       : state.defaults);
-  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
+  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)} · QoS map ${algorithm.mc_qos_map_8_to_4_enable ? "8->4 on" : "8-level"}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
@@ -3507,7 +3527,13 @@ function renderControlOverview() {
       ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "最新发布")}
       ${overviewMetric("Service Actual", latest ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps` : "--", "实际服务")}
       ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
-      ${overviewMetric("QoS Base / Eff", `${escapeHtml(mc.qos ?? "-")} / ${formatNumber(mc.effectiveQos || 0, 2)}`)}
+      ${overviewMetric(
+        "QoS Base / Eff",
+        `${escapeHtml(mc.qos ?? "-")} / ${formatNumber(mc.effectiveQos || 0, 2)}`,
+        mc.qosMapEnabled
+          ? `raw ${formatNumber(mc.rawEffectiveQos || 0, 2)} -> 4-level`
+          : "8-level",
+      )}
     </div>`;
 
   const pointSeries = (key) => rows.map(

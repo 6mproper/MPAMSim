@@ -308,6 +308,14 @@
             <label data-algorithm="mc-bmax">History Weight<input data-param="mc_history_weight" type="number" min="0" max="1" step="0.01"></label>
             <label data-algorithm="mc-bmax">Current Weight<input data-param="mc_current_weight" type="number" min="0" max="1" step="0.01"></label>
             <label data-algorithm="mc-bmax">带宽滞回比例<input data-param="mc_bandwidth_hysteresis" type="number" min="0" max="0.99" step="0.01"></label>
+            <label class="toggle-field switch-field" data-algorithm="mc-qos">
+              <span><b>MC QoS 8->4映射</b><small>开启后01234567映射为01112223</small></span>
+              <span class="switch-control">
+                <input data-param="mc_qos_map_8_to_4_enable" type="checkbox" aria-label="MC QoS 8级到4级映射开关">
+                <span class="switch-slider" aria-hidden="true"></span>
+                <span class="switch-text" data-on="开" data-off="关"></span>
+              </span>
+            </label>
             <label data-algorithm="mc-qos">防饥饿模式<select data-param="mc_aging_mode"><option value="none">关闭</option><option value="per_partid_service_deficit">PARTID Service Deficit</option></select></label>
             <label data-algorithm="mc-qos">Deficit 周期 cycles<input data-param="mc_aging_quantum_cycles" type="number" min="1" max="1000000" step="1"></label>
             <label data-algorithm="mc-qos">Deficit 计数位宽<input data-param="mc_aging_counter_bits" type="number" min="1" max="16" step="1"></label>

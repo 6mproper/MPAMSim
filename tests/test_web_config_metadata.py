@@ -213,6 +213,22 @@ def test_l3_qos_scheduler_is_explicit_switch_control() -> None:
         assert snippet in styles
 
 
+def test_mc_qos_mapping_is_explicit_switch_control() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "MC QoS 8->4映射" in index_html
+    assert 'data-param="mc_qos_map_8_to_4_enable" type="checkbox"' in index_html
+    assert 'aria-label="MC QoS 8级到4级映射开关"' in index_html
+    assert "rawEffectiveQos" in app_js
+    assert "qosMappingEvents" in app_js
+    assert "QoS map" in app_js
+
+
 def test_algorithm_explanations_use_compact_body() -> None:
     app_js = (
         PROJECT_ROOT / "src/web/static/app.js"

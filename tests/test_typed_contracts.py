@@ -103,14 +103,18 @@ def test_transaction_owns_route_timing_and_mc_decision() -> None:
     transaction.cache_delay_ns += 5.0
     transaction.mem_service_delay_ns += 11.0
     transaction.mc_arbitration.base_qos = 3
+    transaction.mc_arbitration.raw_effective_qos = 7
     transaction.mc_arbitration.effective_qos = 6
+    transaction.mc_arbitration.qos_mapping_enabled = True
     transaction.mark_complete(29.0)
 
     assert transaction.line_address == 0x1200
     assert transaction.route.cache_id == "slc0"
     assert transaction.route.memory_controller_id == "mc1"
     assert transaction.total_latency_ns == 19.0
+    assert transaction.mc_arbitration.raw_effective_qos == 7
     assert transaction.mc_arbitration.effective_qos == 6
+    assert transaction.mc_arbitration.qos_mapping_enabled is True
     assert transaction.timing.completion_time_ns == 29.0
 
 

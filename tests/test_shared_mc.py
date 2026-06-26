@@ -134,6 +134,62 @@ def test_equal_qos_uses_rotating_buffer_slot() -> None:
     assert mc._select_request().request is second
 
 
+def test_mc_qos_mapping_disabled_keeps_eight_level_ordering() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=1), _control(1, qos=2)],
+        qos_map_8_to_4_enable=False,
+    )
+    low = _request(1, 0, 0x0000)
+    high = _request(2, 1, 0x1000)
+    mc.receive(low)
+    mc.receive(high)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is high
+    assert high.mc_arbitration.raw_effective_qos == 2
+    assert high.mc_arbitration.effective_qos == 2
+    assert high.mc_arbitration.qos_mapping_enabled is False
+
+
+def test_mc_qos_mapping_enabled_collapses_to_four_level_ordering() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=1), _control(1, qos=2)],
+        qos_map_8_to_4_enable=True,
+    )
+    earlier = _request(1, 0, 0x0000)
+    later_same_final = _request(2, 1, 0x1000)
+    mc.receive(earlier)
+    mc.receive(later_same_final)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is earlier
+    assert earlier.mc_arbitration.raw_effective_qos == 1
+    assert earlier.mc_arbitration.effective_qos == 1
+    assert mc._map_effective_qos(2) == 1
+    assert earlier.mc_arbitration.qos_mapping_enabled is True
+
+
+def test_mc_qos_mapping_exports_raw_and_final_qos_evidence() -> None:
+    kernel, mc, _ = _mc(
+        [_control(0, qos=6)],
+        qos_map_8_to_4_enable=True,
+    )
+    mc.receive(_request(1, 0, 0x0000))
+
+    kernel.run(0.0)
+    snapshot = mc.monitor_snapshot(1.0)
+    row = snapshot.payload["per_partid"]["0"]
+
+    assert row["raw_effective_qos_avg"] == 6
+    assert row["effective_qos_avg"] == 2
+    assert row["qos_map_8_to_4_enable"] is True
+    assert row["qos_mapping_events"] == 1
+
+
 def test_hard_bmax_uses_published_control_bandwidth_by_period() -> None:
     kernel, mc, _ = _mc(
         [_control(0, bmax=16, mode="hardlimit")]

@@ -88,6 +88,7 @@ class MemoryControllerConfig:
     qos_aging_max_steps: int = 3
     bmin_qos_promote: int = 2
     softlimit_qos_demote: int = 2
+    qos_map_8_to_4_enable: bool = False
     cbusy_sample_ns: float = 1_000.0
     cbusy_feedback_latency_ns: float = 50.0
     cbusy_release_hold_samples: int = 3

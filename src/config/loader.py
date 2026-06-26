@@ -313,6 +313,9 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 "softlimit_priority_penalty",
                 2,
             ),
+            qos_map_8_to_4_enable=bool(
+                item.get("qos_map_8_to_4_enable", False)
+            ),
             cbusy_sample_ns=float(item.get("cbusy_sample_ns", 1_000.0)),
             cbusy_feedback_latency_ns=float(
                 item.get("cbusy_feedback_latency_ns", 50.0)

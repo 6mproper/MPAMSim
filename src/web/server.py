@@ -1029,6 +1029,7 @@ class ControlVerificationManager(ExperimentManager):
                         "mc_qos_aging_max_steps",
                         "mc_bmin_qos_promote",
                         "mc_softlimit_qos_demote",
+                        "mc_qos_map_8_to_4_enable",
                     )
                 },
                 "cases": [

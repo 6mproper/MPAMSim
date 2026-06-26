@@ -31,9 +31,13 @@ def _mc_counters() -> Dict[str, float]:
         "softlimit_bytes": 0,
         "softlimit_penalty_events": 0,
         "hardlimit_block_events": 0,
+        "raw_effective_qos_sum": 0,
+        "raw_effective_qos_min": 7,
+        "raw_effective_qos_max": 0,
         "effective_qos_sum": 0,
         "effective_qos_min": 7,
         "effective_qos_max": 0,
+        "qos_mapping_events": 0,
         "qos_promoted_requests": 0,
         "qos_demoted_requests": 0,
         "qos_aging_promotions": 0,
@@ -45,6 +49,7 @@ def _mc_counters() -> Dict[str, float]:
 
 class MemoryControllerMSC(Component):
     MONITOR_COUNTER_MODULUS = 1 << 63
+    QOS_8_TO_4_MAP = (0, 1, 1, 1, 2, 2, 2, 3)
 
     capabilities = (
         "memory_controller_service",
@@ -52,6 +57,7 @@ class MemoryControllerMSC(Component):
         "full_depth_ready_candidates",
         "same_line_write_ordering",
         "three_bit_qos",
+        "optional_qos_8_to_4_map",
         "rotating_slot_scan",
         "filtered_periodic_bmin_bmax",
         "optional_partid_service_deficit",
@@ -334,11 +340,16 @@ class MemoryControllerMSC(Component):
             self._service_deficit[partid],
         )
 
+    def _map_effective_qos(self, raw_effective_qos: int) -> int:
+        if not self.config.qos_map_8_to_4_enable:
+            return raw_effective_qos
+        return self.QOS_8_TO_4_MAP[raw_effective_qos]
+
     def _score_entry(
         self,
         entry: BufferEntry,
         contended: bool,
-    ) -> Tuple[int, int, int, int, bool]:
+    ) -> Tuple[int, int, int, int, int, bool]:
         request = entry.request
         setting = self.settings.lookup(request.partid)
         base_qos = (
@@ -374,9 +385,11 @@ class MemoryControllerMSC(Component):
             - soft_demote
             + deficit_steps
         )
-        effective_qos = max(0, min(7, unclamped))
+        raw_effective_qos = max(0, min(7, unclamped))
+        effective_qos = self._map_effective_qos(raw_effective_qos)
         return (
             effective_qos,
+            raw_effective_qos,
             base_qos,
             bmin_promote,
             soft_demote,
@@ -390,7 +403,7 @@ class MemoryControllerMSC(Component):
         contended = len(
             {entry.request.partid for entry in candidates}
         ) >= 2
-        scored: Dict[int, Tuple[int, int, int, int, bool]] = {}
+        scored: Dict[int, Tuple[int, int, int, int, int, bool]] = {}
         for entry in candidates:
             scored[entry.slot] = self._score_entry(entry, contended)
             counters = self._interval_per_partid[entry.request.partid]
@@ -417,6 +430,7 @@ class MemoryControllerMSC(Component):
 
         (
             effective_qos,
+            raw_effective_qos,
             base_qos,
             bmin_promote,
             soft_demote,
@@ -427,7 +441,11 @@ class MemoryControllerMSC(Component):
         )
         request = selected.request
         request.mc_arbitration.base_qos = base_qos
+        request.mc_arbitration.raw_effective_qos = raw_effective_qos
         request.mc_arbitration.effective_qos = effective_qos
+        request.mc_arbitration.qos_mapping_enabled = (
+            self.config.qos_map_8_to_4_enable
+        )
         request.mc_arbitration.aging_steps = deficit_steps
         request.mc_arbitration.bmin_promoted = bmin_promote > 0
         request.mc_arbitration.soft_demoted = soft_demote > 0
@@ -478,6 +496,18 @@ class MemoryControllerMSC(Component):
                 target["softlimit_bytes"] += request.size_bytes
             if request.mc_arbitration.soft_demoted:
                 target["softlimit_penalty_events"] += 1
+            raw_effective_qos = (
+                request.mc_arbitration.raw_effective_qos
+            )
+            target["raw_effective_qos_sum"] += raw_effective_qos
+            target["raw_effective_qos_min"] = min(
+                target["raw_effective_qos_min"],
+                raw_effective_qos,
+            )
+            target["raw_effective_qos_max"] = max(
+                target["raw_effective_qos_max"],
+                raw_effective_qos,
+            )
             effective_qos = request.mc_arbitration.effective_qos
             target["effective_qos_sum"] += effective_qos
             target["effective_qos_min"] = min(
@@ -496,6 +526,10 @@ class MemoryControllerMSC(Component):
             )
             target["qos_aging_promotions"] += (
                 request.mc_arbitration.aging_steps
+            )
+            target["qos_mapping_events"] += int(
+                request.mc_arbitration.qos_mapping_enabled
+                and raw_effective_qos != effective_qos
             )
             unclamped = (
                 request.mc_arbitration.base_qos
@@ -953,6 +987,11 @@ class MemoryControllerMSC(Component):
                 if requests
                 else 0.0
             )
+            raw_effective_qos_avg = (
+                values["raw_effective_qos_sum"] / requests
+                if requests
+                else 0.0
+            )
             bmax = (
                 setting.bw_max_gbps
                 if self.enforce_controls and setting.bmax_enable
@@ -1008,6 +1047,13 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
+                "raw_effective_qos_avg": raw_effective_qos_avg,
+                "raw_effective_qos_min": (
+                    values["raw_effective_qos_min"] if requests else 0
+                ),
+                "raw_effective_qos_max": (
+                    values["raw_effective_qos_max"] if requests else 0
+                ),
                 "effective_qos_avg": effective_qos_avg,
                 "effective_qos_min": (
                     values["effective_qos_min"] if requests else 0
@@ -1015,6 +1061,10 @@ class MemoryControllerMSC(Component):
                 "effective_qos_max": (
                     values["effective_qos_max"] if requests else 0
                 ),
+                "qos_map_8_to_4_enable": (
+                    self.config.qos_map_8_to_4_enable
+                ),
+                "qos_mapping_events": values["qos_mapping_events"],
                 "service_deficit": self._service_deficit[partid],
                 "service_deficit_qos_steps": (
                     self._deficit_qos_steps(partid)
@@ -1126,11 +1176,32 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
+                "raw_effective_qos_avg": (
+                    values["raw_effective_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "raw_effective_qos_min": (
+                    values["raw_effective_qos_min"] if requests else 0
+                ),
+                "raw_effective_qos_max": (
+                    values["raw_effective_qos_max"] if requests else 0
+                ),
                 "effective_qos_avg": (
                     values["effective_qos_sum"] / requests
                     if requests
                     else 0.0
                 ),
+                "effective_qos_min": (
+                    values["effective_qos_min"] if requests else 0
+                ),
+                "effective_qos_max": (
+                    values["effective_qos_max"] if requests else 0
+                ),
+                "qos_map_8_to_4_enable": (
+                    self.config.qos_map_8_to_4_enable
+                ),
+                "qos_mapping_events": values["qos_mapping_events"],
                 "under_bmin": self._under_bmin[partid],
                 "over_bmax": self._over_bmax[partid],
                 "hard_block": self._hard_block[partid],
@@ -1170,6 +1241,9 @@ class MemoryControllerMSC(Component):
             "qos_aging_max_steps": self.config.qos_aging_max_steps,
             "bmin_qos_promote": self.config.bmin_qos_promote,
             "softlimit_qos_demote": self.config.softlimit_qos_demote,
+            "qos_map_8_to_4_enable": (
+                self.config.qos_map_8_to_4_enable
+            ),
             "enforcement_enabled": self.enforce_controls,
             "per_partid": per_partid,
             "monitor_groups": monitor_groups,
