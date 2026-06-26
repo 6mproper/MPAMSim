@@ -542,6 +542,14 @@ def test_experiment_cases_only_change_bmax_and_cbusy_enables() -> None:
     ]
     assert all(case["seed"] == parameters["seed"] for case in cases.values())
     assert all(case["policy"] == "static_mpam" for case in cases.values())
+    assert cases["reference"]["cpu_cbusy_response_enable"] is False
+    assert cases["reference"]["l3_cbusy_response_enable"] is False
+    assert cases["bmax_only"]["cpu_cbusy_response_enable"] is False
+    assert cases["bmax_only"]["l3_cbusy_response_enable"] is False
+    assert cases["cbusy_only"]["cpu_cbusy_response_enable"] is True
+    assert cases["cbusy_only"]["l3_cbusy_response_enable"] is True
+    assert cases["combined"]["cpu_cbusy_response_enable"] is True
+    assert cases["combined"]["l3_cbusy_response_enable"] is True
 
     reference = cases["reference"]["partid_configs"][0]
     bmax = cases["bmax_only"]["partid_configs"][0]

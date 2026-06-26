@@ -15,7 +15,7 @@ P0/P1阶段 MUST 先冻结监控、滤波、控制和动作之间的时序语义
 #### Scenario: 控制动作可追踪
 
 - **WHEN** 控制动作由monitor-driven decision产生
-- **THEN** 证据 MUST 能区分UI/导出显示的最新filtered监控值和控制器实际读取的control input
+- **THEN** 证据 MUST 能区分UI/导出显示的最新发布filtered监控值和控制器实际读取的control input
 - **AND** `action_effective_time_ns` MUST 不早于control input被锁存的本地监控边界
 
 #### Scenario: 无阶段旁路

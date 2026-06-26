@@ -114,8 +114,8 @@ P1成功标准：
    或只能自替换；actual occupancy允许因在途fill、采样误差和交织误差短暂过冲；
 3. BMAX必须能改变MC effective QoS或产生hard block，其中soft BMAX对应effective
    QoS demotion，hard BMAX对应hard block，事件必须标明`limit_mode`；
-4. CBusy通过RSP/DAT返回RN后，必须降低对应`(MC, PARTID)`的effective OSTD，
-   且不得影响其他MC或其他PARTID；
+4. CBusy通过RSP/DAT返回RN后，必须降低对应requester内同PARTID的effective OSTD；
+   source/target MC只作为返回来源、路由、释放和诊断字段，不作为CPU/L3限流索引；
 5. 所有控制事件必须能追踪`monitor_sample_id`、`decision_id`
    和`action_effective_time_ns`；
 6. 目标未达、过冲、振荡、饱和或不可行目标只记录为`CONTROL_OUTCOME`，
@@ -515,7 +515,7 @@ traffic_entry_point: l3_facing
 - Core OSTD；
 - Thread OSTD；
 - Core/PARTID OSTD；
-- Core/PARTID/Destination-MC OSTD；
+- Core/PARTID OSTD的目标MC诊断计数；
 - CBusy动态上限。
 
 新事务准入条件：
@@ -524,7 +524,7 @@ traffic_entry_point: l3_facing
 事务跟踪表有空项
 AND core_count < core_limit
 AND thread_count < thread_limit
-AND partid_mc_count < effective_partid_mc_limit
+AND core_partid_count < effective_partid_limit
 AND REQ Ring接受注入
 ```
 
@@ -554,18 +554,21 @@ thread_scheduler: round_robin
 
 其他策略用于研究，不声称对应某款商业CPU。
 
-### CPU-006：目标MC相关限制
+### CPU-006：目标MC诊断与PARTID限流
 
 ```text
-effective_ostd[core, partid, mc] =
+effective_ostd[core, partid] =
 min(
     configured_partid_ostd,
     software_partid_ostd,
-    cbusy_ostd_cap[mc, partid]
+    cbusy_ostd_cap[partid]
 )
 ```
 
-MC0拥塞不得默认限制同一PARTID发往MC1的请求。
+目标MC必须在事务中保留用于地址路由、完成释放和诊断计数；
+但CPU/L3的CBusy源端限流只按返回事务归因出的PARTID聚合。
+因此MC0返回PARTID P的CBusy后，收到该返回的requester中PARTID P后续发往任意MC的新事务都会受PARTID cap约束；
+其他PARTID不受影响。
 
 ### TRAFFIC-001：正交激励参数
 
@@ -604,7 +607,7 @@ working_set_bytes:
 
 ### CPU-007：监控
 
-必须按core、thread、PARTID和目标MC记录：
+必须按core、thread、PARTID记录控制状态，并按目标MC保留诊断归因：
 
 - 源队列；
 - generated/admitted/completed；
@@ -867,12 +870,12 @@ control_input[k+1] = sampled_occupancy[k]
 
 ### L3-CTRL-003：CMIN
 
-如果候选victim owner的上次滤波占用不高于有效CMIN，该victim受保护。
+如果候选victim owner的锁存`control sampled-owner`占用不高于有效CMIN，该victim受保护。
 CMIN不预分配、不预填充，也不保证目标达到。
 
 ### L3-CTRL-004：CMAX
 
-请求者上次滤波占用达到CMAX时：
+请求者锁存`control sampled-owner`占用达到CMAX时：
 
 - hit仍允许；
 - 可以替换自己在当前set中的line；
@@ -900,7 +903,7 @@ CPBM、CMIN和CMAX组合后无合法victim时：
 - CPBM排除；
 - 自替换；
 - 无合法victim绕过；
-- raw/filtered/actual占用误差；
+- raw sampled-owner、published/control sampled-owner和actual占用误差；
 - hit/miss/fill/eviction；
 - MSHR和fill压力。
 
@@ -1226,7 +1229,9 @@ sample_time_ns
 
 ### CBUSY-007：RN动作
 
-RN保存每个`(MC, PARTID)`的最近等级，并只限制匹配目标MC的新事务准入。
+RN保存每个PARTID的最近有效等级和cap；如果多个MC返回同一PARTID的CBusy，
+RN对该PARTID聚合为最严格cap。source MC、target MC和sample time可记录为来源证据、
+路由和诊断字段，但不得作为CPU/L3限流索引。
 
 CBusy不得：
 
@@ -1399,12 +1404,13 @@ details
 
 1. 关闭刚结束窗口的raw计数；
 2. 读取刚关闭窗口的授权监控样本；
-3. L3保存新的`control_sampled_occupancy`，MC保存新的`control_bandwidth`；
-4. 基于保存后的控制输入和授权硬件状态更新控制状态、决策和动作；
-5. 发布UI、导出和证据链样本；
+3. 发布UI、导出和证据链样本，并标注其语义为raw、published或filtered；
+4. L3把刚发布的sampled-owner锁存为后续控制窗口的`control_sampled_occupancy`，
+   MC把刚发布的filtered bandwidth锁存为后续控制窗口的`control_bandwidth`；
+5. 后续控制窗口基于锁存后的control input和授权硬件状态更新控制状态、决策和动作；
 6. 清空窗口级raw计数，保留累计计数和filtered历史。
 
-边界之前已经完成的决策不能回溯使用新监控值；边界之后的新控制窗口可以使用新保存值。
+边界之前已经完成的决策不能回溯使用新监控值；边界之后的新控制窗口才可以使用新保存值。
 控制器仍不得读取actual/debug状态。
 
 ### MON-004：控制结果契约
@@ -1518,7 +1524,7 @@ outcome_reason
 
 根据启用控制自动选择3到5张重点图：
 
-- CMIN/CMAX：目标、control input、latest filtered、raw、actual和控制事件；
+- CMIN/CMAX：目标、control input、published sampled-owner、raw sampled-owner、actual和控制事件；
 - BMIN/BMAX：目标、control input、latest filtered、raw、actual、QoS和状态；
 - CBusy：MC buffer、MC等级、RN等级、OSTD和stall；
 - 无控制：吞吐、延迟和瓶颈。
@@ -1667,7 +1673,7 @@ P1验收门槛如下：
 | 授权状态 | 控制器不读取actual语义数据作为控制输入 |
 | L3 CMAX | CMAX生效后限制、旁路或自替换新增allocation；允许在途fill和监控误差导致actual短暂过冲 |
 | MC BMAX | soft BMAX可改变effective QoS；hard BMAX可产生hard block；事件标明`limit_mode` |
-| CBusy/OSTD | CBusy经RSP/DAT返回RN后降低对应`(MC, PARTID)` effective OSTD，并隔离其他目标 |
+| CBusy/OSTD | CBusy经RSP/DAT返回RN后降低对应requester内同PARTID effective OSTD；source/target MC仅作为证据和诊断字段 |
 | 因果证据 | 控制事件可追踪`monitor_sample_id`、`decision_id`和`action_effective_time_ns` |
 | 确定性 | 相同配置和seed重复运行结果一致 |
 | 失败继续运行 | 目标未达、过冲、振荡、饱和和不可行只记录为`CONTROL_OUTCOME` |
@@ -1693,7 +1699,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - 组件能力声明、注册和兼容性校验；
 - 8核16线程的Thread/Core两级OSTD；
 - `shared`、`static_partition`和`reserve_borrow` Core策略；
-- 按`(PARTID, home MC)`保存CBusy反馈、准入计数和stall；
+- 按PARTID保存CBusy反馈和准入状态，并按`(PARTID, home MC)`保留outstanding和stall诊断；
 - `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。
 - 源端支持`source_queue_depth`、`pointer_chain`和`eligible_scan`；
 - pointer chain在终端返回后才生成下一地址，独立流量可使用多个源队列候选；
@@ -1715,19 +1721,19 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
 - 可选每PARTID饱和service-deficit计数器；
 - CBusy读取每PARTID buffer占用、control input BW和hard状态；
-- MC服务完成时把当前CBusy采样为RSP/DAT返回旁带，RN只更新收到返回的
-  `requester_id`、目标MC和PARTID反馈表。
+- MC服务完成时把当前CBusy采样为RSP/DAT返回旁带，RN只用收到返回的
+  `requester_id`和PARTID更新源端反馈；MC ID保留为来源和诊断字段。
 
 ### 17.2 仍需替换或补全
 
 | 模块 | 当前原型 | 目标 |
 | --- | --- | --- |
-| CPU | 已实现两级OSTD、三种Core策略、目标MC限制、REQ Ring准入和可配源队列 | 后续补充OSTD lifetime直方图 |
+| CPU | 已实现两级OSTD、三种Core策略、PARTID级CBusy源端限制、REQ Ring准入和可配源队列；目标MC保留为路由/释放/诊断 | 后续补充OSTD lifetime直方图 |
 | 激励 | 已拆分地址、操作、依赖、到达和发射选择，并保留type兼容预设 | 后续增加可配stride、hotset比例和多链UI |
 | NoC | 已实现三条双向bufferless ring、绕行和DAT重组；尚无完整CHI opcode/SNP | 保持当前Ring机制并接入后续真实L3/MC endpoint readiness |
 | L3 | 已实现真实set/tag/way、MSHR、fill、sampled-owner counter bank、physical/raw/published/control input抽样误差和CMIN/CMAX输入 | 后续增加跨line child transaction |
 | MC | 已实现共享buffer、全候选、同line最小顺序、rotating QoS、可选8级到4级QoS映射、周期BMIN/BMAX和服务完成CBusy采样 | 后续增加DRAM ready mask |
-| CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的目标MC/PARTID状态 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
+| CBusy | 已改为RSP/DAT返回旁带，RN只学习自身返回流量中的PARTID CBusy状态；MC ID不作为源端限流索引 | 后续增加UI中MC采样、返回携带、RN生效三点事件专门视图 |
 | 监控 | L3快照包含actual/raw/published/control sampled-owner，MC快照包含actual/raw/latest filtered/control input bandwidth和local cycle，内部控制事件已带稳定因果ID | 后续增加更完整的本地监控周期浏览器视图 |
 | UI | 多页签和大表 | 配置驱动单工作区 |
 
@@ -1745,11 +1751,11 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 
 | P0条件 | 当前代码审视 |
 | --- | --- |
-| 独立微测试 | `tests/test_web_config.py`覆盖控制验证套件；`tests/test_explicit_l3.py`覆盖L3 filtered输入和采样误差；`tests/test_shared_mc.py`覆盖hard/soft BMAX、全候选、轮询和deficit；`tests/qos/test_mpam_16_partid.py`覆盖CBusy/BMAX隔离与组合 |
+| 独立微测试 | `tests/test_web_config.py`覆盖控制验证套件；`tests/test_explicit_l3.py`覆盖L3 sampled-owner输入和采样误差；`tests/test_shared_mc.py`覆盖hard/soft BMAX、全候选、轮询和deficit；`tests/qos/test_mpam_16_partid.py`覆盖CBusy/BMAX隔离与组合 |
 | 授权actual隔离 | L3控制路径读取锁存的`_control_sampled_counts`，`actual_occupancy`只在snapshot导出；MC控制状态由锁存的`_control_bandwidth_gbps`、buffer和CBusy detector驱动 |
-| 非零周期时序 | L3和MC都按本地monitor period发布filtered状态，并用双缓冲control input防止同边界filtered立即控制；hard BMAX和L3控制都有延迟锁存测试 |
-| L3因果链 | cache行保存owner，导出miss/fill、eviction、allocation denial/bypass、raw/filtered/actual和误差 |
-| MC/CPU因果链 | typed `ControlDecision`和`ControlEvent`保存monitor sample、decision和action ID；CBusy通过RSP/DAT返回旁带更新对应requester的目标MC/PARTID OSTD |
+| 非零周期时序 | L3和MC都按本地monitor period发布状态，并用双缓冲control input防止同边界发布值立即偷跑控制；hard BMAX和L3控制都有延迟锁存测试 |
+| L3因果链 | cache行保存owner，导出miss/fill、eviction、allocation denial/bypass、raw sampled-owner、published/control sampled-owner、actual和误差 |
+| MC/CPU因果链 | typed `ControlDecision`和`ControlEvent`保存monitor sample、decision和action ID；CBusy通过RSP/DAT返回旁带更新对应requester的PARTID OSTD cap，MC ID仅作来源证据 |
 | 失败继续运行 | 控制验证check失败应作为检查结果展示；目标未达、饱和、过冲和吞吐恶化不抛出仿真异常 |
 | 确定性复现 | 固定seed仿真、NoC tie方向、MC rotating slot和地址交织已有确定性测试或规格要求 |
 | 无阶段旁路 | 当前P0能力复用常规Simulation、Transaction、MonitorSnapshot、ControlEvent和控制总览/因果链UI通路 |

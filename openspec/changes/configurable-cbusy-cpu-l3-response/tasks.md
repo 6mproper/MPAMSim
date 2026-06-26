@@ -1,6 +1,6 @@
 ## 1. 规格
 
-- [x] 1.1 把CBusy源端响应从`(MC, PARTID)`索引改为PARTID聚合索引。
+- [x] 1.1 把CBusy源端响应从旧的MC+PARTID索引改为PARTID聚合索引。
 - [x] 1.2 定义CPU响应开关和关闭后的观察但不动作语义。
 - [x] 1.3 定义L3响应开关、MSHR owner归因PARTID和新miss MSHR准入动作点。
 - [x] 1.4 更新Web配置和算法说明要求。

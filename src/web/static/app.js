@@ -440,16 +440,20 @@ function selectOptions(values, selected) {
 }
 
 function partidColor(partid) {
-  return partidPalette[Number(partid) % partidPalette.length];
+  const index = Number(partid);
+  return partidPalette[
+    (Number.isInteger(index) && index >= 0 ? index : 0)
+    % partidPalette.length
+  ];
 }
 
 function renderPartidConfig(rows) {
   state.partidConfigs = rows.map((row) => ({ ...row }));
   $("#partidConfigTable").innerHTML = state.partidConfigs.map((row) => `
-    <tr data-partid-row="${row.partid}">
+    <tr data-partid-row="${escapeHtml(row.partid)}">
       <td>
         <div class="partid-cell">
-          <span class="partid-chip" style="background:${partidColor(row.partid)}">${row.partid}</span>
+          <span class="partid-chip" style="background:${partidColor(row.partid)}">${escapeHtml(row.partid)}</span>
           <span class="resctrl-managed-badge" data-resctrl-managed-badge hidden>由resctrl接管</span>
         </div>
       </td>
@@ -469,9 +473,9 @@ function renderPartidConfig(rows) {
         <div class="cbusy-control">
           <input data-field="cbusy_enable" ${configHelpAttributes("partid", "cbusy_enable")} type="checkbox" ${row.cbusy_enable ? "checked" : ""}>
           <div>
-            <input data-field="cbusy_l1_ostd" ${configHelpAttributes("partid", "cbusy_l1_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l1_ostd}">
-            <input data-field="cbusy_l2_ostd" ${configHelpAttributes("partid", "cbusy_l2_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l2_ostd}">
-            <input data-field="cbusy_l3_ostd" ${configHelpAttributes("partid", "cbusy_l3_ostd")} type="number" min="1" max="1024" step="1" value="${row.cbusy_l3_ostd}">
+            <input data-field="cbusy_l1_ostd" ${configHelpAttributes("partid", "cbusy_l1_ostd")} type="number" min="1" max="1024" step="1" value="${escapeHtml(row.cbusy_l1_ostd)}">
+            <input data-field="cbusy_l2_ostd" ${configHelpAttributes("partid", "cbusy_l2_ostd")} type="number" min="1" max="1024" step="1" value="${escapeHtml(row.cbusy_l2_ostd)}">
+            <input data-field="cbusy_l3_ostd" ${configHelpAttributes("partid", "cbusy_l3_ostd")} type="number" min="1" max="1024" step="1" value="${escapeHtml(row.cbusy_l3_ostd)}">
           </div>
         </div>
       </td>
@@ -545,23 +549,23 @@ function renderStimulusConfig(rows) {
     ["eligible_scan", "scan"],
   ];
   $("#stimulusConfigTable").innerHTML = state.stimulusConfigs.map((row) => `
-    <tr data-stimulus-row="${row.slot}">
+    <tr data-stimulus-row="${escapeHtml(row.slot)}">
       <td><span class="thread-chip">${escapeHtml(row.requester)}</span></td>
       <td><input data-stimulus-field="enabled" ${configHelpAttributes("stimulus", "enabled")} type="checkbox" ${row.enabled ? "checked" : ""}></td>
       <td><select data-stimulus-field="partid" ${configHelpAttributes("stimulus", "partid", row.partid)}>${selectOptions(partidOptions, row.partid)}</select></td>
-      <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${row.pmg}"></td>
+      <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${escapeHtml(row.pmg)}"></td>
       <td><select data-stimulus-field="workload_type" ${configHelpAttributes("stimulus", "workload_type", row.workload_type)}>${selectOptions(typeOptions, row.workload_type)}</select></td>
       <td><select data-stimulus-field="address_pattern" ${configHelpAttributes("stimulus", "address_pattern", row.address_pattern)}>${selectOptions(addressOptions, row.address_pattern || "sequential")}</select></td>
       <td><select data-stimulus-field="dependency_mode" ${configHelpAttributes("stimulus", "dependency_mode", row.dependency_mode)}>${selectOptions(dependencyOptions, row.dependency_mode || "independent")}</select></td>
       <td><select data-stimulus-field="issue_selection" ${configHelpAttributes("stimulus", "issue_selection", row.issue_selection)}>${selectOptions(issueOptions, row.issue_selection || "fifo")}</select></td>
-      <td><input data-stimulus-field="source_queue_depth" ${configHelpAttributes("stimulus", "source_queue_depth")} type="number" min="1" max="4096" step="1" value="${row.source_queue_depth || 1}"></td>
-      <td><input data-stimulus-field="rate_value" ${configHelpAttributes("stimulus", "rate_value")} type="number" min="0" max="4096" step="0.1" value="${row.rate_value}"></td>
+      <td><input data-stimulus-field="source_queue_depth" ${configHelpAttributes("stimulus", "source_queue_depth")} type="number" min="1" max="4096" step="1" value="${escapeHtml(row.source_queue_depth || 1)}"></td>
+      <td><input data-stimulus-field="rate_value" ${configHelpAttributes("stimulus", "rate_value")} type="number" min="0" max="4096" step="0.1" value="${escapeHtml(row.rate_value)}"></td>
       <td><select data-stimulus-field="rate_unit" ${configHelpAttributes("stimulus", "rate_unit", row.rate_unit)}>${selectOptions([["gbps", "Gbps"], ["mrps", "MRPS"]], row.rate_unit)}</select></td>
-      <td><input data-stimulus-field="request_size_bytes" ${configHelpAttributes("stimulus", "request_size_bytes")} type="number" min="16" max="4096" step="16" value="${row.request_size_bytes}"></td>
-      <td><input data-stimulus-field="read_ratio" ${configHelpAttributes("stimulus", "read_ratio")} type="number" min="0" max="1" step="0.05" value="${row.read_ratio}"></td>
-      <td><input data-stimulus-field="working_set_mb" ${configHelpAttributes("stimulus", "working_set_mb")} type="number" min="1" max="262144" step="1" value="${row.working_set_mb}"></td>
-      <td><input data-stimulus-field="address_base_mb" ${configHelpAttributes("stimulus", "address_base_mb")} type="number" min="0" max="1048576" step="1" value="${row.address_base_mb || 0}"></td>
-      <td><input data-stimulus-field="target_p99_ns" ${configHelpAttributes("stimulus", "target_p99_ns")} type="number" min="0" max="1000000" step="1" value="${row.target_p99_ns}"></td>
+      <td><input data-stimulus-field="request_size_bytes" ${configHelpAttributes("stimulus", "request_size_bytes")} type="number" min="16" max="4096" step="16" value="${escapeHtml(row.request_size_bytes)}"></td>
+      <td><input data-stimulus-field="read_ratio" ${configHelpAttributes("stimulus", "read_ratio")} type="number" min="0" max="1" step="0.05" value="${escapeHtml(row.read_ratio)}"></td>
+      <td><input data-stimulus-field="working_set_mb" ${configHelpAttributes("stimulus", "working_set_mb")} type="number" min="1" max="262144" step="1" value="${escapeHtml(row.working_set_mb)}"></td>
+      <td><input data-stimulus-field="address_base_mb" ${configHelpAttributes("stimulus", "address_base_mb")} type="number" min="0" max="1048576" step="1" value="${escapeHtml(row.address_base_mb || 0)}"></td>
+      <td><input data-stimulus-field="target_p99_ns" ${configHelpAttributes("stimulus", "target_p99_ns")} type="number" min="0" max="1000000" step="1" value="${escapeHtml(row.target_p99_ns)}"></td>
     </tr>
   `).join("");
 }
@@ -3411,7 +3415,7 @@ function renderControlEffect() {
     { color: "#60717e", label: "物理实际", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
     { color: selectedColor, label: "控制输入", kind: "filtered" },
-    { color: "#6d5fa8", label: "最新filtered", kind: "filtered" },
+    { color: "#6d5fa8", label: "published sampled", kind: "filtered" },
     { color: "#2d7a4c", label: "配置CMIN", kind: "configured" },
     { color: "#2d7a4c", label: "生效CMIN", kind: "effective" },
     { color: "#b43a3a", label: "配置CMAX", kind: "configured" },
@@ -3440,7 +3444,7 @@ function renderControlEffect() {
     { color: "#60717e", label: "服务实际", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
     { color: selectedColor, label: "控制输入", kind: "filtered" },
-    { color: "#6d5fa8", label: "最新filtered", kind: "filtered" },
+    { color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" },
     { color: "#2d7a4c", label: "配置BMIN", kind: "configured" },
     { color: "#2d7a4c", label: "生效BMIN", kind: "effective" },
     { color: "#b43a3a", label: "配置BMAX", kind: "configured" },

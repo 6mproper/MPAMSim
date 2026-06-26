@@ -49,8 +49,9 @@ CBusy -> RN OSTD source throttling三条场景。
 #### Scenario: CBusy返回RN后源端限流
 
 - **WHEN** MC在完成服务时把CBusy状态采样到RSP或DAT返回旁带
-- **THEN** RN收到返回后 MUST 降低对应`(MC, PARTID)`的effective OSTD
-- **AND** 不得影响其他MC或其他PARTID的effective OSTD
+- **THEN** RN收到返回后 MUST 降低对应requester内同PARTID的effective OSTD
+- **AND** source/target MC MUST 仅作为返回来源、路由、释放和诊断字段
+- **AND** 不得影响其他PARTID的effective OSTD
 
 ### Requirement: P1成功标准
 

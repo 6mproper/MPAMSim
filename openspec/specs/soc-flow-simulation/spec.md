@@ -317,7 +317,8 @@ working set、target、地址模式、依赖模式、到达模式、发射选择
 ### Requirement: CBusy控制有效OSTD
 
 requester MUST 把延迟到达的CBusy作为匹配PARTID的新事务有效OSTD上限，
-同时保留Thread和Core配置上限。目标MC仅用于路由、完成释放和诊断，不作为CPU限流索引。
+同时保留Thread和Core配置上限。目标MC、来源MC和sample time仅用于路由、完成释放、
+来源证据和诊断，不作为CPU限流索引。
 
 #### Scenario: 多MC反馈按PARTID聚合
 

@@ -170,8 +170,15 @@ def test_control_overview_chart_layers_are_configurable() -> None:
     for snippet in (
         "published monitor",
         "sampled-owner",
+        "高级证据层默认关闭",
     ):
         assert snippet in index_html
+    assert 'data-overview-layer="targetBand" type="checkbox" checked' in index_html
+    assert 'data-overview-layer="controlInput" type="checkbox" checked' in index_html
+    assert 'data-overview-layer="actual" type="checkbox" checked' in index_html
+    assert 'data-overview-layer="events" type="checkbox" checked' in index_html
+    assert 'data-overview-layer="filtered" type="checkbox" checked' not in index_html
+    assert 'data-overview-layer="raw" type="checkbox" checked' not in index_html
     for snippet in (
         "Published Sampled",
         "published sampled",

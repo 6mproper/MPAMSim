@@ -235,7 +235,7 @@ def test_independent_control_switches_report_neutral_effective_values(
     parameters["stimulus_configs"][0]["partid"] = 2
     parameters["partid_configs"][2].update(
         {
-            "cpbm": "00ff",
+            "cpbm": "003ff",
             "cmax": 1,
             "cmax_enable": False,
             "bmax_gbps": 1,
@@ -288,6 +288,8 @@ def test_cbusy_and_bmax_can_be_isolated_and_combined(tmp_path) -> None:
                 "cbusy_sample_ns": 500,
                 "cbusy_feedback_latency_ns": 10,
                 "cbusy_release_hold_samples": 3,
+                "cpu_cbusy_response_enable": mode in {"cbusy", "combined"},
+                "l3_cbusy_response_enable": mode in {"cbusy", "combined"},
                 "cbusy_l1_queue_ratio": 0.03,
                 "cbusy_l2_queue_ratio": 0.06,
                 "cbusy_l3_queue_ratio": 0.10,

@@ -15,6 +15,7 @@ def _config_with_two_same_partid_threads(tmp_path):
             "duration_ns": 20_000,
             "control_interval_ns": 10_000,
             "memory_controllers": 2,
+            "cpu_cbusy_response_enable": True,
         }
     )
     for row in parameters["stimulus_configs"]:

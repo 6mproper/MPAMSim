@@ -15,7 +15,7 @@ P1已经定义为最小闭环MVP，但当前界面和预设仍存在两个会误
 - 增加P1最小闭环MVP测试，覆盖：
   1. L3 CMAX限制新增allocation；
   2. MC BMAX改变effective QoS或产生hard block；
-  3. CBusy返回RN后降低对应`(MC, PARTID)` effective OSTD。
+  3. CBusy返回RN后降低对应requester内同PARTID effective OSTD，MC ID仅作来源和诊断字段。
 
 ## 非目标
 

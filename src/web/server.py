@@ -223,6 +223,8 @@ def derive_experiment_cases(
     for case_id, _, bmax_enabled, cbusy_enabled in EXPERIMENT_CASES:
         case = copy.deepcopy(parameters)
         case["policy"] = "static_mpam"
+        case["cpu_cbusy_response_enable"] = cbusy_enabled
+        case["l3_cbusy_response_enable"] = cbusy_enabled
         for row in case.get("partid_configs", []):
             if not isinstance(row, dict):
                 continue

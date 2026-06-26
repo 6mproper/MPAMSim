@@ -5,7 +5,7 @@
 真实硬件更合理的低PPA实现是：在fill、replacement、invalidate等line owner变化点维护
 sampled-owner计数器，监控周期只读取计数器bank。
 
-同时，UI中L3 occupancy仍使用“latest filtered”文案，容易让用户误以为CMIN/CMAX读取
+同时，UI中L3 occupancy曾使用“latest filtered”文案，容易让用户误以为CMIN/CMAX读取
 带宽式递归滤波值。L3 occupancy是抽样状态量，控制输入应表述为published/control sampled owner。
 
 ## 目标
@@ -13,7 +13,7 @@ sampled-owner计数器，监控周期只读取计数器bank。
 - 明确L3 sampled-owner监控采用counter-bank硬件近似，而不是监控边界瞬时扫描tag/way。
 - 用fill/replacement时的owner变化维护`owner_count[offset][PARTID]`和监控组计数。
 - rotating sampling在监控周期仅读取当前offset的counter bank。
-- 将控制总览中L3 filtered文案改为sampled owner语义，MC继续保留latest filtered bandwidth语义。
+- 将控制总览中L3 occupancy文案改为raw/published/control sampled-owner语义，MC继续保留latest filtered bandwidth语义。
 
 ## 非目标
 

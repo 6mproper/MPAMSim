@@ -93,20 +93,21 @@ MC或requester私有字段。
 ### Requirement: 控制总览区分control input和latest filtered
 
 控制总览 MUST 将控制器实际读取的锁存值显示为control input。L3 occupancy MUST 把最新发布值显示为
-sampled owner或published sampled occupancy；MC bandwidth等速率量 MAY 继续使用latest filtered。
+published sampled-owner；MC bandwidth等速率量 MAY 继续使用latest filtered。
 
 #### Scenario: L3和MC主图
 
 - **WHEN** 用户查看控制总览
-- **THEN** 主线默认 SHOULD 显示control input
-- **AND** L3 latest published sampled owner SHOULD 可选显示
+- **THEN** 主图默认 MUST 显示目标带、control input、actual和控制事件
+- **AND** L3 latest published sampled-owner SHOULD 可选显示
 - **AND** MC latest filtered bandwidth SHOULD 可选显示
-- **AND** actual、raw和控制事件仍按显示层开关控制
+- **AND** raw sampled-owner、raw bandwidth和控制事件仍按显示层开关控制
 
 #### Scenario: 文案区分
 
-- **WHEN** UI解释filtered、control input、actual或raw
-- **THEN** L3 occupancy文案 MUST 说明filtered字段在当前实现中等价于最新发布的sampled-owner快照
+- **WHEN** UI解释raw、published、control input或actual
+- **THEN** L3 occupancy文案 MUST 说明raw sampled-owner来自当前采样offset counter bank
+- **AND** published sampled-owner MUST 说明为监控边界对外发布的sampled-owner快照
 - **AND** MC bandwidth文案 MUST 说明filtered表示最新发布滤波带宽
 - **AND** control input MUST 表示控制器读取的锁存监控值
 - **AND** actual MUST 标注为验证用观测值，不得描述为控制输入
@@ -443,7 +444,7 @@ raw/latest filtered/control input BW、UNDER/OVER/HARD状态、candidate、grant
 
 ### Requirement: 目标和监控平面时间证据
 
-控制台 MUST 对所选一个或多个PARTID显示目标、physical actual、raw MPAM、filtered MPAM和控制状态。
+控制台 MUST 对所选一个或多个PARTID显示目标、physical actual、raw MPAM、published/filtered MPAM和控制状态。
 
 #### Scenario: 多PARTID对比
 
