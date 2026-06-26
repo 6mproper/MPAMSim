@@ -235,6 +235,20 @@ def test_l3_qos_scheduler_is_explicit_switch_control() -> None:
         assert snippet in styles
 
 
+def test_policy_mode_layout_has_two_segmented_modes_and_algorithm_label() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+
+    assert 'class="policy-mode-row"' in index_html
+    assert 'class="algorithm-guide-label">算法说明</span>' in index_html
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
+    assert ".policy-algorithm-guide" in styles
+
+
 def test_mc_qos_mapping_is_explicit_switch_control() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

@@ -277,15 +277,18 @@
 
         <section class="config-section" data-panel="policy">
           <h2>控制模式</h2>
-          <div class="segmented" role="radiogroup" aria-label="控制策略">
-            <label><input type="radio" name="policy" value="no_control" data-param="policy"><span>无控制</span></label>
-            <label><input type="radio" name="policy" value="static_mpam" data-param="policy"><span>有控制</span></label>
-          </div>
-          <div class="algorithm-guide" aria-label="硬件控制与快反馈算法">
-            <button type="button" data-algorithm="l3-qos">L3 QoS</button>
-            <button type="button" data-algorithm="mc-qos">3-bit QoS</button>
-            <button type="button" data-algorithm="mc-cbusy">CBusy反馈</button>
-            <button type="button" data-algorithm="address-interleave">地址交织</button>
+          <div class="policy-mode-row">
+            <div class="segmented" role="radiogroup" aria-label="控制策略">
+              <label><input type="radio" name="policy" value="no_control" data-param="policy"><span>无控制</span></label>
+              <label><input type="radio" name="policy" value="static_mpam" data-param="policy"><span>有控制</span></label>
+            </div>
+            <div class="algorithm-guide policy-algorithm-guide" aria-label="硬件控制与快反馈算法">
+              <span class="algorithm-guide-label">算法说明</span>
+              <button type="button" data-algorithm="l3-qos">L3 QoS</button>
+              <button type="button" data-algorithm="mc-qos">3-bit QoS</button>
+              <button type="button" data-algorithm="mc-cbusy">CBusy反馈</button>
+              <button type="button" data-algorithm="address-interleave">地址交织</button>
+            </div>
           </div>
           <h2>L3 调度算法参数</h2>
           <div class="field-grid">
