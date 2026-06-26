@@ -28,6 +28,11 @@
           <select id="presetSelect" aria-label="控制效果预设"></select>
         </label>
         <button id="applyPresetButton" type="button" class="preset-button">应用</button>
+        <div class="config-file-actions" data-help="导出当前完整表单为JSON配置文件；导入同类文件会恢复SoC、激励、resctrl、MPAM和策略参数。">
+          <button id="exportConfigButton" type="button" class="preset-button secondary">导出配置</button>
+          <button id="importConfigButton" type="button" class="preset-button secondary">导入配置</button>
+          <input id="importConfigFileInput" type="file" accept="application/json,.json" hidden>
+        </div>
         <p id="presetExpected" class="preset-expected">选择预设后查看预期观察点。</p>
       </div>
       <nav class="config-tabs" aria-label="配置分类">

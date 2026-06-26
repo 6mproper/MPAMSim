@@ -1433,6 +1433,33 @@ outcome_reason
 - 相关参数；
 - 必要时给出示例。
 
+### UI-001A：配置文件导入导出
+
+控制台必须支持把当前表单配置保存为本地JSON文件，并支持从该文件恢复配置。
+
+导出文件格式：
+
+```json
+{
+  "schema": "mpamsim.config.parameters",
+  "version": 1,
+  "exported_at": "ISO-8601 time",
+  "parameters": {}
+}
+```
+
+其中`parameters`必须等价于当前Web表单通过`collectParameters()`提交给仿真后端的参数集，
+包含SoC、16线程激励、resctrl-like软件组、MPAM PARTID表和策略控制参数。
+
+导入规则：
+
+- 优先读取`parameters`字段；
+- 可以兼容直接以参数对象作为顶层JSON的旧文件；
+- 导入成功后复用当前表单填充路径，刷新配置诊断、上下文说明、resctrl状态和PARTID显示选择；
+- 无法解析、缺少参数对象或文件类型不匹配时，不得修改当前表单，必须提示错误。
+
+该能力只负责本地配置文件交换，不引入服务器端配置数据库或账户体系。
+
 ### UI-002：单工作区
 
 不使用大量同级监控页签。监控工作区分三层：

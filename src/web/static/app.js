@@ -44,6 +44,9 @@ const state = {
   visiblePartids: new Set(Array.from({ length: 16 }, (_, partid) => partid)),
 };
 
+const CONFIG_FILE_SCHEMA = "mpamsim.config.parameters";
+const CONFIG_FILE_VERSION = 1;
+
 const colors = {
   p1: "#1778aa",
   p2: "#d46b21",
@@ -329,6 +332,105 @@ function collectParameters() {
   parameters.stimulus_configs = collectStimulusConfigs();
   parameters.resctrl_groups = collectResctrlGroups();
   return parameters;
+}
+
+function cloneConfig(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function mergedConfigParameters(parameters) {
+  const defaults = cloneConfig(state.defaults || {});
+  return {
+    ...defaults,
+    ...(parameters || {}),
+    partid_configs: cloneConfig(
+      parameters?.partid_configs
+      || defaults.partid_configs
+      || [],
+    ),
+    stimulus_configs: cloneConfig(
+      parameters?.stimulus_configs
+      || defaults.stimulus_configs
+      || [],
+    ),
+    resctrl_groups: cloneConfig(
+      parameters?.resctrl_groups
+      || defaults.resctrl_groups
+      || [],
+    ),
+  };
+}
+
+function configFilePayload(parameters) {
+  return {
+    schema: CONFIG_FILE_SCHEMA,
+    version: CONFIG_FILE_VERSION,
+    exported_at: new Date().toISOString(),
+    parameters: cloneConfig(parameters),
+  };
+}
+
+function parseConfigFilePayload(text) {
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    throw new Error("配置文件不是有效JSON。");
+  }
+  if (payload?.schema && payload.schema !== CONFIG_FILE_SCHEMA) {
+    throw new Error("配置文件类型不匹配。");
+  }
+  const parameters = payload?.parameters ? payload.parameters : payload;
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+    throw new Error("配置文件缺少parameters对象。");
+  }
+  if (
+    !Array.isArray(parameters.partid_configs)
+    && !Array.isArray(parameters.stimulus_configs)
+    && !("duration_ns" in parameters)
+  ) {
+    throw new Error("配置文件不像MPAMSim参数文件。");
+  }
+  return mergedConfigParameters(parameters);
+}
+
+function exportCurrentConfig() {
+  const parameters = collectParameters();
+  const payload = configFilePayload(parameters);
+  const blob = new Blob(
+    [JSON.stringify(payload, null, 2)],
+    { type: "application/json" },
+  );
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const timestamp = payload.exported_at.replace(/[:.]/g, "-");
+  anchor.href = url;
+  anchor.download = `mpamsim-config-${timestamp}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  setStatus("ready", "当前配置已导出为JSON文件", 0);
+  showToast("当前配置已导出");
+}
+
+async function importConfigFile(file) {
+  if (!file) return;
+  try {
+    const parameters = parseConfigFilePayload(await file.text());
+    fillForm(parameters);
+    focusPresetPartids(parameters);
+    $("#presetSelect").value = "";
+    updatePresetSummary();
+    applyContextHelp();
+    renderConfigDiagnostics();
+    setStatus("ready", `已导入配置：${file.name}`, 0);
+    renderAll();
+    showToast(`已导入配置：${file.name}`);
+  } catch (error) {
+    setStatus("failed", error.message || "导入配置失败", 0);
+    showToast(error.message || "导入配置失败");
+  }
 }
 
 function selectOptions(values, selected) {
@@ -4229,6 +4331,15 @@ function bindEvents() {
   $$('input[name="policy"]').forEach((input) => input.addEventListener("change", renderResourceMonitor));
   $("#presetSelect").addEventListener("change", updatePresetSummary);
   $("#applyPresetButton").addEventListener("click", applySelectedPreset);
+  $("#exportConfigButton").addEventListener("click", exportCurrentConfig);
+  $("#importConfigButton").addEventListener("click", () => {
+    $("#importConfigFileInput").click();
+  });
+  $("#importConfigFileInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    await importConfigFile(file);
+  });
   $("#runButton").addEventListener("click", runSimulation);
   $("#experimentButton").addEventListener("click", runExperiment);
   $("#controlVerificationButton").addEventListener(

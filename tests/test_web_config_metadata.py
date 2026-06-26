@@ -229,6 +229,37 @@ def test_mc_qos_mapping_is_explicit_switch_control() -> None:
     assert "QoS map" in app_js
 
 
+def test_config_import_export_workspace_is_present() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+
+    for snippet in (
+        'id="exportConfigButton"',
+        'id="importConfigButton"',
+        'id="importConfigFileInput"',
+        'accept="application/json,.json"',
+        "导出配置",
+        "导入配置",
+    ):
+        assert snippet in index_html
+    for snippet in (
+        'CONFIG_FILE_SCHEMA = "mpamsim.config.parameters"',
+        "function configFilePayload(",
+        "function parseConfigFilePayload(",
+        'throw new Error("配置文件类型不匹配。")',
+        "payload.schema !== CONFIG_FILE_SCHEMA",
+        "function exportCurrentConfig(",
+        "async function importConfigFile(",
+        "collectParameters()",
+        "fillForm(parameters)",
+    ):
+        assert snippet in app_js
+
+
 def test_algorithm_explanations_use_compact_body() -> None:
     app_js = (
         PROJECT_ROOT / "src/web/static/app.js"

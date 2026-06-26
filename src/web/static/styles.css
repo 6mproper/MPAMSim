@@ -226,6 +226,25 @@ button {
   background: #125a84;
 }
 
+.preset-button.secondary {
+  height: 26px;
+  padding: 0 8px;
+  color: #2e3d47;
+  background: #fff;
+  border-color: #9eabb4;
+}
+
+.preset-button.secondary:hover {
+  background: #e9eef2;
+}
+
+.config-file-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
 .preset-expected {
   grid-column: 1 / -1;
   margin: 0;
