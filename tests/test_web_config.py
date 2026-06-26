@@ -96,8 +96,8 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
     assert config.memory_controllers[0].clock_mhz == 1_000
     assert config.memory_controllers[0].monitor_period_cycles == 256
-    assert config.memory_controllers[0].history_weight == 0.75
-    assert config.memory_controllers[0].current_weight == 0.25
+    assert config.memory_controllers[0].history_weight == 0.95
+    assert config.memory_controllers[0].current_weight == 0.05
     assert config.memory_controllers[0].bandwidth_hysteresis == 0.05
     assert config.memory_controllers[0].aging_mode == "none"
     assert config.memory_controllers[0].token_bucket_window_ns == 100

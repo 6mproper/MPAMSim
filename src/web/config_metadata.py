@@ -532,7 +532,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "每MC、每PARTID滤波寄存器。",
         "增大后监控更平滑但控制响应更慢。",
         "0到1，且必须与current weight之和等于1。",
-        "0.75表示历史值占75%。",
+        "0.95表示历史值占95%。",
     ),
     "mc_current_weight": _field(
         "MC当前权重",
@@ -541,7 +541,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "每MC、每PARTID滤波寄存器。",
         "增大后更快跟随当前服务量，同时更敏感于窗口量化。",
         "0到1，且必须与history weight之和等于1。",
-        "0.25表示当前窗口占25%。",
+        "0.05表示当前窗口占5%。",
     ),
     "mc_bandwidth_hysteresis": _field(
         "BMIN/BMAX滞回",

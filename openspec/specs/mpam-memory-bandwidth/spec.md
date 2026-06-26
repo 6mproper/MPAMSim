@@ -181,7 +181,8 @@ MC MUST 使用最终仲裁QoS选择最高档，相同最终QoS使用rotating buf
 
 MC MUST 为每个PARTID维护63bit累计服务字节计数。每个本地监控边界基于累计计数差分计算上一个窗口的采样带宽，
 再用可配权重计算filtered bandwidth，并把该filtered bandwidth保存为后续控制窗口的control bandwidth。
-BMIN/BMAX不得读取当前瞬时服务字节或actual/debug带宽。
+BMIN/BMAX不得读取当前瞬时服务字节或actual/debug带宽。默认MC滤波权重 MUST 为
+`history_weight=0.95`、`current_weight=0.05`，用于降低短窗口raw带宽量化噪声；用户仍可配置这两个权重。
 
 #### Scenario: 累计计数差分
 
@@ -195,6 +196,7 @@ BMIN/BMAX不得读取当前瞬时服务字节或actual/debug带宽。
 - **WHEN** MC计算本窗口`sample_bandwidth`
 - **THEN** `filtered_bandwidth[T] = history_weight * filtered_bandwidth[T-1] + current_weight * sample_bandwidth[T]`
 - **AND** `history_weight + current_weight` MUST 等于1
+- **AND** 默认权重 MUST 为`0.95/0.05`
 - **AND** `filtered_bandwidth[T]` MUST 保存为后续控制窗口的`control_bandwidth`
 
 #### Scenario: Hard BMAX过冲

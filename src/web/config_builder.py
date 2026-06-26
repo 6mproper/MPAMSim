@@ -786,8 +786,8 @@ def default_parameters() -> Dict[str, object]:
         "mc_interleave_xor_shift": 12,
         "mc_clock_mhz": 1000,
         "mc_monitor_period_cycles": 256,
-        "mc_history_weight": 0.75,
-        "mc_current_weight": 0.25,
+        "mc_history_weight": 0.95,
+        "mc_current_weight": 0.05,
         "mc_bandwidth_hysteresis": 0.05,
         "mc_aging_mode": "none",
         "mc_aging_quantum_cycles": 256,
@@ -950,7 +950,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
         {
             "name": "partid0_hard_bmax_cbusy",
             "bmax_enable": True,
-            "bmax_gbps": 8.0,
+            "bmax_gbps": 4.0,
             "limit_mode": "hardlimit",
             "cbusy_enable": True,
             "cbusy_l1_ostd": 8,
@@ -1778,10 +1778,10 @@ def build_config(
         values, "mc_monitor_period_cycles", 256, 1, 1_000_000
     )
     mc_history_weight = _number(
-        values, "mc_history_weight", 0.75, 0, 1
+        values, "mc_history_weight", 0.95, 0, 1
     )
     mc_current_weight = _number(
-        values, "mc_current_weight", 0.25, 0, 1
+        values, "mc_current_weight", 0.05, 0, 1
     )
     if abs(mc_history_weight + mc_current_weight - 1.0) > 1e-9:
         raise ParameterError(

@@ -1047,6 +1047,9 @@ filtered_bw[k] =
 control_input[k+1] = filtered_bw[k]
 ```
 
+默认MC权重为`history_weight=0.95`、`current_weight=0.05`，用于降低短窗口raw带宽量化噪声；
+用户界面仍允许配置为其他满足求和为1的权重。
+
 窗口内不允许暗中读取当前瞬时服务字节、未发布raw带宽或actual/debug状态。边界之前已经完成的调度不能回溯使用新值；
 边界之后的后续控制窗口可以使用保存后的`control_input`。
 

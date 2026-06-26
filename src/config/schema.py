@@ -76,8 +76,8 @@ class MemoryControllerConfig:
     base_latency_ns: float = 80.0
     clock_mhz: float = 1000.0
     monitor_period_cycles: int = 256
-    history_weight: float = 0.75
-    current_weight: float = 0.25
+    history_weight: float = 0.95
+    current_weight: float = 0.05
     bandwidth_hysteresis: float = 0.05
     aging_mode: str = "none"
     aging_quantum_cycles: int = 256

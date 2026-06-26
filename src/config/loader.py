@@ -287,8 +287,8 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             monitor_period_cycles=int(
                 item.get("monitor_period_cycles", 256)
             ),
-            history_weight=float(item.get("history_weight", 0.75)),
-            current_weight=float(item.get("current_weight", 0.25)),
+            history_weight=float(item.get("history_weight", 0.95)),
+            current_weight=float(item.get("current_weight", 0.05)),
             bandwidth_hysteresis=float(
                 item.get("bandwidth_hysteresis", 0.05)
             ),
