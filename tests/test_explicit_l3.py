@@ -19,6 +19,9 @@ def _config(
     current_weight: float = 0.25,
     sampling_mode: str = "fixed_first",
     sampling_rotation_period_monitor_cycles: int = 1,
+    lookup_parallelism: int = 2,
+    qos_scheduler_enable: bool = True,
+    cbusy_qos_demote_per_level: int = 1,
 ) -> CacheConfig:
     return CacheConfig(
         id="slc0",
@@ -31,7 +34,7 @@ def _config(
         sets=sets,
         monitor_group_sets=8,
         queue_depth=8,
-        lookup_parallelism=2,
+        lookup_parallelism=lookup_parallelism,
         miss_detect_latency_ns=2,
         fill_latency_ns=3,
         mshr_entries=4,
@@ -46,6 +49,8 @@ def _config(
         sampling_rotation_period_monitor_cycles=(
             sampling_rotation_period_monitor_cycles
         ),
+        qos_scheduler_enable=qos_scheduler_enable,
+        cbusy_qos_demote_per_level=cbusy_qos_demote_per_level,
     )
 
 
@@ -413,3 +418,127 @@ def test_l3_cbusy_response_can_be_disabled() -> None:
     assert values["cbusy_response_enable"] is False
     assert values["cbusy_level"] == 0
     assert values["cbusy_mshr_cap"] == config.mshr_entries
+
+
+def test_l3_qos_scheduler_selects_highest_effective_qos() -> None:
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(partid=0, mc_qos=0, mc_qos_enable=True),
+            MPAMSettingConfig(partid=1, mc_qos=7, mc_qos_enable=True),
+        ]
+    )
+    kernel, cache, _, misses = _cache(
+        _config(lookup_parallelism=1),
+        settings=settings,
+    )
+    low = _request(30, 0, partid=0)
+    high = _request(31, 64, partid=1)
+    for request in (low, high):
+        request.cache_enqueue_time_ns = kernel.now_ns
+        cache._queue.append(request)
+
+    cache._dispatch()
+    kernel.run(2)
+
+    assert misses == [high]
+    values = cache.monitor_snapshot(kernel.now_ns).payload["per_partid"]
+    assert values["1"]["l3_base_qos"] == 7
+    assert values["1"]["l3_effective_qos"] == 7
+    assert values["1"]["l3_qos_grants"] == 1
+
+
+def test_l3_qos_scheduler_can_be_disabled_for_fifo() -> None:
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(partid=0, mc_qos=0, mc_qos_enable=True),
+            MPAMSettingConfig(partid=1, mc_qos=7, mc_qos_enable=True),
+        ]
+    )
+    kernel, cache, _, misses = _cache(
+        _config(lookup_parallelism=1, qos_scheduler_enable=False),
+        settings=settings,
+    )
+    low = _request(40, 0, partid=0)
+    high = _request(41, 64, partid=1)
+    for request in (low, high):
+        request.cache_enqueue_time_ns = kernel.now_ns
+        cache._queue.append(request)
+
+    cache._dispatch()
+    kernel.run(2)
+
+    assert misses == [low]
+
+
+def test_l3_cbusy_demotes_effective_qos_for_scheduler() -> None:
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(
+                partid=1,
+                mc_qos=7,
+                mc_qos_enable=True,
+                cbusy_enable=True,
+            ),
+            MPAMSettingConfig(partid=2, mc_qos=4, mc_qos_enable=True),
+        ]
+    )
+    kernel, cache, _, misses = _cache(
+        _config(lookup_parallelism=1, cbusy_qos_demote_per_level=3),
+        settings=settings,
+    )
+    learned = _request(50, 0, partid=1)
+    learned.return_cbusy_level = 3
+    learned.return_cbusy_source = "mc0"
+    cache._observe_return_cbusy(learned)
+    congested = _request(51, 64, partid=1)
+    other = _request(52, 128, partid=2)
+    for request in (congested, other):
+        request.cache_enqueue_time_ns = kernel.now_ns
+        cache._queue.append(request)
+
+    cache._dispatch()
+    kernel.run(2)
+
+    assert misses == [other]
+    values = cache.monitor_snapshot(kernel.now_ns).payload["per_partid"]
+    assert values["1"]["l3_base_qos"] == 7
+    assert values["1"]["l3_cbusy_qos_demote"] == 9
+    assert values["1"]["l3_effective_qos"] == 0
+    assert values["2"]["l3_effective_qos"] == 4
+
+
+def test_l3_mshr_wait_qos_skips_cbusy_blocked_partid() -> None:
+    settings = SettingsTable(
+        [
+            MPAMSettingConfig(
+                partid=1,
+                mc_qos=7,
+                mc_qos_enable=True,
+                cbusy_enable=True,
+                cbusy_l1_ostd=1,
+                cbusy_l2_ostd=1,
+                cbusy_l3_ostd=1,
+            ),
+            MPAMSettingConfig(partid=2, mc_qos=4, mc_qos_enable=True),
+        ]
+    )
+    _, cache, _, misses = _cache(
+        _config(merge=False, cbusy_qos_demote_per_level=3),
+        settings=settings,
+    )
+    active = _request(60, 0, partid=1)
+    cache._allocate_mshr(active)
+    learned = _request(61, 0, partid=1)
+    learned.return_cbusy_level = 3
+    learned.return_cbusy_source = "mc0"
+    cache._observe_return_cbusy(learned)
+    blocked = _request(62, 64, partid=1)
+    allowed = _request(63, 128, partid=2)
+    cache._mshr_wait_queue.append((blocked, cache.kernel.now_ns))
+    cache._mshr_wait_queue.append((allowed, cache.kernel.now_ns))
+
+    cache._drain_mshr_wait_queue()
+
+    assert misses == [active, allowed]
+    assert cache.mshr_occupancy == 2
+    assert [item[0] for item in cache._mshr_wait_queue] == [blocked]

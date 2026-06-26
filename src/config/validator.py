@@ -104,6 +104,10 @@ def validate_config(config: ProjectConfig) -> None:
                 f"Cache {cache.id} monitor weights must be "
                 "non-negative and sum to 1"
             )
+        if not 0 <= cache.cbusy_qos_demote_per_level <= 7:
+            raise ConfigError(
+                f"Cache {cache.id} cbusy_qos_demote_per_level must be 0..7"
+            )
     for mc in config.memory_controllers:
         if mc.clock_mhz <= 0:
             raise ConfigError(

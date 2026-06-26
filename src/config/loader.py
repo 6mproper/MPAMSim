@@ -240,6 +240,12 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             cbusy_response_enable=bool(
                 item.get("cbusy_response_enable", True)
             ),
+            qos_scheduler_enable=bool(
+                item.get("qos_scheduler_enable", True)
+            ),
+            cbusy_qos_demote_per_level=int(
+                item.get("cbusy_qos_demote_per_level", 1)
+            ),
         )
         for item in soc.get("caches", [])
     ]

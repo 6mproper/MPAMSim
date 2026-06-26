@@ -62,6 +62,9 @@ def _cache_counters() -> Dict[str, float]:
         "queue_delay_ns": 0.0,
         "admission_backpressure_ns": 0.0,
         "queue_full_events": 0,
+        "l3_qos_candidates": 0,
+        "l3_qos_grants": 0,
+        "l3_qos_demotions": 0,
     }
 
 
@@ -79,6 +82,7 @@ class CacheMSC(Component):
         "cmin_control",
         "cmax_control",
         "cbusy_mshr_response",
+        "l3_qos_scheduler",
     )
     required_monitors = (
         "actual_occupancy",
@@ -256,6 +260,72 @@ class CacheMSC(Component):
             >= self._cbusy_mshr_cap(request.partid, level)
         )
 
+    def _l3_base_qos(self, partid: int) -> int:
+        setting = self.settings.lookup(partid)
+        if not self.enforce_controls or not setting.mc_qos_enable:
+            return 0
+        return max(0, min(7, int(setting.mc_qos)))
+
+    def _l3_cbusy_qos_demote(self, partid: int) -> int:
+        if not self._cbusy_response_enabled(partid):
+            return 0
+        return max(
+            0,
+            self._cbusy_level(partid)
+            * int(self.config.cbusy_qos_demote_per_level),
+        )
+
+    def _l3_effective_qos(self, partid: int) -> int:
+        return max(
+            0,
+            min(7, self._l3_base_qos(partid) - self._l3_cbusy_qos_demote(partid)),
+        )
+
+    @staticmethod
+    def _pop_deque_index(queue: Deque, index: int):
+        queue.rotate(-index)
+        item = queue.popleft()
+        queue.rotate(index)
+        return item
+
+    def _queue_candidate_index(self) -> int:
+        if not self.config.qos_scheduler_enable:
+            return 0
+        best_index = 0
+        best_qos = -1
+        for index, request in enumerate(self._queue):
+            self._increment(request, "l3_qos_candidates")
+            qos = self._l3_effective_qos(request.partid)
+            if qos > best_qos:
+                best_qos = qos
+                best_index = index
+        return best_index
+
+    def _pop_lookup_candidate(self) -> Request:
+        index = self._queue_candidate_index()
+        request = self._pop_deque_index(self._queue, index)
+        if self.config.qos_scheduler_enable:
+            self._increment(request, "l3_qos_grants")
+            if self._l3_cbusy_qos_demote(request.partid) > 0:
+                self._increment(request, "l3_qos_demotions")
+        return request
+
+    def _mshr_wait_candidate_index(self) -> Optional[int]:
+        if not self.config.qos_scheduler_enable:
+            request, _ = self._mshr_wait_queue[0]
+            return None if self._cbusy_blocks_mshr(request) else 0
+        best_index: Optional[int] = None
+        best_qos = -1
+        for index, (request, _) in enumerate(self._mshr_wait_queue):
+            if self._cbusy_blocks_mshr(request):
+                continue
+            self._increment(request, "l3_qos_candidates")
+            qos = self._l3_effective_qos(request.partid)
+            if qos > best_qos:
+                best_qos = qos
+                best_index = index
+        return best_index
+
     def receive(self, request: Request) -> None:
         request.cache_id = self.component_id
         if not self.can_accept(request):
@@ -325,7 +395,7 @@ class CacheMSC(Component):
             self._queue
             and self._active_lookups < self.config.lookup_parallelism
         ):
-            request = self._queue.popleft()
+            request = self._pop_lookup_candidate()
             queue_delay = max(
                 0.0,
                 self.kernel.now_ns - request.cache_enqueue_time_ns,
@@ -518,11 +588,21 @@ class CacheMSC(Component):
                 or self.mshr_occupancy >= self.config.mshr_entries
             ):
                 break
-            request, wait_start = self._mshr_wait_queue.popleft()
+            index = self._mshr_wait_candidate_index()
+            if index is None:
+                break
+            request, wait_start = self._pop_deque_index(
+                self._mshr_wait_queue,
+                index,
+            )
             request.timing.mshr_fill_delay_ns += max(
                 0.0,
                 self.kernel.now_ns - wait_start,
             )
+            if self.config.qos_scheduler_enable:
+                self._increment(request, "l3_qos_grants")
+                if self._l3_cbusy_qos_demote(request.partid) > 0:
+                    self._increment(request, "l3_qos_demotions")
             self._handle_miss(request)
 
     def _observe_return_cbusy(self, request: Request) -> None:
@@ -1282,6 +1362,14 @@ class CacheMSC(Component):
                 "cbusy_transitions": (
                     self._cbusy_transitions_by_partid[partid]
                 ),
+                "l3_base_qos": self._l3_base_qos(partid),
+                "l3_effective_qos": self._l3_effective_qos(partid),
+                "l3_cbusy_qos_demote": (
+                    self._l3_cbusy_qos_demote(partid)
+                ),
+                "l3_qos_candidates": values["l3_qos_candidates"],
+                "l3_qos_grants": values["l3_qos_grants"],
+                "l3_qos_demotions": values["l3_qos_demotions"],
             }
 
         monitor_groups = {}
@@ -1382,6 +1470,10 @@ class CacheMSC(Component):
             "history_weight": self.config.history_weight,
             "current_weight": self.config.current_weight,
             "cbusy_response_enable": self.config.cbusy_response_enable,
+            "qos_scheduler_enable": self.config.qos_scheduler_enable,
+            "cbusy_qos_demote_per_level": (
+                self.config.cbusy_qos_demote_per_level
+            ),
             "instantiated_set_count": len(self._sets),
             "sampled_set_count": sum(
                 int(self._is_sample_set(set_index))

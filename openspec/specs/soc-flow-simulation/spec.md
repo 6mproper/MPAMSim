@@ -90,7 +90,8 @@ P1 MUST 复用现有类型化`Transaction`、`MonitorSample`、`ControlEvent`和
 ### Requirement: P1三条闭环场景
 
 P1 MUST 跑通L3 CMAX occupancy control、MC BMAX bandwidth control和
-CBusy -> RN OSTD source throttling三条场景。
+CBusy -> RN OSTD source throttling三条场景。P1之后允许新增L3本地QoS调度作为辅助MC带宽控制的普通机制，
+但不得新增P1专用数据面、UI通路或validation stage。
 
 #### Scenario: L3 CMAX occupancy control
 

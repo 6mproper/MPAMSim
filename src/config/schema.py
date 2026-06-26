@@ -45,6 +45,8 @@ class CacheConfig:
     history_weight: float = 0.75
     current_weight: float = 0.25
     cbusy_response_enable: bool = True
+    qos_scheduler_enable: bool = True
+    cbusy_qos_demote_per_level: int = 1
 
 
 @dataclass

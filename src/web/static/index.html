@@ -279,6 +279,7 @@
           </div>
           <div class="algorithm-guide" aria-label="闭环与快反馈算法">
             <button type="button" data-algorithm="policy-mode">P99闭环</button>
+            <button type="button" data-algorithm="l3-qos">L3 QoS</button>
             <button type="button" data-algorithm="mc-qos">3-bit QoS</button>
             <button type="button" data-algorithm="mc-cbusy">CBusy反馈</button>
             <button type="button" data-algorithm="address-interleave">地址交织</button>
@@ -288,6 +289,11 @@
             <label>带宽步长 %<input data-param="max_bw_step_percent" type="number" min="1" max="100" step="1"></label>
             <label>P99 滞回比例<input data-param="p99_hysteresis" type="number" min="0" max="1" step="0.01"></label>
             <label>最小保持周期<input data-param="min_hold_intervals" type="number" min="1" max="100" step="1"></label>
+          </div>
+          <h2>L3 调度算法参数</h2>
+          <div class="field-grid">
+            <label data-algorithm="l3-qos">L3 QoS调度<input data-param="l3_qos_scheduler_enable" type="checkbox"></label>
+            <label data-algorithm="l3-qos">CBusy QoS降档/级<input data-param="l3_cbusy_qos_demote_per_level" type="number" min="0" max="7" step="1"></label>
           </div>
           <h2>MC 调度算法参数</h2>
           <div class="field-grid">

@@ -126,6 +126,7 @@ const headerHelp = {
   "L3 Util %": "估算 L3 占用除以该 PARTID 在所有 L3 实例上的允许容量。",
   "Hit Rate": "最新采样周期内该 PARTID 在 L3 的概率命中率。",
   "Alloc Denials": "因 CPBM 或 CMAX 无可用 way 而拒绝抽样分配的次数。",
+  "L3 QoS": "L3本地调度使用的base/effective QoS、CBusy降档、candidate和grant证据。",
   "L3 Queue": "所有 L3 实例的平均等待 entries / 配置深度，以及采样周期内峰值。",
   "Queue Delay / Full": "该 PARTID 在 L3 FIFO 中累计等待时间，以及入口队列满导致的重试事件。",
   "MC Util %": "该 PARTID 在所有 MC 上的带宽之和除以这些 MC 的总建模带宽。",
@@ -1405,6 +1406,15 @@ function aggregateL3Resources() {
     mergedMisses: 0,
     allocationBypass: 0,
     redundantFetches: 0,
+    l3BaseQos: 0,
+    l3EffectiveQos: 0,
+    l3CbusyQosDemote: 0,
+    l3QosCandidates: 0,
+    l3QosGrants: 0,
+    l3QosDemotions: 0,
+    l3CbusyLevel: 0,
+    l3CbusyMshrCap: 0,
+    l3CbusyMshrBlocks: 0,
     cminByMsc: new Map(),
     cmaxByMsc: new Map(),
     cpbmByMsc: new Map(),
@@ -1487,6 +1497,29 @@ function aggregateL3Resources() {
           values.admission_backpressure_ns || 0,
         );
         target.queueFullEvents += Number(values.queue_full_events || 0);
+        target.l3BaseQos = Math.max(
+          target.l3BaseQos,
+          Number(values.l3_base_qos || 0),
+        );
+        target.l3EffectiveQos = Math.max(
+          target.l3EffectiveQos,
+          Number(values.l3_effective_qos || 0),
+        );
+        target.l3CbusyQosDemote = Math.max(
+          target.l3CbusyQosDemote,
+          Number(values.l3_cbusy_qos_demote || 0),
+        );
+        target.l3QosCandidates += Number(values.l3_qos_candidates || 0);
+        target.l3QosGrants += Number(values.l3_qos_grants || 0);
+        target.l3QosDemotions += Number(values.l3_qos_demotions || 0);
+        target.l3CbusyLevel = Math.max(
+          target.l3CbusyLevel,
+          Number(values.cbusy_level || 0),
+        );
+        target.l3CbusyMshrCap = target.l3CbusyMshrCap
+          ? Math.min(target.l3CbusyMshrCap, Number(values.cbusy_mshr_cap || 0))
+          : Number(values.cbusy_mshr_cap || 0);
+        target.l3CbusyMshrBlocks += Number(values.cbusy_mshr_blocks || 0);
         target.cminByMsc.set(String(row.msc_id), values.cmin_percent);
         target.cmaxByMsc.set(String(row.msc_id), values.cmax_percent);
         target.cpbmByMsc.set(String(row.msc_id), values.cpbm);
@@ -1914,7 +1947,8 @@ function renderResourceMonitor() {
       "Monitor Error", "L3 Util %", "Raw / Filtered BW",
       "Hit Rate", "L3 Queue",
       "MSHR", "Fill Buffer", "Queue Delay / Full",
-      "Merge / Bypass", "Alloc Denials", "CMIN %", "CMAX %", "CPBM",
+      "Merge / Bypass", "Alloc Denials", "L3 QoS",
+      "CMIN %", "CMAX %", "CPBM",
     ];
     rows = visible(aggregateL3Resources()).map((row) => `
       <tr>
@@ -1931,6 +1965,7 @@ function renderResourceMonitor() {
         <td>${formatNumber(row.queueDelayNs, 2)} ns <small>${formatNumber(row.queueFullEvents, 0)} full · ${formatNumber(row.admissionBackpressureNs, 2)} ns retry</small></td>
         <td>${formatNumber(row.mergedMisses, 0)} / ${formatNumber(row.allocationBypass, 0)} <small>${formatNumber(row.redundantFetches, 0)} redundant</small></td>
         <td>${formatNumber(row.allocationDenials, 0)}</td>
+        <td>${formatNumber(row.l3BaseQos, 0)} / ${formatNumber(row.l3EffectiveQos, 0)} <small>CBusy L${formatNumber(row.l3CbusyLevel, 0)} -${formatNumber(row.l3CbusyQosDemote, 0)} · ${formatNumber(row.l3QosGrants, 0)}/${formatNumber(row.l3QosCandidates, 0)} grant/cand · ${formatNumber(row.l3CbusyMshrBlocks, 0)} block</small></td>
         <td>${controlValue(row.cminEnabled, row.cmin, row.configuredCmin, (value) => `${formatNumber(value, 1)}%`)}</td>
         <td>${controlValue(row.cmaxEnabled, row.cmax, row.configuredCmax, (value) => `${formatNumber(value, 1)}%`)}</td>
         <td>${controlValue(row.cpbmEnabled, row.cpbm, row.configuredCpbm, (value) => `<code>${escapeHtml(value)}</code>`)}</td>

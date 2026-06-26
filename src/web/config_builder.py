@@ -744,6 +744,8 @@ def default_parameters() -> Dict[str, object]:
         "l3_monitor_period_cycles": 256,
         "l3_history_weight": 0.75,
         "l3_current_weight": 0.25,
+        "l3_qos_scheduler_enable": True,
+        "l3_cbusy_qos_demote_per_level": 1,
         "noc_routers": 8,
         "noc_link_gbps": 256,
         "noc_router_latency_ns": 5,
@@ -1638,6 +1640,18 @@ def build_config(
         raise ParameterError(
             "L3 history_weight + current_weight must equal 1"
         )
+    l3_qos_scheduler_enable = _boolean(
+        values,
+        "l3_qos_scheduler_enable",
+        True,
+    )
+    l3_cbusy_qos_demote_per_level = _integer(
+        values,
+        "l3_cbusy_qos_demote_per_level",
+        1,
+        0,
+        7,
+    )
     noc_routers = _integer(
         values, "noc_routers", 8, 1, 64
     )
@@ -1966,6 +1980,10 @@ def build_config(
             "history_weight": l3_history_weight,
             "current_weight": l3_current_weight,
             "cbusy_response_enable": l3_cbusy_response_enable,
+            "qos_scheduler_enable": l3_qos_scheduler_enable,
+            "cbusy_qos_demote_per_level": (
+                l3_cbusy_qos_demote_per_level
+            ),
             "shared_by_cores": cache_core_map[cache_id],
         }
         for cache_id in cache_core_map
@@ -2022,6 +2040,8 @@ def build_config(
                     "cmin_enable": row["cmin_enable"],
                     "cmax_enable": row["cmax_enable"],
                     "cpbm_enable": row["cpbm_enable"],
+                    "mc_qos": row["mc_qos"],
+                    "mc_qos_enable": row["mc_qos_enable"],
                     "monitor_enable": row["monitor_enable"],
                 }
                 for row in partid_configs
