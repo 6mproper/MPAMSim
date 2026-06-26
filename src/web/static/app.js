@@ -4146,11 +4146,16 @@ function hideAlgorithmPopover(target = null) {
   $("#algorithmPopover").setAttribute("aria-hidden", "true");
 }
 
+function isNestedFormControlClick(event, target) {
+  const control = event.target.closest?.("input, select, textarea, button");
+  return Boolean(control && control !== target && target.contains(control));
+}
+
 function bindAlgorithmEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target.closest?.("[data-algorithm]");
     if (target) {
-      if (target === algorithmTarget) {
+      if (target === algorithmTarget && !isNestedFormControlClick(event, target)) {
         hideAlgorithmPopover(target);
       } else {
         showAlgorithmPopover(target);
@@ -4238,7 +4243,7 @@ function bindHelpEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target.closest?.("[data-help]");
     if (target && !target.closest?.("[data-algorithm]")) {
-      if (target === activeHelpTarget) {
+      if (target === activeHelpTarget && !isNestedFormControlClick(event, target)) {
         hideHelp(target);
       } else {
         showHelp(target);

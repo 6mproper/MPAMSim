@@ -252,6 +252,15 @@ def test_context_help_and_algorithm_explanations_open_on_click_only() -> None:
     assert 'document.addEventListener("click", (event) =>' in app_js
     assert "showAlgorithmPopover(target);" in app_js
     assert "showHelp(target);" in app_js
+    assert "function isNestedFormControlClick(event, target)" in app_js
+    assert (
+        "target === algorithmTarget && !isNestedFormControlClick(event, target)"
+        in app_js
+    )
+    assert (
+        "target === activeHelpTarget && !isNestedFormControlClick(event, target)"
+        in app_js
+    )
     for forbidden in (
         'document.addEventListener("mouseover"',
         'document.addEventListener("mouseout"',
