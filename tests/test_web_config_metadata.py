@@ -246,7 +246,9 @@ def test_policy_mode_layout_has_two_segmented_modes_and_algorithm_label() -> Non
     assert 'class="policy-mode-row"' in index_html
     assert 'class="algorithm-guide-label">算法说明</span>' in index_html
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
+    assert ".policy-mode-row {\n  margin: 0 0 8px;\n  display: grid;\n  grid-template-columns: 1fr;" in styles
     assert ".policy-algorithm-guide" in styles
+    assert ".policy-algorithm-guide button" in styles
 
 
 def test_mc_qos_mapping_is_explicit_switch_control() -> None:
