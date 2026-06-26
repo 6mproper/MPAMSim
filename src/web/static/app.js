@@ -649,6 +649,14 @@ function collectResctrlGroups() {
   });
 }
 
+function currentFullCpbmMask() {
+  const ways = Number($('[data-param="l3_ways"]')?.value || 20);
+  const safeWays = Math.max(1, Math.min(32, Math.trunc(ways)));
+  const maximum = (1n << BigInt(safeWays)) - 1n;
+  const width = Math.max(1, Math.ceil(safeWays / 4));
+  return maximum.toString(16).padStart(width, "0");
+}
+
 function addResctrlGroup() {
   const groups = collectResctrlGroups();
   const used = new Set(groups.map((row) => Number(row.partid)));
@@ -659,7 +667,7 @@ function addResctrlGroup() {
     name: `group${partid}`,
     partid,
     mode: "shareable",
-    schemata: "L3:0=ffff\nMB:0=256",
+    schemata: `L3:0=${currentFullCpbmMask()}\nMB:0=256`,
     tasks: "",
     cpus: "",
     mb_limit_mode: "softlimit",
@@ -780,7 +788,7 @@ function updateResctrlManagedRows() {
 }
 
 function normalizePartidMasks() {
-  const ways = Number($('[data-param="l3_ways"]').value || 1);
+  const ways = Number($('[data-param="l3_ways"]').value || 20);
   const maximum = (1n << BigInt(ways)) - 1n;
   const width = Math.max(1, Math.ceil(ways / 4));
   $$("[data-partid-row]").forEach((row) => {
@@ -2567,7 +2575,7 @@ function renderResctrlInfoSummary() {
   if (!target) return;
   const l3 = Number($('[data-param="l3_instances"]')?.value || 1);
   const mc = Number($('[data-param="memory_controllers"]')?.value || 1);
-  const ways = Number($('[data-param="l3_ways"]')?.value || 16);
+  const ways = Number($('[data-param="l3_ways"]')?.value || 20);
   const channels = Number($('[data-param="channels_per_mc"]')?.value || 1);
   const channelGbps = Number($('[data-param="channel_bandwidth_gbps"]')?.value || 0);
   target.textContent = `L3 domains 0..${Math.max(0, l3 - 1)} · MB domains 0..${Math.max(0, mc - 1)} · CBM ${ways}bit · MB ${formatNumber(channels * channelGbps, 1)} Gbps/domain`;

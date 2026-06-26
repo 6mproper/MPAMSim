@@ -27,19 +27,19 @@ soc:
   caches:
     - id: slc0
       level: L3
-      size_bytes: 33554432
-      sets: 32768
+      size_bytes: 26214400
+      sets: 20480
       line_size: 64
-      ways: 16
+      ways: 20
       monitor_group_sets: 8
       queue_depth: 128
       lookup_parallelism: 16
       shared_by_cores: [cpu0, cpu1, cpu2, cpu3, cpu4, cpu5, cpu6, cpu7]
     - id: slc1
       level: L3
-      size_bytes: 33554432
+      size_bytes: 26214400
       line_size: 64
-      ways: 16
+      ways: 20
       shared_by_cores: [cpu8, cpu9, cpu10, cpu11, cpu12, cpu13, cpu14, cpu15]
   noc:
     topology: mesh
@@ -108,15 +108,15 @@ mpam:
         - partid: 1
           cmin_percent: 25
           cmax_percent: 50
-          cpbm: "00ff"
+          cpbm: "003ff"
         - partid: 2
-          cache_portion_bitmap: "ff00"
+          cache_portion_bitmap: "ffc00"
     - msc_id: slc1
       controls:
         - partid: 1
-          cache_portion_bitmap: "00ff"
+          cache_portion_bitmap: "003ff"
         - partid: 2
-          cache_portion_bitmap: "ff00"
+          cache_portion_bitmap: "ffc00"
     - msc_id: mc0
       controls:
         - partid: 1

@@ -153,7 +153,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "L3容量、地址set映射和抽样set数量。",
         "增大容量并增加sampled-owner状态规模。",
         "8到262,144；当前Web要求8的倍数。",
-        "32768 sets、16 ways、64B line约为32 MiB。",
+        "20480 sets、20 ways、64B line约为25 MiB。",
     ),
     "l3_ways": _field(
         "每Set Way数",
@@ -162,7 +162,7 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "L3容量、sampled-owner数组和CPBM way资格判断。",
         "增大可提高关联度和容量，同时扩大替换比较与CPBM状态。",
         "1到32；CPBM不能设置超过该位宽的bit。",
-        "16 ways对应CPBM 0xffff。",
+        "20 ways对应CPBM 0xfffff。",
     ),
     "l3_line_size": _field(
         "Cache Line大小",
@@ -1029,7 +1029,7 @@ PARTID_METADATA: Dict[str, Dict[str, str]] = {
         "L3 sampled-owner miss分配资格过滤。",
         "减少bit会缩小可达容量，并钳位有效CMIN/CMAX。",
         "不能设置超过l3_ways的bit。",
-        "16 ways下00ff允许way 0到7。",
+        "20 ways下003ff允许way 0到9。",
     ),
     "cmin_enable": _field(
         "CMIN控制开关",

@@ -9,6 +9,8 @@ DEFAULT_DURATION_NS = 5_000
 DEFAULT_CONTROL_INTERVAL_NS = 128
 MIN_DURATION_NS = 5_000
 MIN_CONTROL_INTERVAL_NS = 128
+DEFAULT_L3_SETS = 20 * 1024
+DEFAULT_L3_WAYS = 20
 
 
 class ParameterError(ValueError):
@@ -101,7 +103,7 @@ def _mask(value: object, ways: int, default: int) -> str:
 
 
 def _default_partid_configs(
-    ways: int = 16,
+    ways: int = DEFAULT_L3_WAYS,
     total_mc_bandwidth: float = 256.0,
     max_outstanding: int = 32,
 ) -> List[Dict[str, object]]:
@@ -274,14 +276,26 @@ def _default_stimulus_configs() -> List[Dict[str, object]]:
     return rows
 
 
-def _default_resctrl_groups() -> List[Dict[str, object]]:
+def _default_resctrl_groups(
+    ways: int = DEFAULT_L3_WAYS,
+    total_mc_bandwidth: float = 256.0,
+) -> List[Dict[str, object]]:
+    full_mask = (1 << ways) - 1
+    lower_ways = max(1, ways // 2)
+    lower_mask = (1 << lower_ways) - 1
+    upper_mask = full_mask ^ lower_mask
+    width = max(1, math.ceil(ways / 4))
+    bandwidth_text = f"{total_mc_bandwidth:g}"
     return [
         {
             "enabled": True,
             "name": "root",
             "partid": 0,
             "mode": "shareable",
-            "schemata": "L3:0=ffff\nMB:0=256",
+            "schemata": (
+                f"L3:0={full_mask:0{width}x}\n"
+                f"MB:0={bandwidth_text}"
+            ),
             "tasks": "",
             "cpus": "0-15",
             "mb_limit_mode": "softlimit",
@@ -292,7 +306,10 @@ def _default_resctrl_groups() -> List[Dict[str, object]]:
             "name": "latency",
             "partid": 1,
             "mode": "shareable",
-            "schemata": "L3:0=00ff\nMB:0=120",
+            "schemata": (
+                f"L3:0={lower_mask:0{width}x}\n"
+                f"MB:0={min(120.0, total_mc_bandwidth):g}"
+            ),
             "tasks": "thread_01",
             "cpus": "",
             "mb_limit_mode": "hardlimit",
@@ -303,7 +320,10 @@ def _default_resctrl_groups() -> List[Dict[str, object]]:
             "name": "background",
             "partid": 2,
             "mode": "shareable",
-            "schemata": "L3:0=ff00\nMB:0=80",
+            "schemata": (
+                f"L3:0={upper_mask:0{width}x}\n"
+                f"MB:0={min(80.0, total_mc_bandwidth):g}"
+            ),
             "tasks": "thread_02,thread_03",
             "cpus": "",
             "mb_limit_mode": "hardlimit",
@@ -492,7 +512,7 @@ def _parse_resctrl_groups(
 ) -> List[Dict[str, object]]:
     groups = raw_groups if isinstance(raw_groups, list) else []
     if not groups:
-        groups = _default_resctrl_groups()
+        groups = _default_resctrl_groups(ways, total_mc_bandwidth)
     parsed = []
     used_partids = set()
     seen_names = set()
@@ -725,8 +745,8 @@ def default_parameters() -> Dict[str, object]:
         "active_cores": 8,
         "threads_per_core": 2,
         "l3_instances": 2,
-        "l3_sets": 32_768,
-        "l3_ways": 16,
+        "l3_sets": DEFAULT_L3_SETS,
+        "l3_ways": DEFAULT_L3_WAYS,
         "l3_line_size": 64,
         "l3_monitor_group_sets": 8,
         "l3_sampling_mode": "fixed_first",
@@ -744,7 +764,7 @@ def default_parameters() -> Dict[str, object]:
         "l3_monitor_period_cycles": 256,
         "l3_history_weight": 0.75,
         "l3_current_weight": 0.25,
-        "l3_qos_scheduler_enable": True,
+        "l3_qos_scheduler_enable": False,
         "l3_cbusy_qos_demote_per_level": 1,
         "noc_routers": 8,
         "noc_link_gbps": 256,
@@ -785,8 +805,8 @@ def default_parameters() -> Dict[str, object]:
         "cbusy_sample_ns": 1_000,
         "cbusy_feedback_latency_ns": 50,
         "cbusy_release_hold_samples": 3,
-        "cpu_cbusy_response_enable": True,
-        "l3_cbusy_response_enable": True,
+        "cpu_cbusy_response_enable": False,
+        "l3_cbusy_response_enable": False,
         "cbusy_l1_bw_ratio": 1.0,
         "cbusy_l2_bw_ratio": 1.1,
         "cbusy_l3_bw_ratio": 1.25,
@@ -798,8 +818,11 @@ def default_parameters() -> Dict[str, object]:
         "p99_hysteresis": 0.1,
         "min_hold_intervals": 3,
         "resctrl_enabled": False,
-        "resctrl_groups": _default_resctrl_groups(),
-        "partid_configs": _default_partid_configs(),
+        "resctrl_groups": _default_resctrl_groups(
+            DEFAULT_L3_WAYS,
+            2 * 128.0,
+        ),
+        "partid_configs": _default_partid_configs(DEFAULT_L3_WAYS),
         "stimulus_configs": _default_stimulus_configs(),
     }
 
@@ -916,6 +939,12 @@ def control_effect_presets() -> List[Dict[str, object]]:
     presets: List[Dict[str, object]] = []
 
     hard_cbusy = _preset_base()
+    hard_cbusy.update(
+        {
+            "cpu_cbusy_response_enable": True,
+            "l3_cbusy_response_enable": True,
+        }
+    )
     _apply_stimulus(hard_cbusy, 0, 0, 500, "random_read", "mrps")
     hard_cbusy["partid_configs"][0].update(
         {
@@ -1044,6 +1073,8 @@ def control_effect_presets() -> List[Dict[str, object]]:
             "l3_instances": 1,
             "l3_sets": 1024,
             "l3_ways": 8,
+            "cpu_cbusy_response_enable": True,
+            "l3_cbusy_response_enable": True,
             "channel_bandwidth_gbps": 24,
             "mc_queue_depth": 64,
         }
@@ -1560,10 +1591,10 @@ def build_config(
         min(active_cores, 8),
     )
     l3_sets = _integer(
-        values, "l3_sets", 32_768, 8, 262_144
+        values, "l3_sets", DEFAULT_L3_SETS, 8, 262_144
     )
     l3_ways = _integer(
-        values, "l3_ways", 16, 1, 32
+        values, "l3_ways", DEFAULT_L3_WAYS, 1, 32
     )
     l3_line_size = _integer(
         values, "l3_line_size", 64, 16, 256
@@ -1644,7 +1675,7 @@ def build_config(
     l3_qos_scheduler_enable = _boolean(
         values,
         "l3_qos_scheduler_enable",
-        True,
+        False,
     )
     l3_cbusy_qos_demote_per_level = _integer(
         values,
@@ -1843,12 +1874,12 @@ def build_config(
     cpu_cbusy_response_enable = _boolean(
         values,
         "cpu_cbusy_response_enable",
-        True,
+        False,
     )
     l3_cbusy_response_enable = _boolean(
         values,
         "l3_cbusy_response_enable",
-        True,
+        False,
     )
     cbusy_bw_ratios = [
         _number(values, "cbusy_l1_bw_ratio", 1.0, 0.01, 10),

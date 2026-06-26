@@ -46,6 +46,15 @@ MPAM仿真，并规定16线程、16组PARTID、因果时间线和上下文帮助
 - **AND** 默认控制周期 MUST 为`128ns`
 - **AND** 控制周期输入 MUST 允许最小`128ns`
 
+#### Scenario: 默认L3几何和快反馈开关
+
+- **WHEN** 控制台加载默认配置
+- **THEN** `l3_sets` MUST 默认为`20480`
+- **AND** `l3_ways` MUST 默认为`20`
+- **AND** `l3_qos_scheduler_enable` MUST 默认为`false`
+- **AND** `l3_cbusy_response_enable` MUST 默认为`false`
+- **AND** `cpu_cbusy_response_enable` MUST 默认为`false`
+
 ### Requirement: 动态执行
 
 控制台 MUST 后台运行仿真，并在运行中更新进度和周期结果。

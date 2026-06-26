@@ -412,6 +412,20 @@ OpenSpec change
 
 支持保存、复制、导入导出、重新运行和配置差异比较。
 
+### CFG-007：当前Web初始默认值
+
+Web控制台加载初始默认配置时采用无快反馈干预的基线，相关控制仍可由用户手动开启：
+
+```yaml
+l3_sets: 20480       # 20 * 1024
+l3_ways: 20
+l3_qos_scheduler_enable: false
+l3_cbusy_response_enable: false
+cpu_cbusy_response_enable: false
+```
+
+20 ways下默认full CPBM为`0xfffff`；默认resctrl-like示例也必须使用同一CPBM位宽。
+
 ---
 
 ## 5. 事务与延迟模型

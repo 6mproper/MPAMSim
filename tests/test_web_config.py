@@ -8,6 +8,8 @@ from src.sim.simulation import Simulation
 from src.web.config_builder import (
     DEFAULT_CONTROL_INTERVAL_NS,
     DEFAULT_DURATION_NS,
+    DEFAULT_L3_SETS,
+    DEFAULT_L3_WAYS,
     MIN_CONTROL_INTERVAL_NS,
     ParameterError,
     build_config,
@@ -67,7 +69,8 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert len(config.partitions) == 16
     assert len(config.controls_by_msc["slc0"]) == 16
     assert len(config.controls_by_msc["mc0"]) == 16
-    assert config.caches[0].sets == 32_768
+    assert config.caches[0].sets == DEFAULT_L3_SETS == 20 * 1024
+    assert config.caches[0].ways == DEFAULT_L3_WAYS == 20
     assert config.caches[0].monitor_group_sets == 8
     assert config.caches[0].queue_depth == 128
     assert config.caches[0].lookup_parallelism == 16
@@ -83,11 +86,12 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.caches[0].sampling_rotation_period_monitor_cycles == 1
     assert config.caches[0].history_weight == 0.75
     assert config.caches[0].current_weight == 0.25
-    assert config.caches[0].cbusy_response_enable is True
-    assert config.caches[0].qos_scheduler_enable is True
+    assert config.caches[0].cbusy_response_enable is False
+    assert config.caches[0].qos_scheduler_enable is False
     assert config.caches[0].cbusy_qos_demote_per_level == 1
-    assert config.ostd.cbusy_response_enable is True
+    assert config.ostd.cbusy_response_enable is False
     assert config.controls_by_msc["slc0"][0].cpbm_enable is True
+    assert config.controls_by_msc["slc0"][0].cache_portion_bitmap == "fffff"
     assert config.controls_by_msc["mc0"][0].cbusy_enable is False
     assert config.memory_controllers[0].cbusy_sample_ns == 1_000
     assert config.memory_controllers[0].clock_mhz == 1_000
@@ -165,7 +169,7 @@ def test_resctrl_groups_map_tasks_cpus_and_schema(tmp_path) -> None:
             "name": "root",
             "partid": 0,
             "mode": "shareable",
-            "schemata": "L3:0=ffff\nMB:0=256",
+            "schemata": "L3:0=fffff\nMB:0=256",
             "tasks": "",
             "cpus": "0-15",
             "mb_limit_mode": "softlimit",
@@ -176,7 +180,7 @@ def test_resctrl_groups_map_tasks_cpus_and_schema(tmp_path) -> None:
             "name": "latency",
             "partid": 5,
             "mode": "shareable",
-            "schemata": "L3:0=00ff;1=000f\nMB:0=80;1=40",
+            "schemata": "L3:0=003ff;1=0000f\nMB:0=80;1=40",
             "tasks": "thread_01",
             "cpus": "",
             "mb_limit_mode": "hardlimit",
@@ -187,7 +191,7 @@ def test_resctrl_groups_map_tasks_cpus_and_schema(tmp_path) -> None:
             "name": "background",
             "partid": 6,
             "mode": "shareable",
-            "schemata": "L3:0=ff00\nMB:0=60",
+            "schemata": "L3:0=ffc00\nMB:0=60",
             "tasks": "",
             "cpus": "2-3",
             "mb_limit_mode": "softlimit",
@@ -216,8 +220,8 @@ def test_resctrl_groups_map_tasks_cpus_and_schema(tmp_path) -> None:
     assert config.partitions[5] == "latency"
     slc0_latency = config.controls_by_msc["slc0"][5]
     slc1_latency = config.controls_by_msc["slc1"][5]
-    assert slc0_latency.cache_portion_bitmap == "00ff"
-    assert slc1_latency.cache_portion_bitmap == "000f"
+    assert slc0_latency.cache_portion_bitmap == "003ff"
+    assert slc1_latency.cache_portion_bitmap == "0000f"
     assert slc0_latency.cmin_enable is False
     assert slc0_latency.cmax_enable is False
     assert config.controls_by_msc["mc0"][5].bw_max_gbps == 80
