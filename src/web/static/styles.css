@@ -502,6 +502,99 @@ input[readonly] {
   padding: 0;
 }
 
+.switch-field {
+  min-height: 42px;
+}
+
+.switch-field > span:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switch-field b {
+  color: #25323c;
+  font-size: 11px;
+}
+
+.switch-field small {
+  color: #687681;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.switch-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.switch-control input[type="checkbox"] {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 1;
+  width: 42px;
+  height: 22px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-slider {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  display: inline-block;
+  border: 1px solid #91a0aa;
+  background: #d7dee3;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 1px solid #7d8d98;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.switch-control input[type="checkbox"]:checked + .switch-slider {
+  background: #0b6fae;
+  border-color: #075b91;
+}
+
+.switch-control input[type="checkbox"]:checked + .switch-slider::after {
+  transform: translateX(20px);
+  border-color: #075b91;
+}
+
+.switch-control input[type="checkbox"]:focus-visible + .switch-slider {
+  outline: 2px solid #4aa3d8;
+  outline-offset: 2px;
+}
+
+.switch-text {
+  min-width: 14px;
+  color: #46545f;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.switch-text::before {
+  content: attr(data-off);
+}
+
+.switch-control input[type="checkbox"]:checked ~ .switch-text::before {
+  content: attr(data-on);
+}
+
 .resctrl-actions {
   display: flex;
   gap: 6px;

@@ -304,6 +304,7 @@ L3 CBusy QoS降档步长和OSTD cap，
 ### Requirement: 流控算法配置
 
 当前控制台 MUST 配置L3 queue/parallelism、L3 QoS调度、L3 CBusy QoS降档和MC token、aging、BMIN提升及soft penalty。
+L3 QoS调度 MUST 作为显式开关呈现，并提交为同一个布尔配置字段。
 
 #### Scenario: 修改算法参数
 

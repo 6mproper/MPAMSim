@@ -193,6 +193,26 @@ def test_l3_same_line_merge_is_unchecked_by_default() -> None:
     assert "checked" not in match.group(1)
 
 
+def test_l3_qos_scheduler_is_explicit_switch_control() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+
+    assert 'class="toggle-field switch-field" data-algorithm="l3-qos"' in index_html
+    assert 'data-param="l3_qos_scheduler_enable" type="checkbox"' in index_html
+    assert 'aria-label="L3 QoS调度开关"' in index_html
+    for snippet in (
+        ".switch-control",
+        ".switch-slider",
+        ".switch-text::before",
+        'content: attr(data-on);',
+    ):
+        assert snippet in styles
+
+
 def test_algorithm_explanations_use_compact_body() -> None:
     app_js = (
         PROJECT_ROOT / "src/web/static/app.js"

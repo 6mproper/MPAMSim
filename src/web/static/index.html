@@ -292,7 +292,14 @@
           </div>
           <h2>L3 调度算法参数</h2>
           <div class="field-grid">
-            <label data-algorithm="l3-qos">L3 QoS调度<input data-param="l3_qos_scheduler_enable" type="checkbox"></label>
+            <label class="toggle-field switch-field" data-algorithm="l3-qos">
+              <span><b>L3 QoS调度</b><small>开启后按effective QoS选择L3候选</small></span>
+              <span class="switch-control">
+                <input data-param="l3_qos_scheduler_enable" type="checkbox" aria-label="L3 QoS调度开关">
+                <span class="switch-slider" aria-hidden="true"></span>
+                <span class="switch-text" data-on="开" data-off="关"></span>
+              </span>
+            </label>
             <label data-algorithm="l3-qos">CBusy QoS降档/级<input data-param="l3_cbusy_qos_demote_per_level" type="number" min="0" max="7" step="1"></label>
           </div>
           <h2>MC 调度算法参数</h2>
