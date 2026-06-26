@@ -304,6 +304,9 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             qos_aging_max_steps=_qos_value(
                 item, "qos_aging_max_steps", "aging_priority_cap", 3
             ),
+            qos_adjust_mode=str(
+                item.get("qos_adjust_mode", "fixed_step")
+            ),
             bmin_qos_promote=_qos_value(
                 item, "bmin_qos_promote", "bmin_priority_boost", 2
             ),
@@ -312,6 +315,17 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
                 "softlimit_qos_demote",
                 "softlimit_priority_penalty",
                 2,
+            ),
+            bmin_error_weight=float(item.get("bmin_error_weight", 4.0)),
+            bmax_error_weight=float(item.get("bmax_error_weight", 4.0)),
+            qos_error_deadband_percent=float(
+                item.get("qos_error_deadband_percent", 5.0)
+            ),
+            qos_error_max_delta=_qos_value(
+                item, "qos_error_max_delta", "qos_error_max_delta", 2
+            ),
+            qos_error_quantization=str(
+                item.get("qos_error_quantization", "threshold_lut")
             ),
             qos_map_8_to_4_enable=bool(
                 item.get("qos_map_8_to_4_enable", False)

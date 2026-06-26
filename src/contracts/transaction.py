@@ -87,6 +87,11 @@ class McArbitrationState:
     effective_qos: int = 0
     qos_mapping_enabled: bool = False
     aging_steps: int = 0
+    qos_adjust_mode: str = "fixed_step"
+    bmin_qos_delta: int = 0
+    softlimit_qos_delta: int = 0
+    bmin_error_ratio: float = 0.0
+    bmax_error_ratio: float = 0.0
     bmin_promoted: bool = False
     soft_demoted: bool = False
     soft_over_limit: bool = False

@@ -328,6 +328,24 @@ def test_mc_qos_mapping_is_explicit_switch_control() -> None:
     assert "QoS map" in app_js
 
 
+def test_mc_error_weighted_qos_controls_are_configurable() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-param="mc_qos_adjust_mode"' in index_html
+    assert "MC error-weighted QoS adjustment" in index_html
+    assert 'data-param="mc_bmin_error_weight"' in index_html
+    assert 'data-param="mc_bmax_error_weight"' in index_html
+    assert 'data-param="mc_qos_error_deadband_percent"' in index_html
+    assert 'data-param="mc_qos_error_max_delta"' in index_html
+    assert 'data-param="mc_qos_error_quantization"' in index_html
+    assert "error-weighted BMIN" in app_js
+
+
 def test_config_import_export_workspace_is_present() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

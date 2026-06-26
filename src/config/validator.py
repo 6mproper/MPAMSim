@@ -152,6 +152,11 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(
                 f"Memory controller {mc.id} QoS aging steps must be in [0, 7]"
             )
+        if mc.qos_adjust_mode not in {"fixed_step", "error_weighted"}:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS adjustment mode must be "
+                "fixed_step or error_weighted"
+            )
         if not 0 <= mc.bmin_qos_promote <= 7:
             raise ConfigError(
                 f"Memory controller {mc.id} BMIN QoS promotion must be in [0, 7]"
@@ -159,6 +164,27 @@ def validate_config(config: ProjectConfig) -> None:
         if not 0 <= mc.softlimit_qos_demote <= 7:
             raise ConfigError(
                 f"Memory controller {mc.id} softlimit QoS demotion must be in [0, 7]"
+            )
+        if mc.bmin_error_weight < 0 or mc.bmax_error_weight < 0:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS error weights cannot be negative"
+            )
+        if not 0 <= mc.qos_error_deadband_percent <= 100:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS error deadband percent must be in [0, 100]"
+            )
+        if not 0 <= mc.qos_error_max_delta <= 7:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS error max delta must be in [0, 7]"
+            )
+        if mc.qos_error_quantization not in {
+            "round",
+            "ceil",
+            "threshold_lut",
+        }:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS error quantization must be "
+                "round, ceil, or threshold_lut"
             )
         if mc.cbusy_sample_ns <= 0:
             raise ConfigError(

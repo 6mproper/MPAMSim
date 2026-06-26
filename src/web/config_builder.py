@@ -861,8 +861,14 @@ def default_parameters() -> Dict[str, object]:
         "mc_token_bucket_window_ns": 100,
         "mc_aging_ns": 500,
         "mc_qos_aging_max_steps": 3,
+        "mc_qos_adjust_mode": "fixed_step",
         "mc_bmin_qos_promote": 2,
         "mc_softlimit_qos_demote": 2,
+        "mc_bmin_error_weight": 4.0,
+        "mc_bmax_error_weight": 4.0,
+        "mc_qos_error_deadband_percent": 5.0,
+        "mc_qos_error_max_delta": 2,
+        "mc_qos_error_quantization": "threshold_lut",
         "mc_qos_map_8_to_4_enable": False,
         "max_outstanding": 32,
         "core_max_outstanding": 48,
@@ -1883,11 +1889,35 @@ def build_config(
     mc_qos_aging_max_steps = _integer(
         values, "mc_qos_aging_max_steps", 3, 0, 7
     )
+    mc_qos_adjust_mode = _choice(
+        values,
+        "mc_qos_adjust_mode",
+        "fixed_step",
+        ["fixed_step", "error_weighted"],
+    )
     mc_bmin_qos_promote = _integer(
         values, "mc_bmin_qos_promote", 2, 0, 7
     )
     mc_softlimit_qos_demote = _integer(
         values, "mc_softlimit_qos_demote", 2, 0, 7
+    )
+    mc_bmin_error_weight = _number(
+        values, "mc_bmin_error_weight", 4.0, 0, 100
+    )
+    mc_bmax_error_weight = _number(
+        values, "mc_bmax_error_weight", 4.0, 0, 100
+    )
+    mc_qos_error_deadband_percent = _number(
+        values, "mc_qos_error_deadband_percent", 5.0, 0, 100
+    )
+    mc_qos_error_max_delta = _integer(
+        values, "mc_qos_error_max_delta", 2, 0, 7
+    )
+    mc_qos_error_quantization = _choice(
+        values,
+        "mc_qos_error_quantization",
+        "threshold_lut",
+        ["round", "ceil", "threshold_lut"],
     )
     mc_qos_map_8_to_4_enable = _boolean(
         values,
@@ -2115,8 +2145,14 @@ def build_config(
             "token_bucket_window_ns": mc_token_bucket_window_ns,
             "aging_ns": mc_aging_ns,
             "qos_aging_max_steps": mc_qos_aging_max_steps,
+            "qos_adjust_mode": mc_qos_adjust_mode,
             "bmin_qos_promote": mc_bmin_qos_promote,
             "softlimit_qos_demote": mc_softlimit_qos_demote,
+            "bmin_error_weight": mc_bmin_error_weight,
+            "bmax_error_weight": mc_bmax_error_weight,
+            "qos_error_deadband_percent": mc_qos_error_deadband_percent,
+            "qos_error_max_delta": mc_qos_error_max_delta,
+            "qos_error_quantization": mc_qos_error_quantization,
             "qos_map_8_to_4_enable": mc_qos_map_8_to_4_enable,
             "cbusy_sample_ns": cbusy_sample_ns,
             "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,

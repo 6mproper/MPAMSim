@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, DefaultDict, Dict, List, Optional, Tuple
@@ -17,6 +18,19 @@ class BufferEntry:
     sequence: int
     request: Request
     enqueue_time_ns: float
+
+
+@dataclass(frozen=True)
+class ArbitrationScore:
+    effective_qos: int
+    raw_effective_qos: int
+    base_qos: int
+    bmin_delta: int
+    softlimit_delta: int
+    soft_over: bool
+    bmin_error_ratio: float
+    bmax_error_ratio: float
+    qos_adjust_mode: str
 
 
 def _mc_counters() -> Dict[str, float]:
@@ -40,6 +54,11 @@ def _mc_counters() -> Dict[str, float]:
         "qos_mapping_events": 0,
         "qos_promoted_requests": 0,
         "qos_demoted_requests": 0,
+        "bmin_qos_delta_sum": 0,
+        "softlimit_qos_delta_sum": 0,
+        "bmin_error_ratio_sum": 0.0,
+        "bmax_error_ratio_sum": 0.0,
+        "qos_error_weighted_requests": 0,
         "qos_aging_promotions": 0,
         "qos_saturation_events": 0,
         "candidate_evaluations": 0,
@@ -345,11 +364,69 @@ class MemoryControllerMSC(Component):
             return raw_effective_qos
         return self.QOS_8_TO_4_MAP[raw_effective_qos]
 
+    def _qos_error_delta(self, error_ratio: float, weight: float) -> int:
+        if self.config.qos_error_max_delta <= 0 or weight <= 0:
+            return 0
+        deadband = self.config.qos_error_deadband_percent / 100.0
+        active_error = max(0.0, error_ratio - deadband)
+        if active_error <= 0:
+            return 0
+        scaled = active_error * weight
+        if self.config.qos_error_quantization == "ceil":
+            delta = math.ceil(scaled)
+        elif self.config.qos_error_quantization == "round":
+            delta = math.floor(scaled + 0.5)
+        else:
+            # Hardware-style comparator LUT over the weighted error value.
+            delta = 0
+            for level in range(1, self.config.qos_error_max_delta + 1):
+                if scaled >= level - 0.5:
+                    delta = level
+        return max(0, min(7, self.config.qos_error_max_delta, int(delta)))
+
+    def _bmin_qos_delta(
+        self,
+        partid: int,
+        target_gbps: Optional[float],
+    ) -> Tuple[int, float]:
+        if self.config.qos_adjust_mode == "fixed_step":
+            return self.config.bmin_qos_promote, 0.0
+        if target_gbps is None or target_gbps <= 0:
+            return 0, 0.0
+        control_bw = self._control_bandwidth_gbps[partid]
+        error_ratio = max(0.0, (target_gbps - control_bw) / target_gbps)
+        return (
+            self._qos_error_delta(
+                error_ratio,
+                self.config.bmin_error_weight,
+            ),
+            error_ratio,
+        )
+
+    def _softlimit_qos_delta(
+        self,
+        partid: int,
+        target_gbps: Optional[float],
+    ) -> Tuple[int, float]:
+        if self.config.qos_adjust_mode == "fixed_step":
+            return self.config.softlimit_qos_demote, 0.0
+        if target_gbps is None or target_gbps <= 0:
+            return 0, 0.0
+        control_bw = self._control_bandwidth_gbps[partid]
+        error_ratio = max(0.0, (control_bw - target_gbps) / target_gbps)
+        return (
+            self._qos_error_delta(
+                error_ratio,
+                self.config.bmax_error_weight,
+            ),
+            error_ratio,
+        )
+
     def _score_entry(
         self,
         entry: BufferEntry,
         contended: bool,
-    ) -> Tuple[int, int, int, int, int, bool]:
+    ) -> ArbitrationScore:
         request = entry.request
         setting = self.settings.lookup(request.partid)
         base_qos = (
@@ -357,43 +434,50 @@ class MemoryControllerMSC(Component):
             if self.enforce_controls and setting.mc_qos_enable
             else 0
         )
-        bmin_promote = (
-            self.config.bmin_qos_promote
-            if (
-                self.enforce_controls
-                and contended
-                and setting.bmin_enable
-                and self._under_bmin[request.partid]
+        bmin_delta = 0
+        bmin_error_ratio = 0.0
+        if (
+            self.enforce_controls
+            and contended
+            and setting.bmin_enable
+            and self._under_bmin[request.partid]
+        ):
+            bmin_delta, bmin_error_ratio = self._bmin_qos_delta(
+                request.partid,
+                setting.bw_min_gbps,
             )
-            else 0
-        )
         soft_over = bool(
             self.enforce_controls
             and setting.bmax_enable
             and setting.bw_limit_mode == "softlimit"
             and self._over_bmax[request.partid]
         )
-        soft_demote = (
-            self.config.softlimit_qos_demote
-            if soft_over and contended
-            else 0
-        )
+        soft_delta = 0
+        bmax_error_ratio = 0.0
+        if soft_over and contended:
+            soft_delta, bmax_error_ratio = self._softlimit_qos_delta(
+                request.partid,
+                setting.bw_max_gbps,
+            )
         deficit_steps = self._deficit_qos_steps(request.partid)
         unclamped = (
             base_qos
-            + bmin_promote
-            - soft_demote
+            + bmin_delta
+            - soft_delta
             + deficit_steps
         )
         raw_effective_qos = max(0, min(7, unclamped))
         effective_qos = self._map_effective_qos(raw_effective_qos)
-        return (
-            effective_qos,
-            raw_effective_qos,
-            base_qos,
-            bmin_promote,
-            soft_demote,
-            soft_over,
+        return ArbitrationScore(
+            effective_qos=effective_qos,
+            raw_effective_qos=raw_effective_qos,
+            base_qos=base_qos,
+            bmin_delta=bmin_delta,
+            softlimit_delta=soft_delta,
+            soft_over=soft_over,
+            bmin_error_ratio=bmin_error_ratio,
+            bmax_error_ratio=bmax_error_ratio,
+            qos_adjust_mode=self.config.qos_adjust_mode,
         )
 
     def _select_request(self) -> Optional[BufferEntry]:
@@ -403,7 +487,7 @@ class MemoryControllerMSC(Component):
         contended = len(
             {entry.request.partid for entry in candidates}
         ) >= 2
-        scored: Dict[int, Tuple[int, int, int, int, int, bool]] = {}
+        scored: Dict[int, ArbitrationScore] = {}
         for entry in candidates:
             scored[entry.slot] = self._score_entry(entry, contended)
             counters = self._interval_per_partid[entry.request.partid]
@@ -411,11 +495,13 @@ class MemoryControllerMSC(Component):
             self._interval_per_group[
                 (entry.request.partid, entry.request.pmg)
             ]["candidate_evaluations"] += 1
-        highest_qos = max(values[0] for values in scored.values())
+        highest_qos = max(
+            values.effective_qos for values in scored.values()
+        )
         candidate_slots = {
             slot
             for slot, values in scored.items()
-            if values[0] == highest_qos
+            if values.effective_qos == highest_qos
         }
         selected: Optional[BufferEntry] = None
         for offset in range(1, self.config.queue_depth + 1):
@@ -428,28 +514,36 @@ class MemoryControllerMSC(Component):
         if selected is None:
             return None
 
-        (
-            effective_qos,
-            raw_effective_qos,
-            base_qos,
-            bmin_promote,
-            soft_demote,
-            soft_over,
-        ) = scored[selected.slot]
+        score = scored[selected.slot]
         deficit_steps = self._deficit_qos_steps(
             selected.request.partid
         )
         request = selected.request
-        request.mc_arbitration.base_qos = base_qos
-        request.mc_arbitration.raw_effective_qos = raw_effective_qos
-        request.mc_arbitration.effective_qos = effective_qos
+        request.mc_arbitration.base_qos = score.base_qos
+        request.mc_arbitration.raw_effective_qos = (
+            score.raw_effective_qos
+        )
+        request.mc_arbitration.effective_qos = score.effective_qos
         request.mc_arbitration.qos_mapping_enabled = (
             self.config.qos_map_8_to_4_enable
         )
         request.mc_arbitration.aging_steps = deficit_steps
-        request.mc_arbitration.bmin_promoted = bmin_promote > 0
-        request.mc_arbitration.soft_demoted = soft_demote > 0
-        request.mc_arbitration.soft_over_limit = soft_over
+        request.mc_arbitration.qos_adjust_mode = score.qos_adjust_mode
+        request.mc_arbitration.bmin_qos_delta = score.bmin_delta
+        request.mc_arbitration.softlimit_qos_delta = (
+            score.softlimit_delta
+        )
+        request.mc_arbitration.bmin_error_ratio = (
+            score.bmin_error_ratio
+        )
+        request.mc_arbitration.bmax_error_ratio = (
+            score.bmax_error_ratio
+        )
+        request.mc_arbitration.bmin_promoted = score.bmin_delta > 0
+        request.mc_arbitration.soft_demoted = (
+            score.softlimit_delta > 0
+        )
+        request.mc_arbitration.soft_over_limit = score.soft_over
         request.mc_arbitration.hard_blocked = False
         request.mc_arbitration.selected_sequence = selected.sequence
         self._buffer[selected.slot] = None
@@ -524,6 +618,22 @@ class MemoryControllerMSC(Component):
             target["qos_demoted_requests"] += int(
                 request.mc_arbitration.soft_demoted
             )
+            target["bmin_qos_delta_sum"] += (
+                request.mc_arbitration.bmin_qos_delta
+            )
+            target["softlimit_qos_delta_sum"] += (
+                request.mc_arbitration.softlimit_qos_delta
+            )
+            target["bmin_error_ratio_sum"] += (
+                request.mc_arbitration.bmin_error_ratio
+            )
+            target["bmax_error_ratio_sum"] += (
+                request.mc_arbitration.bmax_error_ratio
+            )
+            target["qos_error_weighted_requests"] += int(
+                request.mc_arbitration.qos_adjust_mode
+                == "error_weighted"
+            )
             target["qos_aging_promotions"] += (
                 request.mc_arbitration.aging_steps
             )
@@ -533,16 +643,8 @@ class MemoryControllerMSC(Component):
             )
             unclamped = (
                 request.mc_arbitration.base_qos
-                + (
-                    self.config.bmin_qos_promote
-                    if request.mc_arbitration.bmin_promoted
-                    else 0
-                )
-                - (
-                    self.config.softlimit_qos_demote
-                    if request.mc_arbitration.soft_demoted
-                    else 0
-                )
+                + request.mc_arbitration.bmin_qos_delta
+                - request.mc_arbitration.softlimit_qos_delta
                 + request.mc_arbitration.aging_steps
             )
             target["qos_saturation_events"] += int(
@@ -1061,6 +1163,30 @@ class MemoryControllerMSC(Component):
                 "effective_qos_max": (
                     values["effective_qos_max"] if requests else 0
                 ),
+                "qos_adjust_mode": self.config.qos_adjust_mode,
+                "bmin_qos_delta_avg": (
+                    values["bmin_qos_delta_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "softlimit_qos_delta_avg": (
+                    values["softlimit_qos_delta_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "bmin_error_ratio_avg": (
+                    values["bmin_error_ratio_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "bmax_error_ratio_avg": (
+                    values["bmax_error_ratio_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "qos_error_weighted_requests": (
+                    values["qos_error_weighted_requests"]
+                ),
                 "qos_map_8_to_4_enable": (
                     self.config.qos_map_8_to_4_enable
                 ),
@@ -1198,6 +1324,30 @@ class MemoryControllerMSC(Component):
                 "effective_qos_max": (
                     values["effective_qos_max"] if requests else 0
                 ),
+                "qos_adjust_mode": self.config.qos_adjust_mode,
+                "bmin_qos_delta_avg": (
+                    values["bmin_qos_delta_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "softlimit_qos_delta_avg": (
+                    values["softlimit_qos_delta_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "bmin_error_ratio_avg": (
+                    values["bmin_error_ratio_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "bmax_error_ratio_avg": (
+                    values["bmax_error_ratio_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "qos_error_weighted_requests": (
+                    values["qos_error_weighted_requests"]
+                ),
                 "qos_map_8_to_4_enable": (
                     self.config.qos_map_8_to_4_enable
                 ),
@@ -1239,8 +1389,18 @@ class MemoryControllerMSC(Component):
             "aging_quantum_cycles": self.config.aging_quantum_cycles,
             "aging_counter_bits": self.config.aging_counter_bits,
             "qos_aging_max_steps": self.config.qos_aging_max_steps,
+            "qos_adjust_mode": self.config.qos_adjust_mode,
             "bmin_qos_promote": self.config.bmin_qos_promote,
             "softlimit_qos_demote": self.config.softlimit_qos_demote,
+            "bmin_error_weight": self.config.bmin_error_weight,
+            "bmax_error_weight": self.config.bmax_error_weight,
+            "qos_error_deadband_percent": (
+                self.config.qos_error_deadband_percent
+            ),
+            "qos_error_max_delta": self.config.qos_error_max_delta,
+            "qos_error_quantization": (
+                self.config.qos_error_quantization
+            ),
             "qos_map_8_to_4_enable": (
                 self.config.qos_map_8_to_4_enable
             ),

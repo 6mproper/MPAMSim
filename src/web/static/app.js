@@ -2401,7 +2401,11 @@ function renderControlVerification() {
     || ($$("[data-partid-row]").length
       ? collectParameters()
       : state.defaults);
-  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} · soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)} · QoS map ${algorithm.mc_qos_map_8_to_4_enable ? "8->4 on" : "8-level"}`;
+  const qosMode = algorithm.mc_qos_adjust_mode || "fixed_step";
+  const qosModeText = qosMode === "error_weighted"
+    ? `error-weighted BMIN×${formatNumber(algorithm.mc_bmin_error_weight, 1)} / BMAX×${formatNumber(algorithm.mc_bmax_error_weight, 1)} deadband ${formatNumber(algorithm.mc_qos_error_deadband_percent, 1)}% max ${formatNumber(algorithm.mc_qos_error_max_delta, 0)} ${escapeHtml(algorithm.mc_qos_error_quantization || "threshold_lut")}`
+    : `fixed BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} / soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
+  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · ${qosModeText} · QoS map ${algorithm.mc_qos_map_8_to_4_enable ? "8->4 on" : "8-level"}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
@@ -2582,6 +2586,7 @@ function configurationDiagnostics() {
   }
   if (
     partids.some((row) => row.bmin_enable && activePartids.has(row.partid))
+    && (parameters.mc_qos_adjust_mode || "fixed_step") === "fixed_step"
     && Number(parameters.mc_bmin_qos_promote) === 0
   ) {
     add("warning", "存在活动 BMIN，但 BMIN QoS 升档为 0；当前算法不会产生调度偏好。");
@@ -2592,9 +2597,34 @@ function configurationDiagnostics() {
         && row.limit_mode === "softlimit"
         && activePartids.has(row.partid),
     )
+    && (parameters.mc_qos_adjust_mode || "fixed_step") === "fixed_step"
     && Number(parameters.mc_softlimit_qos_demote) === 0
   ) {
     add("warning", "存在活动 softlimit BMAX，但 QoS 降档为 0；超限流量仍保持原 QoS。");
+  }
+  if (
+    (parameters.mc_qos_adjust_mode || "fixed_step") === "error_weighted"
+    && Number(parameters.mc_qos_error_max_delta) === 0
+  ) {
+    add("warning", "MC error-weighted QoS adjustment已开启，但Error Max Delta为0；误差不会产生升降档。");
+  }
+  if (
+    (parameters.mc_qos_adjust_mode || "fixed_step") === "error_weighted"
+    && partids.some((row) => row.bmin_enable && activePartids.has(row.partid))
+    && Number(parameters.mc_bmin_error_weight) === 0
+  ) {
+    add("warning", "存在活动BMIN，但BMIN Error Weight为0；BMIN误差不会产生升档。");
+  }
+  if (
+    (parameters.mc_qos_adjust_mode || "fixed_step") === "error_weighted"
+    && partids.some(
+      (row) => row.bmax_enable
+        && row.limit_mode === "softlimit"
+        && activePartids.has(row.partid),
+    )
+    && Number(parameters.mc_bmax_error_weight) === 0
+  ) {
+    add("warning", "存在活动softlimit BMAX，但BMAX Error Weight为0；BMAX误差不会产生降档。");
   }
 
   partids.forEach((row) => {

@@ -69,16 +69,17 @@ def _control(
     partid: int,
     *,
     qos: int = 0,
+    bmin: Optional[float] = None,
     bmax: Optional[float] = None,
     mode: str = "softlimit",
 ) -> MPAMSettingConfig:
     return MPAMSettingConfig(
         partid=partid,
         bw_max_gbps=bmax,
-        bw_min_gbps=None,
+        bw_min_gbps=bmin,
         bw_limit_mode=mode,
         mc_qos=qos,
-        bmin_enable=False,
+        bmin_enable=bmin is not None,
         bmax_enable=bmax is not None,
     )
 
@@ -188,6 +189,106 @@ def test_mc_qos_mapping_exports_raw_and_final_qos_evidence() -> None:
     assert row["effective_qos_avg"] == 2
     assert row["qos_map_8_to_4_enable"] is True
     assert row["qos_mapping_events"] == 1
+
+
+def test_fixed_step_qos_adjustment_keeps_configured_bmin_delta() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=0, bmin=100), _control(1, qos=1)],
+        qos_adjust_mode="fixed_step",
+        bmin_qos_promote=2,
+    )
+    mc._under_bmin[0] = True
+    promoted = _request(1, 0, 0x0000)
+    other = _request(2, 1, 0x1000)
+    mc.receive(promoted)
+    mc.receive(other)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is promoted
+    assert promoted.mc_arbitration.qos_adjust_mode == "fixed_step"
+    assert promoted.mc_arbitration.bmin_qos_delta == 2
+    assert promoted.mc_arbitration.raw_effective_qos == 2
+
+
+def test_error_weighted_bmax_uses_control_bandwidth_error() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=7, bmax=100), _control(1, qos=4)],
+        qos_adjust_mode="error_weighted",
+        bmax_error_weight=4.0,
+        qos_error_deadband_percent=5.0,
+        qos_error_max_delta=3,
+        qos_error_quantization="threshold_lut",
+    )
+    mc._over_bmax[0] = True
+    mc._control_bandwidth_gbps[0] = 150.0
+    over = _request(1, 0, 0x0000)
+    other = _request(2, 1, 0x1000)
+    mc.receive(over)
+    mc.receive(other)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is over
+    assert over.mc_arbitration.qos_adjust_mode == "error_weighted"
+    assert over.mc_arbitration.bmax_error_ratio == 0.5
+    assert over.mc_arbitration.softlimit_qos_delta == 2
+    assert over.mc_arbitration.raw_effective_qos == 5
+
+
+def test_error_weighted_bmin_uses_control_bandwidth_error() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=0, bmin=100), _control(1, qos=1)],
+        qos_adjust_mode="error_weighted",
+        bmin_error_weight=4.0,
+        qos_error_deadband_percent=5.0,
+        qos_error_max_delta=3,
+        qos_error_quantization="threshold_lut",
+    )
+    mc._under_bmin[0] = True
+    mc._control_bandwidth_gbps[0] = 50.0
+    under = _request(1, 0, 0x0000)
+    other = _request(2, 1, 0x1000)
+    mc.receive(under)
+    mc.receive(other)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is under
+    assert under.mc_arbitration.qos_adjust_mode == "error_weighted"
+    assert under.mc_arbitration.bmin_error_ratio == 0.5
+    assert under.mc_arbitration.bmin_qos_delta == 2
+    assert under.mc_arbitration.raw_effective_qos == 2
+
+
+def test_error_weighted_deadband_can_suppress_soft_delta() -> None:
+    _, mc, _ = _mc(
+        [_control(0, qos=4, bmax=100), _control(1, qos=3)],
+        qos_adjust_mode="error_weighted",
+        bmax_error_weight=4.0,
+        qos_error_deadband_percent=5.0,
+        qos_error_max_delta=3,
+        qos_error_quantization="ceil",
+    )
+    mc._over_bmax[0] = True
+    mc._control_bandwidth_gbps[0] = 103.0
+    over = _request(1, 0, 0x0000)
+    other = _request(2, 1, 0x1000)
+    mc.receive(over)
+    mc.receive(other)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is over
+    assert over.mc_arbitration.bmax_error_ratio == 0.03
+    assert over.mc_arbitration.soft_over_limit is True
+    assert over.mc_arbitration.soft_demoted is False
+    assert over.mc_arbitration.softlimit_qos_delta == 0
+    assert over.mc_arbitration.raw_effective_qos == 4
 
 
 def test_hard_bmax_uses_published_control_bandwidth_by_period() -> None:

@@ -86,8 +86,14 @@ class MemoryControllerConfig:
     token_bucket_window_ns: float = 100.0
     aging_ns: float = 500.0
     qos_aging_max_steps: int = 3
+    qos_adjust_mode: str = "fixed_step"
     bmin_qos_promote: int = 2
     softlimit_qos_demote: int = 2
+    bmin_error_weight: float = 4.0
+    bmax_error_weight: float = 4.0
+    qos_error_deadband_percent: float = 5.0
+    qos_error_max_delta: int = 2
+    qos_error_quantization: str = "threshold_lut"
     qos_map_8_to_4_enable: bool = False
     cbusy_sample_ns: float = 1_000.0
     cbusy_feedback_latency_ns: float = 50.0

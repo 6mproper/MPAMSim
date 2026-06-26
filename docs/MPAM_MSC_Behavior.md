@@ -207,9 +207,11 @@ work-conserving.
 
 `bw_min_gbps` is a reservation approximation in V1. The scheduler should use it as a floor when sharing service among contending PARTIDs, but it is not a full real-time guarantee unless a later model implements stricter admission control.
 
-The current implementation uses an independent BMIN credit bucket. If the
-head request can consume BMIN credit, it receives `bmin_qos_promote` QoS
-steps. Credit is consumed when that request is dispatched.
+The current implementation uses the published control bandwidth to form BMIN
+state. If the request is under BMIN and contended, it receives a BMIN QoS
+delta. In `fixed_step` mode this is `bmin_qos_promote`; in
+`error_weighted` mode it is computed from the published control-bandwidth
+error.
 
 Each memory controller has an independent BMIN/BMAX setting and token state.
 The interactive monitor displays the sum across memory-controller instances,
@@ -222,13 +224,16 @@ MC QoS affects arbitration among ready requests:
 ```text
 effective_qos = clamp(
     configured_mc_qos
-  + min(qos_aging_max_steps, floor(queue_age_ns / aging_ns))
-  + bmin_qos_promote when BMIN credit covers the request
-  - softlimit_qos_demote when over BMAX and contended,
+  + service_deficit_qos_steps
+  + bmin_delta when under BMIN and contended
+  - softlimit_delta when over BMAX and contended,
   0, 7)
 ```
 
-The highest QoS wins; sequence order provides oldest-first tie-breaking.
+In `fixed_step` mode the deltas are the configured fixed promote/demote
+values. In `error_weighted` mode the deltas are derived from published
+control-bandwidth error, deadband, weight, max delta and quantization. The
+highest QoS wins; sequence order provides oldest-first tie-breaking.
 Hard-BMAX-ineligible requests are filtered first. These constants are
 configurable model behavior, not architected MPAM encodings.
 

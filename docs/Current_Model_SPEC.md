@@ -1002,7 +1002,40 @@ final: 0 1 1 1 2 2 2 3
 MC共享buffer的最终候选比较使用`final_qos`，而不是`raw_effective_qos`。
 UI和监控必须同时显示raw 8级值和实际参与仲裁的final值，以便识别低PPA映射导致的档位合并。
 
-### MC-007：同QoS仲裁
+### MC-007：QoS调整模式
+
+MC支持两种BMIN/soft BMAX QoS delta计算方式：
+
+```yaml
+mc_qos_adjust_mode: fixed_step      # fixed_step | error_weighted
+mc_bmin_qos_promote: 2              # fixed_step BMIN delta
+mc_softlimit_qos_demote: 2          # fixed_step soft BMAX delta
+mc_bmin_error_weight: 4.0           # error_weighted BMIN weight
+mc_bmax_error_weight: 4.0           # error_weighted BMAX weight
+mc_qos_error_deadband_percent: 5.0
+mc_qos_error_max_delta: 2
+mc_qos_error_quantization: threshold_lut
+```
+
+`fixed_step`保持当前固定升降档：UNDER_BMIN竞争请求加`mc_bmin_qos_promote`，
+soft OVER_BMAX竞争请求减`mc_softlimit_qos_demote`。
+
+`error_weighted`使用已发布并锁存的`control_input`与目标的相对误差计算离散delta：
+
+```text
+BMIN error = max(0, (BMIN - control_input_bw) / BMIN)
+BMAX error = max(0, (control_input_bw - BMAX) / BMAX)
+active_error = max(0, error - deadband)
+weighted_error = active_error * error_weight
+delta = quantize(weighted_error)
+delta = min(delta, mc_qos_error_max_delta, 7)
+```
+
+`threshold_lut`表示用比较器/LUT阈值把`weighted_error`映射为整数档；
+`round`表示四舍五入；`ceil`表示超过deadband后只要有非零误差就至少动作1档。
+该模式不读取actual/debug带宽，也不读取当前周期未发布服务量。
+
+### MC-008：同QoS仲裁
 
 默认使用`rotating_buffer_scan`：
 
@@ -1087,6 +1120,8 @@ AND contended
 ```
 
 BMIN是调度偏好，不预留空闲带宽，不保证达到目标。
+升档delta由`mc_qos_adjust_mode`决定：`fixed_step`使用固定档位，
+`error_weighted`使用BMIN目标与control input bandwidth的相对欠量误差。
 
 ### MC-CTRL-005：Soft BMAX
 
@@ -1101,6 +1136,8 @@ AND contended
 
 请求仍然eligible。QoS降到0仍超限表示控制饱和。
 无竞争时保持work-conserving。
+降档delta由`mc_qos_adjust_mode`决定：`fixed_step`使用固定档位，
+`error_weighted`使用control input bandwidth相对BMAX目标的超限误差。
 
 ### MC-CTRL-006：Hard BMAX
 
@@ -1118,8 +1155,8 @@ OVER_BMAX -> 下一个控制周期内该PARTID所有entry不可服务
 ```text
 raw_effective_qos = clamp(
     base_qos
-  + bmin_promote
-  - soft_bmax_demote
+  + bmin_delta
+  - soft_bmax_delta
   + service_deficit_promote,
     0,
     7
@@ -1133,6 +1170,8 @@ else:
 
 其中`effective_qos`是MC最终实际仲裁档位；`raw_effective_qos`是映射前的8级计算值。
 映射表为`0,1,2,3,4,5,6,7 -> 0,1,1,1,2,2,2,3`。
+`bmin_delta`和`soft_bmax_delta`必须在候选评分时保存到Transaction仲裁状态，
+监控快照导出平均delta、误差比例和当前QoS调整模式，用于核对配置与结果。
 
 ### MC-CTRL-008：可选service deficit
 
@@ -1722,7 +1761,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - linear/XOR地址到MC交织，在CPU OSTD准入前确定home MC。
 - 每MC固定深度共享buffer和全深度ready候选；
 - 同line read/read可重排，任何含write的较新事务等待较老事务；
-- 3-bit base/raw effective QoS、可选8级到4级final QoS映射和同档rotating slot scan；
+- 3-bit base/raw effective QoS、固定升降档或error-weighted QoS调整、可选8级到4级final QoS映射和同档rotating slot scan；
 - 每256个MC本地拍发布raw/latest filtered带宽，BMIN/BMAX读取锁存control input；
 - BMIN竞争升档、soft BMAX竞争降档、hard BMAX整周期门控和滞回；
 - 可选每PARTID饱和service-deficit计数器；

@@ -103,8 +103,17 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.memory_controllers[0].bandwidth_hysteresis == 0.05
     assert config.memory_controllers[0].aging_mode == "none"
     assert config.memory_controllers[0].token_bucket_window_ns == 100
+    assert config.memory_controllers[0].qos_adjust_mode == "fixed_step"
     assert config.memory_controllers[0].bmin_qos_promote == 2
     assert config.memory_controllers[0].softlimit_qos_demote == 2
+    assert config.memory_controllers[0].bmin_error_weight == 4.0
+    assert config.memory_controllers[0].bmax_error_weight == 4.0
+    assert config.memory_controllers[0].qos_error_deadband_percent == 5.0
+    assert config.memory_controllers[0].qos_error_max_delta == 2
+    assert (
+        config.memory_controllers[0].qos_error_quantization
+        == "threshold_lut"
+    )
     assert config.memory_controllers[0].qos_map_8_to_4_enable is False
     assert config.address_interleave.mode == "linear"
     assert config.address_interleave.granularity_bytes == 256

@@ -58,8 +58,14 @@ soc:
         token_bucket_window_ns: 100
         aging_ns: 500
         qos_aging_max_steps: 3
+        qos_adjust_mode: fixed_step
         bmin_qos_promote: 2
         softlimit_qos_demote: 2
+        bmin_error_weight: 4.0
+        bmax_error_weight: 4.0
+        qos_error_deadband_percent: 5.0
+        qos_error_max_delta: 2
+        qos_error_quantization: threshold_lut
       - id: mc1
         channels: 2
         bandwidth_gbps_per_channel: 128
