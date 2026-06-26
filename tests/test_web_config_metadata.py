@@ -54,6 +54,21 @@ def test_every_static_parameter_control_has_metadata() -> None:
     assert parameter_names <= set(PARAMETER_METADATA)
 
 
+def test_policy_ui_only_exposes_uncontrolled_and_controlled_modes() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    policy_values = re.findall(
+        r'name="policy" value="([^"]+)"',
+        index_html,
+    )
+    assert policy_values == ["no_control", "static_mpam"]
+    assert "闭环 QoS" not in index_html
+    assert "max_bw_step_percent" not in index_html
+    assert "p99_hysteresis" not in index_html
+    assert "min_hold_intervals" not in index_html
+
+
 def test_results_default_to_control_evidence_workspace() -> None:
     index_html = (
         PROJECT_ROOT / "src/web/static/index.html"

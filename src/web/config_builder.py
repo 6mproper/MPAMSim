@@ -813,10 +813,7 @@ def default_parameters() -> Dict[str, object]:
         "cbusy_l1_queue_ratio": 0.25,
         "cbusy_l2_queue_ratio": 0.50,
         "cbusy_l3_queue_ratio": 0.75,
-        "policy": "closed_loop_qos",
-        "max_bw_step_percent": 10,
-        "p99_hysteresis": 0.1,
-        "min_hold_intervals": 3,
+        "policy": "static_mpam",
         "resctrl_enabled": False,
         "resctrl_groups": _default_resctrl_groups(
             DEFAULT_L3_WAYS,
@@ -1089,7 +1086,7 @@ def control_effect_presets() -> List[Dict[str, object]]:
         mixed, 2, 2, 96, "mixed_rw", "gbps", 256, 0.7,
         address_base_mb=1024,
     )
-    mixed["policy"] = "closed_loop_qos"
+    mixed["policy"] = "static_mpam"
     mixed["partid_configs"][0].update(
         {
             "name": "partid0_protected",
@@ -1945,25 +1942,13 @@ def build_config(
             "Estimated request count exceeds 2,000,000; reduce duration or thread rates"
         )
 
-    policy = _choice(
-        values,
-        "policy",
-        "closed_loop_qos",
-        [
-            "no_control",
-            "static_mpam",
-            "closed_loop_qos",
-        ],
-    )
-    max_bw_step = _number(
-        values, "max_bw_step_percent", 10, 1, 100
-    )
-    hysteresis = _number(
-        values, "p99_hysteresis", 0.1, 0, 1
-    )
-    min_hold = _integer(
-        values, "min_hold_intervals", 3, 1, 100
-    )
+    policy = str(values.get("policy", "static_mpam"))
+    if policy == "closed_loop_qos":
+        policy = "static_mpam"
+    if policy not in {"no_control", "static_mpam"}:
+        raise ParameterError(
+            "policy must be no_control or static_mpam"
+        )
 
     cores = [f"cpu{index}" for index in range(active_cores)]
     clusters = []
@@ -2114,22 +2099,6 @@ def build_config(
         }
         for index in range(mc_count)
     ]
-    protected_partids = sorted(
-        {
-            int(row["partid"])
-            for row in stimulus_configs
-            if row["enabled"] and row["target_p99_ns"] > 0
-        }
-    )
-    active_partids = {
-        int(row["partid"])
-        for row in stimulus_configs
-        if row["enabled"]
-    }
-    background_partids = sorted(
-        active_partids - set(protected_partids)
-    )
-
     return {
         "simulation": {
             "time_ns": duration_ns,
@@ -2218,13 +2187,6 @@ def build_config(
                 "name": policy,
                 "params": {
                     "interval_ns": control_interval_ns,
-                    "max_bw_step_percent": max_bw_step,
-                    "priority_min": 0,
-                    "priority_max": 15,
-                    "background_partids": background_partids,
-                    "protected_partids": protected_partids,
-                    "p99_hysteresis": hysteresis,
-                    "min_hold_intervals": min_hold,
                 },
             }
         ],

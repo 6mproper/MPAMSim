@@ -5,7 +5,6 @@ from typing import Dict, List
 from src.config.schema import PolicyConfig
 from src.mpam.settings import SettingsTable
 
-from .closed_loop import ClosedLoopQoSPolicy
 from .policy_base import PolicyBase
 
 
@@ -24,9 +23,7 @@ def build_policies(
 ) -> List[PolicyBase]:
     policies: List[PolicyBase] = []
     for config in configs:
-        if config.name == "closed_loop_qos":
-            policies.append(ClosedLoopQoSPolicy(config.params, targets, mc_tables))
-        elif config.name == "no_control":
+        if config.name == "no_control":
             policies.append(NoControlPolicy())
         else:
             policies.append(StaticMPAMPolicy())

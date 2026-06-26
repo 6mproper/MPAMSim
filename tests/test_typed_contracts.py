@@ -25,7 +25,10 @@ from src.contracts.transaction import (
 from src.config.loader import load_config
 from src.sim.simulation import Simulation
 from src.traffic.request import Request
-from src.web.config_builder import build_config, default_parameters
+from src.web.config_builder import (
+    build_config,
+    control_effect_presets,
+)
 
 
 def make_transaction() -> Transaction:
@@ -186,10 +189,10 @@ def test_control_decision_and_event_keep_causal_ids() -> None:
         partid=1,
         field="mc_qos",
         value=7,
-        reason="P99 violation",
-        policy="closed_loop_qos",
+        reason="over BMAX",
+        policy="mc_bmin_bmax",
     ).with_context(
-        decision_id="decision:2:closed_loop_qos:0",
+        decision_id="decision:2:mc_bmin_bmax:0",
         monitor_sample_id="interval:2",
         action_effective_time_ns=100_000.0,
     )
@@ -290,13 +293,11 @@ def test_component_registry_rejects_duplicates_and_conflicts() -> None:
 def test_simulation_exports_resolvable_control_causality(
     tmp_path,
 ) -> None:
-    parameters = default_parameters()
-    parameters["duration_ns"] = 20_000
-    parameters["control_interval_ns"] = 5_000
-    parameters["min_hold_intervals"] = 1
-    for row in parameters["stimulus_configs"][2:]:
-        row["enabled"] = False
-    parameters["stimulus_configs"][1]["target_p99_ns"] = 1
+    parameters = next(
+        preset["parameters"]
+        for preset in control_effect_presets()
+        if preset["id"] == "mc_hard_bmax_cbusy"
+    )
     raw = build_config(parameters, str(tmp_path / "run"))
     config_path = tmp_path / "typed.yaml"
     config_path.write_text(
@@ -313,7 +314,7 @@ def test_simulation_exports_resolvable_control_causality(
     applied = [
         event
         for event in result.collector.control_events
-        if event.event_type == "setting_applied"
+        if event.policy == "mc_bmin_bmax"
     ]
     assert applied
     assert all(event.decision_id for event in applied)

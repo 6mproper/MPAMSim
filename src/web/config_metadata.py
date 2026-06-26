@@ -64,9 +64,9 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
     ),
     "control_interval_ns": _field(
         "控制与导出周期",
-        "周期性采集CPU、L3、MC和控制记录，并触发当前慢速闭环策略。",
+        "周期性采集CPU、L3、MC和控制记录，并推进硬件控制状态机。",
         "ns",
-        "监控收集器和closed_loop_qos策略。",
+        "监控收集器和硬件机制控制周期。",
         "减小可提高可见时间分辨率，但会增加快照数量；它不是L3/MC目标256本地拍监控周期。",
         "至少128，不能大于仿真时间，最多生成1,000个周期。",
         "128表示每128 ns输出一次周期结果。",
@@ -740,39 +740,12 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
     ),
     "policy": _field(
         "控制策略",
-        "选择只监控、执行静态MPAM配置，或在静态控制之上运行P99慢速闭环。",
+        "选择只监控不强制，或执行当前表单中已开启的硬件/模型控制机制。",
         "枚举",
-        "仿真控制策略factory和每周期policy callback。",
-        "no_control关闭L3/MC强制；static_mpam保持表值；closed_loop_qos可运行时修改MC QoS和背景BMAX。",
-        "必须为no_control、static_mpam或closed_loop_qos。",
-        "算法验证通常使用static_mpam隔离硬件机制。",
-    ),
-    "max_bw_step_percent": _field(
-        "闭环BMAX步长",
-        "closed_loop_qos每次收紧或恢复背景PARTID BMAX的相对百分比。",
-        "%",
-        "慢速软件闭环写MC设置表。",
-        "增大响应更快但更容易过度调节；减小更平滑但收敛更慢。",
-        "1到100，仅closed_loop_qos使用。",
-        "10表示每次违约把背景BMAX乘0.9。",
-    ),
-    "p99_hysteresis": _field(
-        "P99滞回比例",
-        "围绕P99目标建立上下触发带，避免实际值在目标附近反复写控制。",
-        "ratio",
-        "closed_loop_qos违约和恢复判断。",
-        "增大减少切换但允许更大目标偏差。",
-        "0到1。",
-        "0.1表示高于目标110%保护、低于目标90%才考虑恢复。",
-    ),
-    "min_hold_intervals": _field(
-        "闭环最小保持周期",
-        "两次慢速闭环控制更新之间至少间隔的控制周期数。",
-        "control interval",
-        "closed_loop_qos更新节流。",
-        "增大降低振荡和写配置频率，但延长响应。",
-        "1到100。",
-        "3和50 us控制周期表示至少保持150 us。",
+        "仿真控制模式和硬件机制使能边界。",
+        "no_control关闭L3/MC资源强制；static_mpam执行当前表单所有已配置并开启的硬件控制机制。",
+        "必须为no_control或static_mpam。旧配置中的closed_loop_qos会兼容为static_mpam。",
+        "有控制用于验证硬件机制；不会根据P99自动改写MPAM表。",
     ),
     "resctrl_enabled": _field(
         "resctrl-like软件组模式",
@@ -974,11 +947,11 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
     ),
     "target_p99_ns": _field(
         "P99目标",
-        "正值把该PARTID标记为closed_loop_qos保护对象，0表示不设置延迟目标。",
+        "正值为该PARTID设置P99结果目标线，0表示不设置目标线。",
         "ns",
-        "慢速闭环的保护组选择和违约判断。",
+        "P99结果图和KPI目标线。",
         "目标越低越容易触发提升保护组MC QoS和收紧背景BMAX。",
-        "0到1,000,000；只有closed_loop_qos会自动动作。",
+        "0到1,000,000；只用于结果图和KPI对齐，不会自动修改控制配置。",
         "500表示希望该PARTID P99不高于500 ns。",
     ),
 }
@@ -1227,8 +1200,7 @@ OPTION_METADATA: Dict[str, Dict[str, str]] = {
     },
     "policy": {
         "no_control": "保留监控，但关闭L3和MC资源强制及运行时策略更新。",
-        "static_mpam": "执行当前16组PARTID表值，运行期间不自动修改控制。",
-        "closed_loop_qos": "执行静态控制，并按周期读取保护PARTID P99，修改保护QoS和背景BMAX。",
+        "static_mpam": "有控制：执行当前表单中所有已配置并开启的硬件/模型控制机制。",
     },
 }
 
@@ -1402,20 +1374,6 @@ CONTROL_ALGORITHMS: Dict[str, Dict[str, str]] = {
         "evidence": "resolved config保存模式、粒度和shift；事务路由和各MC监控显示实际分布。",
         "boundary": "这是可解释的地址映射抽象，不代表特定芯片的保密hash函数。",
     },
-    "policy-mode": {
-        "title": "控制模式与P99慢速闭环",
-        "summary": "决定是否执行静态L3/MC控制，以及是否根据保护PARTID P99周期性修改MC设置。",
-        "inputs": "policy、保护PARTID P99目标和实测值、滞回、最小保持周期、步长、背景PARTID集合。",
-        "state": "最后更新周期；每MC、每背景PARTID的初始BMAX；当前设置表。",
-        "cadence": "每control_interval_ns调用一次；两次动作至少间隔min_hold_intervals。",
-        "decision": "P99>target*(1+h)时违约；所有保护对象低于target*(1-h)时可恢复。",
-        "action": "违约时保护PARTID MC QoS加1并钳位7，背景BMAX乘(1-step%)；恢复时背景BMAX逐步回到初始值。",
-        "recovery": "只有进入低滞回带且保持周期满足时逐步恢复；不会自动降低已提升的保护QoS。",
-        "priority": "no_control关闭硬件强制；static_mpam只执行表值；closed_loop_qos叠加运行时写表。CBusy快环独立工作。",
-        "forward_progress": "背景BMAX下限钳位0.001 Gbps；目标不可达、过度限流或振荡作为分析结果继续仿真。",
-        "evidence": "控制记录显示时间、MSC、PARTID、字段、旧值、新值和P99触发原因；效果页同时显示目标与实际。",
-        "boundary": "当前是演示性软件策略，不代表Linux MPAM/resctrl或具体芯片firmware算法；目标规格后续需单独定义稳定性和目标函数。",
-    },
 }
 
 
@@ -1472,10 +1430,6 @@ CONTROL_FIELD_ALGORITHMS: Dict[str, Dict[str, str]] = {
         "cbusy_l1_queue_ratio": "mc-cbusy",
         "cbusy_l2_queue_ratio": "mc-cbusy",
         "cbusy_l3_queue_ratio": "mc-cbusy",
-        "policy": "policy-mode",
-        "max_bw_step_percent": "policy-mode",
-        "p99_hysteresis": "policy-mode",
-        "min_hold_intervals": "policy-mode",
     },
     "partid": {
         "cpbm_enable": "l3-cpbm",
@@ -1497,7 +1451,6 @@ CONTROL_FIELD_ALGORITHMS: Dict[str, Dict[str, str]] = {
         "cbusy_l3_ostd": "mc-cbusy",
     },
     "stimulus": {
-        "target_p99_ns": "policy-mode",
     },
 }
 
@@ -1602,7 +1555,6 @@ def audit_config_metadata(
         "policy": {
             "no_control",
             "static_mpam",
-            "closed_loop_qos",
         },
     }
     for field_name, values in expected_options.items():

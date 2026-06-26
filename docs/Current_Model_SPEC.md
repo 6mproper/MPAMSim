@@ -1472,7 +1472,7 @@ outcome_reason
 ```
 
 其中`parameters`必须等价于当前Web表单通过`collectParameters()`提交给仿真后端的参数集，
-包含SoC、16线程激励、resctrl-like软件组、MPAM PARTID表和策略控制参数。
+包含SoC、16线程激励、resctrl-like软件组、MPAM PARTID表和控制模式参数。
 
 导入规则：
 
@@ -1885,7 +1885,7 @@ scheduler完成QoS和授权。
 3. dirty eviction和writeback流程；
 4. Ring每链路槽位的精确定义；
 5. PLRU支持的way数和算法；
-6. 软件慢闭环策略的目标、周期和稳定性；
+6. 后续如需新增软件策略，必须先定义其与硬件机制验证路径的边界；
 7. 是否加入DRAM readiness和bank/row模型；
 8. 关键流量是否使用OSTD reserve或绕过规则。
 

@@ -3,7 +3,6 @@ base_config: examples/baseline_soc.yaml
 policies:
   - no_control
   - static_mpam
-  - closed_loop_qos
 metrics:
   protected_partid: 1
   background_partid: 2

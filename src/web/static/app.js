@@ -136,7 +136,7 @@ const headerHelp = {
   "Avg Queue ns": "最新采样周期内该 PARTID 在 MC 队列中的平均等待时间。",
   "Limit Events": "softlimit竞争降档次数、周期hard gate事件、被选中超限请求和QoS饱和证据。",
   "CBusy Evidence": "最高档位、带宽/BMAX 比、队列比、占空比和本周期切换次数。",
-  "Control State": "当前策略状态，以及该 PARTID 最近一次闭环控制更新。",
+  "Control State": "当前控制模式，以及该 PARTID 最近一次硬件控制事件。",
   "PARTID": "资源控制聚合标识；同一 PARTID 下的多个 PMG 会合并到该行。",
   "吞吐 Gbps": "该 PARTID 在最新采样周期内完成字节换算的有效带宽。",
   "命中率": "该 PARTID 的概率 L3 命中请求占比。",
@@ -173,7 +173,7 @@ const resultTabHelp = {
   "监控组": "按 PARTID+PMG 显示软件可见的实时 L3 占用和 MC 带宽使用。",
   "MPAM 监控": "按 PARTID 聚合所有 L3/MC 实例的控制值和限速事件。",
   "MSC": "显示 NoC、L3 和 MC 组件级利用率、队列和流量。",
-  "控制记录": "显示闭环策略在各采样周期写入的控制更新。",
+  "控制记录": "显示L3、MC和CBusy等硬件机制在各采样周期产生的控制事件。",
 };
 const sectionHeadingHelp = {
   "仿真与多核": "定义运行时间、采样周期以及 8 核 16 线程 requester 的公共约束。",
@@ -182,8 +182,7 @@ const sectionHeadingHelp = {
   "Memory Controller": "定义内存控制器数量、通道带宽、服务延迟和队列深度。",
   "16 线程独立激励": "为8核16线程分别配置标签、地址行为、速率、请求大小、读写比例、工作集和P99目标。",
   "16 PARTID Cache / Memory 控制": "每行配置一个 PARTID 的 L3 百分比、MC 带宽、3-bit QoS 和监控开关。",
-  "控制模式": "选择是否执行 MPAM 控制，以及是否允许运行时闭环更新。",
-  "闭环参数": "控制闭环的步长、滞回和最小保持时间，避免频繁震荡。",
+  "控制模式": "选择无控制或有控制；有控制会执行当前配置中已开启的硬件机制。",
   "MC 调度算法参数": "配置MC本地256拍监控、历史滤波、BMIN/BMAX滞回、共享buffer 3-bit QoS和可选PARTID service deficit。",
   "CBusy 快反馈": "配置 MC per-PARTID 四档拥塞检测、反馈传播、CPU/L3响应开关和逐级恢复行为。",
   "resctrl-like 软件资源组": "使用公开resctrl风格的软件组入口配置资源策略；本阶段会翻译为内部PARTID/PMG和现有MPAM控制，不模拟完整Linux文件系统。",
@@ -1973,15 +1972,7 @@ function controlFeedback(partid) {
   if (policy === "no_control") {
     return { state: "disabled", label: "无控制", latest, updates: updates.length };
   }
-  if (policy === "static_mpam") {
-    return { state: "static", label: "静态", latest, updates: updates.length };
-  }
-  return {
-    state: latest ? "adjusted" : "monitoring",
-    label: latest ? "已调整" : "监控中",
-    latest,
-    updates: updates.length,
-  };
+  return { state: "static", label: "有控制", latest, updates: updates.length };
 }
 
 function controlStateCell(partid) {
@@ -2004,14 +1995,13 @@ function renderControlFeedbackSummary() {
   const policy = $('input[name="policy"]:checked')?.value || "no_control";
   const policyLabel = {
     no_control: "无控制",
-    static_mpam: "静态 MPAM",
-    closed_loop_qos: "闭环 QoS",
+    static_mpam: "有控制",
   }[policy] || policy;
   const updates = visibleRows(state.partial.controls)
     .filter((row) => isPartidVisible(row.partid));
   const latest = updates[updates.length - 1];
   $("#controlFeedbackSummary").innerHTML = `
-    <span><b>反馈策略</b>${escapeHtml(policyLabel)}</span>
+    <span><b>控制模式</b>${escapeHtml(policyLabel)}</span>
     <span><b>所选 PARTID 更新</b>${updates.length}</span>
     <span class="feedback-reason"><b>最近动作</b>${
       latest
@@ -3944,7 +3934,7 @@ function applyContextHelp() {
     L3: "按 PARTID 应用 CPBM/CMIN/CMAX，并以 8-set 抽样估算占用。",
     MC: "按 PARTID 应用 BMIN/BMAX token/credit 并统计 PMG 带宽。",
     Scheduler: "在竞争请求间组合 priority、BMIN bonus、soft penalty 和 aging。",
-    Monitor: "按控制周期采集 PARTID 与 PARTID+PMG 指标供软件查看和闭环决策。",
+    Monitor: "按控制周期采集 PARTID 与 PARTID+PMG 指标，供结果查看和硬件控制状态更新使用。",
   };
   $$(".flow-stage").forEach((stage) => {
     if (!stage.dataset.algorithm) {

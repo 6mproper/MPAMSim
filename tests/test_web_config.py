@@ -62,10 +62,12 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.workloads[3].address_pattern == "uniform_random"
     assert config.workloads[0].issue_selection == "eligible_scan"
     assert config.workloads[0].source_queue_depth == 4
-    assert config.policies[0].params["protected_partids"] == [1]
-    assert config.policies[0].params["background_partids"] == [
-        0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-    ]
+    assert config.policies[0].name == "static_mpam"
+    assert "protected_partids" not in config.policies[0].params
+    assert "background_partids" not in config.policies[0].params
+    assert config.policies[0].params == {
+        "interval_ns": parameters["control_interval_ns"],
+    }
     assert len(config.partitions) == 16
     assert len(config.controls_by_msc["slc0"]) == 16
     assert len(config.controls_by_msc["mc0"]) == 16
@@ -130,10 +132,34 @@ def test_web_defaults_use_short_interactive_timing(tmp_path) -> None:
 
     assert parameters["duration_ns"] == DEFAULT_DURATION_NS == 5_000
     assert parameters["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS == 128
+    assert parameters["policy"] == "static_mpam"
+    assert "max_bw_step_percent" not in parameters
+    assert "p99_hysteresis" not in parameters
+    assert "min_hold_intervals" not in parameters
 
     raw = build_config(parameters, str(tmp_path / "run"))
     assert raw["simulation"]["time_ns"] == DEFAULT_DURATION_NS
     assert raw["simulation"]["control_interval_ns"] == DEFAULT_CONTROL_INTERVAL_NS
+    assert raw["policies"] == [
+        {
+            "name": "static_mpam",
+            "params": {"interval_ns": DEFAULT_CONTROL_INTERVAL_NS},
+        }
+    ]
+
+
+def test_legacy_closed_loop_policy_import_maps_to_controlled_mode(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["policy"] = "closed_loop_qos"
+
+    raw = build_config(parameters, str(tmp_path / "legacy"))
+
+    assert raw["policies"] == [
+        {
+            "name": "static_mpam",
+            "params": {"interval_ns": DEFAULT_CONTROL_INTERVAL_NS},
+        }
+    ]
 
 
 def test_web_control_interval_minimum_is_128ns(tmp_path) -> None:
