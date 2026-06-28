@@ -46,6 +46,7 @@ const state = {
 
 const CONFIG_FILE_SCHEMA = "mpamsim.config.parameters";
 const CONFIG_FILE_VERSION = 1;
+const MC_ACTUAL_MOVING_AVERAGE_WINDOWS = 4;
 
 const colors = {
   p1: "#1778aa",
@@ -3429,7 +3430,7 @@ function buildEffectRows(partid) {
     return capacity > 0 ? weighted / capacity : fallback;
   };
   let previousTime = -1;
-  return [...times]
+  const rows = [...times]
     .filter((timeNs) => timeNs <= state.selectedTime + 1e-9)
     .sort((a, b) => a - b)
     .map((timeNs) => {
@@ -3475,9 +3476,6 @@ function buildEffectRows(partid) {
       const cacheCapacity = sumValues(cacheValues, "cache_capacity_bytes");
       const mcRequests = sumValues(mcValues, "requests");
       const mcActualBandwidth = sumValues(mcValues, "achieved_bandwidth_gbps");
-      const mcChartActualBandwidth = mcActualParticipates
-        ? mcActualBandwidth
-        : null;
       const mcRawBandwidth = sumValues(mcValues, "raw_bandwidth_gbps");
       const mcFilteredBandwidth = sumValues(
         mcValues,
@@ -3536,7 +3534,8 @@ function buildEffectRows(partid) {
         ),
         mcBandwidth: mcControlBandwidth,
         mcActualBandwidth,
-        mcChartActualBandwidth,
+        mcActualMovingAverageBandwidth: null,
+        mcChartActualBandwidth: null,
         mcActualParticipates,
         mcRawBandwidth,
         mcFilteredBandwidth,
@@ -3577,6 +3576,32 @@ function buildEffectRows(partid) {
         events,
       };
     });
+  return applyMcActualMovingAverage(rows);
+}
+
+function applyMcActualMovingAverage(rows) {
+  const window = [];
+  return rows.map((row) => {
+    if (
+      row.mcActualParticipates !== false
+      && Number.isFinite(Number(row.mcActualBandwidth))
+    ) {
+      window.push(Number(row.mcActualBandwidth));
+      if (window.length > MC_ACTUAL_MOVING_AVERAGE_WINDOWS) window.shift();
+      const movingAverage = window.reduce((sum, value) => sum + value, 0)
+        / Math.max(1, window.length);
+      return {
+        ...row,
+        mcActualMovingAverageBandwidth: movingAverage,
+        mcChartActualBandwidth: movingAverage,
+      };
+    }
+    return {
+      ...row,
+      mcActualMovingAverageBandwidth: null,
+      mcChartActualBandwidth: null,
+    };
+  });
 }
 
 function effectState(row, target) {
@@ -3619,7 +3644,7 @@ function stateBadge(value) {
 function formatMcActualEvidence(row) {
   if (!row) return "--";
   if (row.mcActualParticipates === false) return "尾部窗口不参与";
-  return formatNumber(row.mcActualBandwidth, 3);
+  return `${formatNumber(row.mcActualMovingAverageBandwidth, 3)} Gbps MA`;
 }
 
 function renderControlEffect() {
@@ -3673,7 +3698,7 @@ function renderControlEffect() {
   });
 
   renderLegend("#effectBwLegend", [
-    { color: "#60717e", label: "服务实际", kind: "actual" },
+    { color: "#60717e", label: "actual MA", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
     { color: selectedColor, label: "控制输入", kind: "filtered" },
     { color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" },
@@ -3872,13 +3897,13 @@ function renderControlOverview() {
       ${overviewMetric("Control Input", latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps` : "--", "锁存读取值")}
       ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "最新发布")}
       ${overviewMetric(
-        "Service Actual",
+        "Service Actual MA",
         latest && latest.mcActualParticipates !== false
-          ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps`
+          ? `${formatNumber(latest.mcActualMovingAverageBandwidth, 3)} Gbps`
           : "--",
         latest && latest.mcActualParticipates === false
           ? "尾部窗口不参与"
-          : "实际服务",
+          : `${MC_ACTUAL_MOVING_AVERAGE_WINDOWS}-window`,
       )}
       ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
       ${overviewMetric(
@@ -3976,7 +4001,7 @@ function renderControlOverview() {
     ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
     ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
     ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
+    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual MA", kind: "actual" }] : []),
     ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
     ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
   ]);

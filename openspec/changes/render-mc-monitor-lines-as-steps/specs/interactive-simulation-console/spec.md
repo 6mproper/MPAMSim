@@ -8,7 +8,7 @@
 
 - **WHEN** 控制效果页绘制MC目标带/监控/实际图
 - **THEN** `raw monitor`、`latest filtered BW`和`control input` MUST 使用阶梯线
-- **AND** `actual` MUST 继续使用普通实际服务线
+- **AND** `actual` MUST NOT 使用阶梯线
 
 #### Scenario: 控制总览MC带宽图
 
