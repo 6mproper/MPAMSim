@@ -232,6 +232,7 @@ class MetricsCollector:
             self.msc_rows.append(
                 {
                     "time_ns": time_ns,
+                    "interval_ns": snapshot.interval_ns,
                     **snapshot.to_row(),
                     "sample_id": snapshot.sample_id,
                     "capture_id": self.last_capture_id,

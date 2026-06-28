@@ -136,6 +136,38 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.ostd.thread_reserve == 8
 
 
+def test_msc_rows_expose_partial_capture_interval(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters.update(
+        {
+            "active_cores": 1,
+            "threads_per_core": 1,
+            "l3_instances": 1,
+            "memory_controllers": 1,
+            "duration_ns": DEFAULT_DURATION_NS,
+            "control_interval_ns": DEFAULT_CONTROL_INTERVAL_NS,
+        }
+    )
+    raw = build_config(parameters, str(tmp_path / "partial_interval"))
+    config_path = tmp_path / "partial_interval.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    result = Simulation.from_config(load_config(config_path)).run()
+    mc_final_rows = [
+        row
+        for row in result.collector.msc_rows
+        if row["msc_type"] == "memory_controller"
+        and row["capture_id"] == f"final:{DEFAULT_DURATION_NS:g}"
+    ]
+
+    assert DEFAULT_DURATION_NS % DEFAULT_CONTROL_INTERVAL_NS > 0
+    assert mc_final_rows
+    assert all(
+        row["interval_ns"] == DEFAULT_DURATION_NS % DEFAULT_CONTROL_INTERVAL_NS
+        for row in mc_final_rows
+    )
+
+
 def test_web_parameters_shrink_stimulus_for_4c2t(tmp_path) -> None:
     parameters = default_parameters()
     parameters["active_cores"] = 4

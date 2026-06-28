@@ -1483,6 +1483,22 @@ function visibleRows(rows) {
   return (rows || []).filter((row) => Number(row.time_ns || 0) <= state.selectedTime + 1e-9);
 }
 
+function configuredControlIntervalNs() {
+  return Math.max(
+    1e-9,
+    Number($('[data-param="control_interval_ns"]')?.value || 0),
+  );
+}
+
+function participatesInMcActualChart(mcRows) {
+  const intervalNs = Math.max(
+    0,
+    ...mcRows.map((row) => Number(row.interval_ns)).filter(Number.isFinite),
+  );
+  if (intervalNs <= 0) return true;
+  return intervalNs >= configuredControlIntervalNs() * 0.999;
+}
+
 function latestBy(rows, key) {
   const result = new Map();
   visibleRows(rows).forEach((row) => result.set(String(row[key]), row));
@@ -3433,6 +3449,7 @@ function buildEffectRows(partid) {
       const mcValues = mcRows.map(
         (row) => row.per_partid?.[String(pid)] || {},
       );
+      const mcActualParticipates = participatesInMcActualChart(mcRows);
       const actualOccupancy = sumValues(cacheValues, "actual_occupancy_bytes");
       const rawOccupancy = sumValues(cacheValues, "raw_occupancy_bytes");
       const filteredOccupancy = cacheValues.reduce(
@@ -3455,6 +3472,9 @@ function buildEffectRows(partid) {
       const cacheCapacity = sumValues(cacheValues, "cache_capacity_bytes");
       const mcRequests = sumValues(mcValues, "requests");
       const mcActualBandwidth = sumValues(mcValues, "achieved_bandwidth_gbps");
+      const mcChartActualBandwidth = mcActualParticipates
+        ? mcActualBandwidth
+        : null;
       const mcRawBandwidth = sumValues(mcValues, "raw_bandwidth_gbps");
       const mcFilteredBandwidth = sumValues(
         mcValues,
@@ -3513,6 +3533,8 @@ function buildEffectRows(partid) {
         ),
         mcBandwidth: mcControlBandwidth,
         mcActualBandwidth,
+        mcChartActualBandwidth,
+        mcActualParticipates,
         mcRawBandwidth,
         mcFilteredBandwidth,
         mcControlBandwidth,
@@ -3591,12 +3613,21 @@ function stateBadge(value) {
   return `<span class="effect-state ${kind}">${escapeHtml(value)}</span>`;
 }
 
+function formatMcActualEvidence(row) {
+  if (!row) return "--";
+  if (row.mcActualParticipates === false) return "尾部窗口不参与";
+  return formatNumber(row.mcActualBandwidth, 3);
+}
+
 function renderControlEffect() {
   syncPartidSelect("#effectPartid", state.effectPartid);
   const selectedRows = buildEffectRows(state.effectPartid);
   const target = effectTarget(state.effectPartid);
-  const points = (key) => selectedRows.map(
-    (row) => ({ x: row.timeNs, y: Number(row[key] || 0) }),
+  const points = (key, { omitMissing = false } = {}) => selectedRows.map(
+    (row) => ({
+      x: row.timeNs,
+      y: omitMissing && row[key] == null ? NaN : Number(row[key] || 0),
+    }),
   );
   const targetSeries = (value) => value == null ? [] : selectedRows.map(
     (row) => ({ x: row.timeNs, y: Number(value) }),
@@ -3650,7 +3681,7 @@ function renderControlEffect() {
     { color: colors.amber, label: "控制事件", kind: "event" },
   ]);
   drawLineChart($("#effectBwChart"), [
-    { color: "#60717e", width: 1.2, marker: "none", points: points("mcActualBandwidth") },
+    { color: "#60717e", width: 1.2, marker: "none", points: points("mcChartActualBandwidth", { omitMissing: true }) },
     { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("mcRawBandwidth") },
     { color: selectedColor, width: 2.8, points: points("mcControlBandwidth") },
     { color: "#6d5fa8", width: 1.6, dash: [6, 3], marker: "none", points: points("mcFilteredBandwidth") },
@@ -3713,7 +3744,7 @@ function renderControlEffect() {
         <td>${latest ? `${formatNumber(latest.l3ControlShare, 2)}% <small>latest ${formatNumber(latest.l3FilteredShare, 2)} / 实际 ${formatNumber(latest.l3ActualShare, 2)}</small>` : "-"}</td>
         <td>${stateBadge(rowState.l3)}</td>
         <td>${rowTarget.bmin == null ? "-" : formatNumber(rowTarget.bmin, 1)} / ${rowTarget.bmax == null ? "-" : formatNumber(rowTarget.bmax, 1)} <small>${escapeHtml(rowTarget.mode)}</small></td>
-        <td>${latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(latest.mcFilteredBandwidth, 3)} / 实际 ${formatNumber(latest.mcActualBandwidth, 3)}</small>` : "-"}</td>
+        <td>${latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(latest.mcFilteredBandwidth, 3)} / 实际 ${formatMcActualEvidence(latest)}</small>` : "-"}</td>
         <td>${stateBadge(rowState.bw)}</td>
         <td>${rowTarget.qos} / ${latest ? formatNumber(latest.effectiveQos, 2) : "-"}</td>
         <td>${rowTarget.p99 == null ? "-" : formatNumber(rowTarget.p99, 1)} / ${latest ? formatNumber(latest.p99, 1) : "-"}</td>
@@ -3727,7 +3758,7 @@ function renderControlEffect() {
         <td>${formatTime(row.timeNs)}</td>
         <td>${formatNumber(row.l3ControlShare, 2)}% <small>latest ${formatNumber(row.l3FilteredShare, 2)} / 原始 ${formatNumber(row.l3RawShare, 2)} / 实际 ${formatNumber(row.l3ActualShare, 2)}</small></td>
         <td>${target.cmin == null ? "-" : `${formatNumber(row.l3EffectiveCmin ?? target.cmin, 1)}%`} / ${target.cmax == null ? "-" : `${formatNumber(row.l3EffectiveCmax ?? target.cmax, 1)}%`} <small>${row.l3Contended ? "替换竞争" : "无替换竞争"}</small></td>
-        <td>${formatNumber(row.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(row.mcFilteredBandwidth, 3)} / 原始 ${formatNumber(row.mcRawBandwidth, 3)} / 实际 ${formatNumber(row.mcActualBandwidth, 3)}</small></td>
+        <td>${formatNumber(row.mcControlBandwidth, 3)} Gbps <small>latest ${formatNumber(row.mcFilteredBandwidth, 3)} / 原始 ${formatNumber(row.mcRawBandwidth, 3)} / 实际 ${formatMcActualEvidence(row)}</small></td>
         <td>${target.bmin == null ? "-" : formatNumber(row.mcEffectiveBmin ?? target.bmin, 1)} / ${target.bmax == null ? "-" : formatNumber(row.mcEffectiveBmax ?? target.bmax, 1)} <small>${row.mcContended ? "竞争" : target.mode}</small></td>
         <td>${formatNumber(row.baseQos, 0)} / ${formatNumber(row.effectiveQos, 2)}</td>
         <td>L${row.cbusy} / ${formatNumber(row.outstanding, 0)} of ${formatNumber(row.ostdCap, 0)}</td>
@@ -3837,7 +3868,15 @@ function renderControlOverview() {
       ${overviewMetric("BMIN / BMAX", formatTargetRange(target.bmin, target.bmax, " Gbps"), escapeHtml(target.mode || "disabled"))}
       ${overviewMetric("Control Input", latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps` : "--", "锁存读取值")}
       ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "最新发布")}
-      ${overviewMetric("Service Actual", latest ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps` : "--", "实际服务")}
+      ${overviewMetric(
+        "Service Actual",
+        latest && latest.mcActualParticipates !== false
+          ? `${formatNumber(latest.mcActualBandwidth, 3)} Gbps`
+          : "--",
+        latest && latest.mcActualParticipates === false
+          ? "尾部窗口不参与"
+          : "实际服务",
+      )}
       ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
       ${overviewMetric(
         "QoS Base / Eff",
@@ -3848,8 +3887,11 @@ function renderControlOverview() {
       )}
     </div>`;
 
-  const pointSeries = (key) => rows.map(
-    (row) => ({ x: row.timeNs, y: Number(row[key] || 0) }),
+  const pointSeries = (key, { omitMissing = false } = {}) => rows.map(
+    (row) => ({
+      x: row.timeNs,
+      y: omitMissing && row[key] == null ? NaN : Number(row[key] || 0),
+    }),
   );
   const eventXs = overviewLayerEnabled("events")
     ? rows.filter((row) => row.events.length).map((row) => row.timeNs)
@@ -3895,7 +3937,7 @@ function renderControlOverview() {
   });
 
   const mcValues = rows.flatMap((row) => [
-    Number(row.mcActualBandwidth || 0),
+    ...(row.mcChartActualBandwidth == null ? [] : [Number(row.mcChartActualBandwidth)]),
     Number(row.mcControlBandwidth || 0),
     Number(row.mcFilteredBandwidth || 0),
     Number(row.mcRawBandwidth || 0),
@@ -3908,7 +3950,7 @@ function renderControlOverview() {
   ) * 1.15;
   const mcSeries = [
     ...(overviewLayerEnabled("actual")
-      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcActualBandwidth") }]
+      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcChartActualBandwidth", { omitMissing: true }) }]
       : []),
     ...(overviewLayerEnabled("raw")
       ? [{
