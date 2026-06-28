@@ -3685,9 +3685,9 @@ function renderControlEffect() {
   ]);
   drawLineChart($("#effectBwChart"), [
     { color: "#60717e", width: 1.2, marker: "none", points: points("mcChartActualBandwidth", { omitMissing: true }) },
-    { color: "#a66a00", width: 1.2, dash: [1, 4], marker: "points", points: points("mcRawBandwidth") },
-    { color: selectedColor, width: 2.8, points: points("mcControlBandwidth") },
-    { color: "#6d5fa8", width: 1.6, dash: [6, 3], marker: "none", points: points("mcFilteredBandwidth") },
+    { color: "#a66a00", width: 1.2, dash: [1, 4], step: true, marker: "points", points: points("mcRawBandwidth") },
+    { color: selectedColor, width: 2.8, step: true, points: points("mcControlBandwidth") },
+    { color: "#6d5fa8", width: 1.6, dash: [6, 3], step: true, marker: "none", points: points("mcFilteredBandwidth") },
     { color: "#2d7a4c", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmin) },
     { color: "#2d7a4c", width: 1.8, dash: [6, 4], step: true, marker: "none", points: rowSeries("mcEffectiveBmin") },
     { color: "#b43a3a", width: 1.4, dash: [2, 3], marker: "none", points: targetSeries(target.bmax) },
@@ -3960,15 +3960,16 @@ function renderControlOverview() {
         color: "#a66a00",
         width: 1.1,
         dash: [1, 4],
+        step: true,
         marker: "points",
         points: pointSeries("mcRawBandwidth"),
       }]
       : []),
     ...(overviewLayerEnabled("controlInput")
-      ? [{ color: selectedColor, width: 3, points: pointSeries("mcControlBandwidth") }]
+      ? [{ color: selectedColor, width: 3, step: true, points: pointSeries("mcControlBandwidth") }]
       : []),
     ...(overviewLayerEnabled("filtered")
-      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], points: pointSeries("mcFilteredBandwidth") }]
+      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], step: true, points: pointSeries("mcFilteredBandwidth") }]
       : []),
   ];
   renderLegend("#overviewMcLegend", [
