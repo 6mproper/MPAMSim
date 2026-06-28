@@ -94,6 +94,8 @@ class MemoryControllerConfig:
     qos_error_deadband_percent: float = 5.0
     qos_error_max_delta: int = 2
     qos_error_quantization: str = "threshold_lut"
+    qos_combiner_order: str = "adjust_after_request_combine"
+    qos_combine_op: str = "replace"
     qos_map_8_to_4_enable: bool = False
     cbusy_sample_ns: float = 1_000.0
     cbusy_feedback_latency_ns: float = 50.0
@@ -173,6 +175,7 @@ class WorkloadConfig:
     working_set_bytes: int
     address_base_bytes: int = 0
     target_p99_ns: Optional[float] = None
+    request_qos: int = 0
     injection_rate_mrps: Optional[float] = None
     injection_rate_gbps: Optional[float] = None
     injection_mode: str = "fixed"

@@ -619,6 +619,26 @@ PARAMETER_METADATA: Dict[str, Dict[str, str]] = {
         "fixed_step表示继续使用固定BMIN升档和softlimit降档。",
         "当前模型已实现；不新增软件闭环策略",
     ),
+    "mc_qos_combiner_order": _field(
+        "MC QoS组合路径",
+        "选择request_qos、MPAM配置QoS和MPAM adjust QoS的组合顺序。",
+        "enum",
+        "MC共享buffer候选评分。",
+        "路径1先对MPAM配置QoS施加adjust再与请求QoS组合；路径2先组合request/config，再施加adjust。",
+        "adjust_before_request_combine或adjust_after_request_combine。",
+        "路径2更适合观察MC闭环adjust作为最后硬件控制点的效果。",
+        "当前模型已实现；不新增NoC QoS",
+    ),
+    "mc_qos_combine_op": _field(
+        "MC QoS组合方式",
+        "选择两路QoS输入合并为一个整数QoS的方式。",
+        "enum",
+        "MC共享buffer候选评分。",
+        "replace表示MPAM值替代request；max保留更高优先级；average做整数平均。",
+        "replace、max或average。",
+        "max可用于观察高request_qos覆盖soft demote的风险。",
+        "当前模型已实现；average为探索性硬件抽象",
+    ),
     "mc_bmin_qos_promote": _field(
         "固定BMIN QoS升档",
         "fixed_step模式下，UNDER_BMIN请求加入effective QoS的固定档数。",
@@ -867,6 +887,15 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
         "改变PMG只改变当前监控分组，不独立改变资源控制。",
         "整数0到15；PMG作用域属于PARTID。",
         "PARTID 3/PMG 1和PARTID 3/PMG 2共享控制但分开统计。",
+    ),
+    "request_qos": _field(
+        "请求携带QoS",
+        "该线程生成的每个请求自带的3-bit QoS，表示请求源或事务属性给出的原始优先级。",
+        "0..7",
+        "Transaction.qos_class，进入MC共享buffer仲裁前随请求携带。",
+        "只作为MC QoS组合路径的输入；不直接读取服务结果，也不影响NoC上下Ring。",
+        "整数0到7。",
+        "7表示请求源声明最高优先级；是否覆盖MPAM控制取决于MC QoS组合方式。",
     ),
     "workload_type": _field(
         "激励类型",
@@ -1258,6 +1287,15 @@ OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "fixed_step": "固定升降档：UNDER_BMIN使用固定升档，soft OVER_BMAX使用固定降档，保持当前低PPA调度行为。",
         "error_weighted": "MC error-weighted QoS adjustment：用锁存control bandwidth与目标的相对误差乘以weight，再量化为整数QoS delta。",
     },
+    "mc_qos_combiner_order": {
+        "adjust_before_request_combine": "路径1：先把MPAM配置QoS加上adjust并钳位，再与request_qos组合；高request_qos可能覆盖降档。",
+        "adjust_after_request_combine": "路径2：先组合request_qos和MPAM配置QoS，再施加adjust；MC控制动作处在最后一级。",
+    },
+    "mc_qos_combine_op": {
+        "replace": "使用左侧MPAM值替代request_qos；两条路径在R=7,C=4,A=-3时都得到1。",
+        "max": "取两路QoS最大值；适合保留请求源高优先级，但可能削弱soft BMAX降档。",
+        "average": "取两路QoS整数平均；适合观察折中效果，但会引入离散舍入。",
+    },
     "mc_qos_error_quantization": {
         "threshold_lut": "用比较器/LUT阈值把weighted error映射为整数档，适合模拟硬件离散化实现。",
         "round": "对weighted error做四舍五入，目标附近比ceil更平缓。",
@@ -1404,15 +1442,15 @@ CONTROL_ALGORITHMS: Dict[str, Dict[str, str]] = {
     "mc-qos": {
         "title": "MC共享Buffer QoS仲裁",
         "summary": "共享buffer内所有valid、ready entry参加比较；最高final QoS同档从上次grant slot之后旋转扫描。",
-        "inputs": "entry valid/line ordering、hard状态、base QoS、BMIN/soft状态、QoS调整模式、可选PARTID service deficit和8->4映射开关。",
+        "inputs": "entry valid/line ordering、hard状态、request_qos、MPAM配置QoS、BMIN/soft状态、QoS调整模式、combiner路径/方式、可选PARTID service deficit和8->4映射开关。",
         "state": "固定buffer slots、enqueue sequence、last-grant slot、每PARTID饱和deficit计数器和grant_seen。",
         "cadence": "每次MC序列化资源可接收新请求时重新计算全部ready候选；deficit每配置量子最多更新一次。",
-        "decision": "raw=clamp(base+bmin_delta-soft_delta+deficit,0,7)；fixed_step用固定delta，error_weighted用control bandwidth误差计算delta；映射关闭时final=raw；映射开启时0,1,2,3,4,5,6,7映射为0,1,1,1,2,2,2,3；选择最高final档，从last-grant+1旋转扫描第一个。",
+        "decision": "A=bmin_delta-soft_delta+deficit；路径1 raw=combine(clamp(config_qos+A),request_qos)，路径2 raw=clamp(combine(config_qos,request_qos)+A)；combine为replace/max/average；映射关闭时final=raw，开启时01234567映射为01112223。",
         "action": "移除被选slot并开始服务；同line含write的较新entry必须等待，read/read允许重排。",
         "recovery": "无ready或hard时deficit清零；有grant减1，无grant加1并饱和；默认none完全关闭。",
         "priority": "ordering和hard先形成ready mask；QoS只影响MC，不赋予NoC上下Ring优先级。",
         "forward_progress": "旋转slot保证同档确定性前进；可选deficit降低长期低QoS饥饿风险。",
-        "evidence": "显示buffer、candidate、grant、base/raw/final effective QoS、映射事件、promote/demote、deficit和饱和。",
+        "evidence": "显示buffer、candidate、grant、request/config/adjust/raw/final effective QoS、combiner路径/方式、映射事件、promote/demote、deficit和饱和。",
         "boundary": "enqueue time只用于排队延迟观测，不参与默认仲裁。",
     },
     "mc-cbusy": {
@@ -1490,6 +1528,8 @@ CONTROL_FIELD_ALGORITHMS: Dict[str, Dict[str, str]] = {
         "mc_qos_error_deadband_percent": "mc-qos",
         "mc_qos_error_max_delta": "mc-qos",
         "mc_qos_error_quantization": "mc-qos",
+        "mc_qos_combiner_order": "mc-qos",
+        "mc_qos_combine_op": "mc-qos",
         "mc_qos_map_8_to_4_enable": "mc-qos",
         "mc_interleave_mode": "address-interleave",
         "mc_interleave_granularity_bytes": "address-interleave",
@@ -1526,6 +1566,7 @@ CONTROL_FIELD_ALGORITHMS: Dict[str, Dict[str, str]] = {
         "cbusy_l3_ostd": "mc-cbusy",
     },
     "stimulus": {
+        "request_qos": "mc-qos",
     },
 }
 
@@ -1627,6 +1668,11 @@ def audit_config_metadata(
             "per_partid_service_deficit",
         },
         "mc_qos_adjust_mode": {"fixed_step", "error_weighted"},
+        "mc_qos_combiner_order": {
+            "adjust_before_request_combine",
+            "adjust_after_request_combine",
+        },
+        "mc_qos_combine_op": {"replace", "max", "average"},
         "mc_qos_error_quantization": {
             "round",
             "ceil",

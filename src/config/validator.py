@@ -186,6 +186,18 @@ def validate_config(config: ProjectConfig) -> None:
                 f"Memory controller {mc.id} QoS error quantization must be "
                 "round, ceil, or threshold_lut"
             )
+        if mc.qos_combiner_order not in {
+            "adjust_before_request_combine",
+            "adjust_after_request_combine",
+        }:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS combiner order is invalid"
+            )
+        if mc.qos_combine_op not in {"replace", "max", "average"}:
+            raise ConfigError(
+                f"Memory controller {mc.id} QoS combine op must be "
+                "replace, max, or average"
+            )
         if mc.cbusy_sample_ns <= 0:
             raise ConfigError(
                 f"Memory controller {mc.id} CBusy sample must be positive"
@@ -326,6 +338,10 @@ def validate_config(config: ProjectConfig) -> None:
             raise ConfigError(f"Workload {workload.name} read_ratio must be in [0, 1]")
         if (workload.injection_rate_mrps is None) == (workload.injection_rate_gbps is None):
             raise ConfigError(f"Workload {workload.name} must define exactly one injection rate")
+        if not 0 <= workload.request_qos <= 7:
+            raise ConfigError(
+                f"Workload {workload.name} request_qos must be in [0, 7]"
+            )
         if workload.rate_scope not in {"aggregate", "per_requester"}:
             raise ConfigError(
                 f"Workload {workload.name} injection scope must be aggregate or per_requester"

@@ -114,7 +114,13 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
         config.memory_controllers[0].qos_error_quantization
         == "threshold_lut"
     )
+    assert (
+        config.memory_controllers[0].qos_combiner_order
+        == "adjust_after_request_combine"
+    )
+    assert config.memory_controllers[0].qos_combine_op == "replace"
     assert config.memory_controllers[0].qos_map_8_to_4_enable is False
+    assert config.workloads[0].request_qos == 0
     assert config.address_interleave.mode == "linear"
     assert config.address_interleave.granularity_bytes == 256
     assert config.address_interleave.xor_shift == 12
@@ -134,6 +140,37 @@ def test_web_parameters_build_valid_multicore_config(tmp_path) -> None:
     assert config.ostd.core_max_outstanding == 48
     assert config.ostd.core_policy == "shared"
     assert config.ostd.thread_reserve == 8
+
+
+def test_web_parameters_preserve_mc_qos_combiner_fields(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["mc_qos_combiner_order"] = "adjust_before_request_combine"
+    parameters["mc_qos_combine_op"] = "average"
+    parameters["stimulus_configs"][0]["request_qos"] = 7
+
+    raw = build_config(parameters, str(tmp_path / "run"))
+    config_path = tmp_path / "web_qos_combiner.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+
+    assert (
+        raw["soc"]["memory"]["controllers"][0]["qos_combiner_order"]
+        == "adjust_before_request_combine"
+    )
+    assert (
+        raw["soc"]["memory"]["controllers"][0]["qos_combine_op"]
+        == "average"
+    )
+    assert raw["workloads"][0]["request_qos"] == 7
+    assert (
+        config.memory_controllers[0].qos_combiner_order
+        == "adjust_before_request_combine"
+    )
+    assert config.memory_controllers[0].qos_combine_op == "average"
+    assert config.workloads[0].request_qos == 7
 
 
 def test_msc_rows_expose_partial_capture_interval(tmp_path) -> None:

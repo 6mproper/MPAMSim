@@ -82,7 +82,13 @@ class TransactionTiming:
 
 @dataclass
 class McArbitrationState:
+    request_qos: int = 0
+    mpam_config_qos: int = 0
+    mpam_adjust_qos: int = 0
+    qos_combiner_order: str = "adjust_after_request_combine"
+    qos_combine_op: str = "replace"
     base_qos: int = 0
+    unclamped_raw_qos: int = 0
     raw_effective_qos: int = 0
     effective_qos: int = 0
     qos_mapping_enabled: bool = False

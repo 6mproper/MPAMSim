@@ -69,6 +69,7 @@ const configHeaderFields = {
     En: "enabled",
     PARTID: "partid",
     PMG: "pmg",
+    ReqQoS: "request_qos",
     Type: "workload_type",
     Addr: "address_pattern",
     Dep: "dependency_mode",
@@ -553,6 +554,7 @@ function defaultStimulusRow(slot) {
     requester: requesterForSlot(slot),
     partid: slot % 16,
     pmg: slot % 16,
+    request_qos: 0,
     workload_type: workloadType,
     ...typeDefaults,
     source_queue_depth: typeDefaults.issue_selection === "eligible_scan" ? 4 : 1,
@@ -592,6 +594,7 @@ function normalizeStimulusRows(rows) {
     row.requester = requesterForSlot(slot);
     row.partid = moduloPartid(row.partid, slot);
     row.pmg = moduloPartid(row.pmg, slot);
+    row.request_qos = Math.max(0, Math.min(7, Number(row.request_qos || 0)));
     return row;
   });
 }
@@ -711,6 +714,7 @@ function renderStimulusConfig(rows) {
       <td><input data-stimulus-field="enabled" ${configHelpAttributes("stimulus", "enabled")} type="checkbox" ${row.enabled ? "checked" : ""}></td>
       <td><select data-stimulus-field="partid" ${configHelpAttributes("stimulus", "partid", row.partid)}>${selectOptions(partidOptions, row.partid)}</select></td>
       <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${escapeHtml(row.pmg)}"></td>
+      <td><input data-stimulus-field="request_qos" ${configHelpAttributes("stimulus", "request_qos")} type="number" min="0" max="7" step="1" value="${escapeHtml(row.request_qos || 0)}"></td>
       <td><select data-stimulus-field="workload_type" ${configHelpAttributes("stimulus", "workload_type", row.workload_type)}>${selectOptions(typeOptions, row.workload_type)}</select></td>
       <td><select data-stimulus-field="address_pattern" ${configHelpAttributes("stimulus", "address_pattern", row.address_pattern)}>${selectOptions(addressOptions, row.address_pattern || "sequential")}</select></td>
       <td><select data-stimulus-field="dependency_mode" ${configHelpAttributes("stimulus", "dependency_mode", row.dependency_mode)}>${selectOptions(dependencyOptions, row.dependency_mode || "independent")}</select></td>
@@ -737,6 +741,7 @@ function collectStimulusConfigs() {
       requester: requesterForSlot(slot),
       partid: Number(value("partid").value),
       pmg: Number(value("pmg").value),
+      request_qos: Number(value("request_qos").value),
       workload_type: value("workload_type").value,
       address_pattern: value("address_pattern").value,
       dependency_mode: value("dependency_mode").value,
@@ -2485,7 +2490,8 @@ function renderControlVerification() {
   const qosModeText = qosMode === "error_weighted"
     ? `error-weighted BMIN×${formatNumber(algorithm.mc_bmin_error_weight, 1)} / BMAX×${formatNumber(algorithm.mc_bmax_error_weight, 1)} deadband ${formatNumber(algorithm.mc_qos_error_deadband_percent, 1)}% max ${formatNumber(algorithm.mc_qos_error_max_delta, 0)} ${escapeHtml(algorithm.mc_qos_error_quantization || "threshold_lut")}`
     : `fixed BMIN +${formatNumber(algorithm.mc_bmin_qos_promote, 0)} / soft -${formatNumber(algorithm.mc_softlimit_qos_demote, 0)}`;
-  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · ${qosModeText} · QoS map ${algorithm.mc_qos_map_8_to_4_enable ? "8->4 on" : "8-level"}`;
+  const combinerText = `${escapeHtml(algorithm.mc_qos_combiner_order || "adjust_after_request_combine")} / ${escapeHtml(algorithm.mc_qos_combine_op || "replace")}`;
+  const algorithmText = `MC ${formatNumber(algorithm.mc_clock_mhz, 0)} MHz · ${formatNumber(algorithm.mc_monitor_period_cycles, 0)}拍 · filter ${formatNumber(algorithm.mc_history_weight, 2)}/${formatNumber(algorithm.mc_current_weight, 2)} · ${escapeHtml(algorithm.mc_aging_mode || "none")} +${formatNumber(algorithm.mc_qos_aging_max_steps, 0)}档 · ${qosModeText} · combiner ${combinerText} · QoS map ${algorithm.mc_qos_map_8_to_4_enable ? "8->4 on" : "8-level"}`;
   $("#verificationProgress").textContent = state.verification
     ? `验证完成：${state.verification.passed}/${state.verification.total} 通过，seed ${state.verification.seed} · ${algorithmText}`
     : completed.length
@@ -2705,6 +2711,14 @@ function configurationDiagnostics() {
     && Number(parameters.mc_bmax_error_weight) === 0
   ) {
     add("warning", "存在活动softlimit BMAX，但BMAX Error Weight为0；BMAX误差不会产生降档。");
+  }
+  if (
+    (parameters.mc_qos_combiner_order || "adjust_after_request_combine")
+      === "adjust_before_request_combine"
+    && (parameters.mc_qos_combine_op || "replace") === "max"
+    && stimuli.some((row) => Number(row.request_qos || 0) > 0)
+  ) {
+    add("warning", "QoS路径为先Adjust再与Request取最大；高request_qos可能覆盖MC soft降档，建议用路径2对比。");
   }
 
   partids.forEach((row) => {

@@ -126,6 +126,7 @@ def _load_workload(item: Dict[str, Any], simulation_time_ns: int) -> WorkloadCon
             item.get("address_base_bytes", address.get("base_bytes", 0))
         ),
         target_p99_ns=float(item["target_p99_ns"]) if item.get("target_p99_ns") is not None else None,
+        request_qos=_qos_value(item, "request_qos", "qos_class", 0),
         injection_rate_mrps=_optional_float(item.get("injection_rate_mrps", injection.get("rate_mrps"))),
         injection_rate_gbps=_optional_float(item.get("injection_rate_gbps", injection.get("rate_gbps"))),
         injection_mode=arrival_mode,
@@ -326,6 +327,15 @@ def load_config(path: Union[str, Path], validate: bool = True) -> ProjectConfig:
             ),
             qos_error_quantization=str(
                 item.get("qos_error_quantization", "threshold_lut")
+            ),
+            qos_combiner_order=str(
+                item.get(
+                    "qos_combiner_order",
+                    "adjust_after_request_combine",
+                )
+            ),
+            qos_combine_op=str(
+                item.get("qos_combine_op", "replace")
             ),
             qos_map_8_to_4_enable=bool(
                 item.get("qos_map_8_to_4_enable", False)

@@ -24,6 +24,12 @@ class BufferEntry:
 class ArbitrationScore:
     effective_qos: int
     raw_effective_qos: int
+    unclamped_raw_qos: int
+    request_qos: int
+    mpam_config_qos: int
+    mpam_adjust_qos: int
+    qos_combiner_order: str
+    qos_combine_op: str
     base_qos: int
     bmin_delta: int
     softlimit_delta: int
@@ -45,6 +51,9 @@ def _mc_counters() -> Dict[str, float]:
         "softlimit_bytes": 0,
         "softlimit_penalty_events": 0,
         "hardlimit_block_events": 0,
+        "request_qos_sum": 0,
+        "mpam_config_qos_sum": 0,
+        "mpam_adjust_qos_sum": 0,
         "raw_effective_qos_sum": 0,
         "raw_effective_qos_min": 7,
         "raw_effective_qos_max": 0,
@@ -364,6 +373,23 @@ class MemoryControllerMSC(Component):
             return raw_effective_qos
         return self.QOS_8_TO_4_MAP[raw_effective_qos]
 
+    @staticmethod
+    def _clamp_qos(value: int) -> int:
+        return max(0, min(7, int(value)))
+
+    def _combine_qos(self, left: int, right: int) -> int:
+        left = self._clamp_qos(left)
+        right = self._clamp_qos(right)
+        if self.config.qos_combine_op == "replace":
+            return left
+        if self.config.qos_combine_op == "max":
+            return max(left, right)
+        if self.config.qos_combine_op == "average":
+            return (left + right) // 2
+        raise ValueError(
+            f"Unsupported QoS combine op: {self.config.qos_combine_op}"
+        )
+
     def _qos_error_delta(self, error_ratio: float, weight: float) -> int:
         if self.config.qos_error_max_delta <= 0 or weight <= 0:
             return 0
@@ -429,7 +455,8 @@ class MemoryControllerMSC(Component):
     ) -> ArbitrationScore:
         request = entry.request
         setting = self.settings.lookup(request.partid)
-        base_qos = (
+        request_qos = self._clamp_qos(request.qos_class)
+        mpam_config_qos = (
             setting.mc_qos
             if self.enforce_controls and setting.mc_qos_enable
             else 0
@@ -460,18 +487,33 @@ class MemoryControllerMSC(Component):
                 setting.bw_max_gbps,
             )
         deficit_steps = self._deficit_qos_steps(request.partid)
-        unclamped = (
-            base_qos
-            + bmin_delta
-            - soft_delta
-            + deficit_steps
-        )
-        raw_effective_qos = max(0, min(7, unclamped))
+        mpam_adjust_qos = bmin_delta - soft_delta + deficit_steps
+        if (
+            self.config.qos_combiner_order
+            == "adjust_before_request_combine"
+        ):
+            policy_qos = self._clamp_qos(
+                mpam_config_qos + mpam_adjust_qos
+            )
+            unclamped = self._combine_qos(policy_qos, request_qos)
+        else:
+            base_combined = self._combine_qos(
+                mpam_config_qos,
+                request_qos,
+            )
+            unclamped = base_combined + mpam_adjust_qos
+        raw_effective_qos = self._clamp_qos(unclamped)
         effective_qos = self._map_effective_qos(raw_effective_qos)
         return ArbitrationScore(
             effective_qos=effective_qos,
             raw_effective_qos=raw_effective_qos,
-            base_qos=base_qos,
+            unclamped_raw_qos=unclamped,
+            request_qos=request_qos,
+            mpam_config_qos=mpam_config_qos,
+            mpam_adjust_qos=mpam_adjust_qos,
+            qos_combiner_order=self.config.qos_combiner_order,
+            qos_combine_op=self.config.qos_combine_op,
+            base_qos=mpam_config_qos,
             bmin_delta=bmin_delta,
             softlimit_delta=soft_delta,
             soft_over=soft_over,
@@ -519,7 +561,17 @@ class MemoryControllerMSC(Component):
             selected.request.partid
         )
         request = selected.request
+        request.mc_arbitration.request_qos = score.request_qos
+        request.mc_arbitration.mpam_config_qos = score.mpam_config_qos
+        request.mc_arbitration.mpam_adjust_qos = score.mpam_adjust_qos
+        request.mc_arbitration.qos_combiner_order = (
+            score.qos_combiner_order
+        )
+        request.mc_arbitration.qos_combine_op = score.qos_combine_op
         request.mc_arbitration.base_qos = score.base_qos
+        request.mc_arbitration.unclamped_raw_qos = (
+            score.unclamped_raw_qos
+        )
         request.mc_arbitration.raw_effective_qos = (
             score.raw_effective_qos
         )
@@ -590,6 +642,15 @@ class MemoryControllerMSC(Component):
                 target["softlimit_bytes"] += request.size_bytes
             if request.mc_arbitration.soft_demoted:
                 target["softlimit_penalty_events"] += 1
+            target["request_qos_sum"] += (
+                request.mc_arbitration.request_qos
+            )
+            target["mpam_config_qos_sum"] += (
+                request.mc_arbitration.mpam_config_qos
+            )
+            target["mpam_adjust_qos_sum"] += (
+                request.mc_arbitration.mpam_adjust_qos
+            )
             raw_effective_qos = (
                 request.mc_arbitration.raw_effective_qos
             )
@@ -641,12 +702,7 @@ class MemoryControllerMSC(Component):
                 request.mc_arbitration.qos_mapping_enabled
                 and raw_effective_qos != effective_qos
             )
-            unclamped = (
-                request.mc_arbitration.base_qos
-                + request.mc_arbitration.bmin_qos_delta
-                - request.mc_arbitration.softlimit_qos_delta
-                + request.mc_arbitration.aging_steps
-            )
+            unclamped = request.mc_arbitration.unclamped_raw_qos
             target["qos_saturation_events"] += int(
                 unclamped < 0 or unclamped > 7
             )
@@ -1149,6 +1205,23 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
+                "request_qos_avg": (
+                    values["request_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "mpam_config_qos_avg": (
+                    values["mpam_config_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "mpam_adjust_qos_avg": (
+                    values["mpam_adjust_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "qos_combiner_order": self.config.qos_combiner_order,
+                "qos_combine_op": self.config.qos_combine_op,
                 "raw_effective_qos_avg": raw_effective_qos_avg,
                 "raw_effective_qos_min": (
                     values["raw_effective_qos_min"] if requests else 0
@@ -1302,6 +1375,23 @@ class MemoryControllerMSC(Component):
                     if self.enforce_controls and setting.mc_qos_enable
                     else 0
                 ),
+                "request_qos_avg": (
+                    values["request_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "mpam_config_qos_avg": (
+                    values["mpam_config_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "mpam_adjust_qos_avg": (
+                    values["mpam_adjust_qos_sum"] / requests
+                    if requests
+                    else 0.0
+                ),
+                "qos_combiner_order": self.config.qos_combiner_order,
+                "qos_combine_op": self.config.qos_combine_op,
                 "raw_effective_qos_avg": (
                     values["raw_effective_qos_sum"] / requests
                     if requests
@@ -1401,6 +1491,8 @@ class MemoryControllerMSC(Component):
             "qos_error_quantization": (
                 self.config.qos_error_quantization
             ),
+            "qos_combiner_order": self.config.qos_combiner_order,
+            "qos_combine_op": self.config.qos_combine_op,
             "qos_map_8_to_4_enable": (
                 self.config.qos_map_8_to_4_enable
             ),

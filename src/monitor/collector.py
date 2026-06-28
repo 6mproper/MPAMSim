@@ -114,11 +114,30 @@ class MetricsCollector:
                         "completion_condition": (
                             request.completion_condition.value
                         ),
+                        "request_qos": request.qos_class,
                         "cache_id": request.cache_id,
                         "memory_controller_id": request.memory_controller_id,
                         "cache_hit": request.cache_hit,
+                        "mc_request_qos": (
+                            request.mc_arbitration.request_qos
+                        ),
+                        "mc_mpam_config_qos": (
+                            request.mc_arbitration.mpam_config_qos
+                        ),
+                        "mc_mpam_adjust_qos": (
+                            request.mc_arbitration.mpam_adjust_qos
+                        ),
+                        "mc_qos_combiner_order": (
+                            request.mc_arbitration.qos_combiner_order
+                        ),
+                        "mc_qos_combine_op": (
+                            request.mc_arbitration.qos_combine_op
+                        ),
                         "mc_base_qos": (
                             request.mc_arbitration.base_qos
+                        ),
+                        "mc_raw_effective_qos": (
+                            request.mc_arbitration.raw_effective_qos
                         ),
                         "mc_effective_qos": (
                             request.mc_arbitration.effective_qos

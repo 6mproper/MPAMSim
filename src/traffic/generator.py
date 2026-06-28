@@ -294,6 +294,7 @@ class WorkloadGenerator:
             thread_id=int(self.requester.config.thread or 0),
             stimulus_chain_id=pending.chain_id,
             priority=self.default_priority,
+            qos_class=self.workload.request_qos,
         )
         request.memory_controller_id = pending.memory_controller_id
         self.requester.on_issue(

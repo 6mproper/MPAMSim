@@ -291,6 +291,80 @@ def test_error_weighted_deadband_can_suppress_soft_delta() -> None:
     assert over.mc_arbitration.raw_effective_qos == 4
 
 
+def _selected_over_qos(
+    *,
+    order: str,
+    op: str,
+) -> Transaction:
+    _, mc, _ = _mc(
+        [_control(0, qos=4, bmax=100), _control(1, qos=0)],
+        qos_combiner_order=order,
+        qos_combine_op=op,
+        qos_adjust_mode="fixed_step",
+        softlimit_qos_demote=3,
+    )
+    mc._over_bmax[0] = True
+    over = _request(1, 0, 0x0000)
+    over.qos_class = 7
+    other = _request(2, 1, 0x1000)
+    other.qos_class = 0
+    mc.receive(over)
+    mc.receive(other)
+
+    selected = mc._select_request()
+
+    assert selected is not None
+    assert selected.request is over
+    assert over.mc_arbitration.request_qos == 7
+    assert over.mc_arbitration.mpam_config_qos == 4
+    assert over.mc_arbitration.mpam_adjust_qos == -3
+    assert over.mc_arbitration.qos_combiner_order == order
+    assert over.mc_arbitration.qos_combine_op == op
+    return over
+
+
+def test_mc_qos_combiner_replace_is_equivalent_across_orders() -> None:
+    path1 = _selected_over_qos(
+        order="adjust_before_request_combine",
+        op="replace",
+    )
+    path2 = _selected_over_qos(
+        order="adjust_after_request_combine",
+        op="replace",
+    )
+
+    assert path1.mc_arbitration.raw_effective_qos == 1
+    assert path2.mc_arbitration.raw_effective_qos == 1
+
+
+def test_mc_qos_combiner_max_exposes_request_override_risk() -> None:
+    path1 = _selected_over_qos(
+        order="adjust_before_request_combine",
+        op="max",
+    )
+    path2 = _selected_over_qos(
+        order="adjust_after_request_combine",
+        op="max",
+    )
+
+    assert path1.mc_arbitration.raw_effective_qos == 7
+    assert path2.mc_arbitration.raw_effective_qos == 4
+
+
+def test_mc_qos_combiner_average_keeps_path2_adjust_last() -> None:
+    path1 = _selected_over_qos(
+        order="adjust_before_request_combine",
+        op="average",
+    )
+    path2 = _selected_over_qos(
+        order="adjust_after_request_combine",
+        op="average",
+    )
+
+    assert path1.mc_arbitration.raw_effective_qos == 4
+    assert path2.mc_arbitration.raw_effective_qos == 2
+
+
 def test_hard_bmax_uses_published_control_bandwidth_by_period() -> None:
     kernel, mc, _ = _mc(
         [_control(0, bmax=16, mode="hardlimit")]

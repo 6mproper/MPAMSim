@@ -150,6 +150,7 @@
                   <th>En</th>
                   <th>PARTID</th>
                   <th>PMG</th>
+                  <th>ReqQoS</th>
                   <th>Type</th>
                   <th>Addr</th>
                   <th>Dep</th>
@@ -320,6 +321,8 @@
             <label data-algorithm="mc-qos">Deficit 计数位宽<input data-param="mc_aging_counter_bits" type="number" min="1" max="16" step="1"></label>
             <label data-algorithm="mc-qos">Deficit 最大升档<input data-param="mc_qos_aging_max_steps" type="number" min="0" max="7" step="1"></label>
             <label data-algorithm="mc-qos">QoS调整模式<select data-param="mc_qos_adjust_mode"><option value="fixed_step">固定升降档位</option><option value="error_weighted">MC error-weighted QoS adjustment</option></select></label>
+            <label data-algorithm="mc-qos">QoS组合路径<select data-param="mc_qos_combiner_order"><option value="adjust_after_request_combine">先Request/Config组合再Adjust</option><option value="adjust_before_request_combine">先Adjust再和Request组合</option></select></label>
+            <label data-algorithm="mc-qos">QoS组合方式<select data-param="mc_qos_combine_op"><option value="replace">MPAM替代Request</option><option value="max">取最大</option><option value="average">取平均</option></select></label>
             <label data-algorithm="mc-qos">固定BMIN升档<input data-param="mc_bmin_qos_promote" type="number" min="0" max="7" step="1"></label>
             <label data-algorithm="mc-qos">固定Softlimit降档<input data-param="mc_softlimit_qos_demote" type="number" min="0" max="7" step="1"></label>
             <label data-algorithm="mc-qos">BMIN Error Weight<input data-param="mc_bmin_error_weight" type="number" min="0" max="100" step="0.1"></label>

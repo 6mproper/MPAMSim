@@ -239,6 +239,7 @@ def _default_stimulus_configs(
             "requester": _thread_requester(slot, threads_per_core),
             "partid": slot % 16,
             "pmg": slot % 16,
+            "request_qos": 0,
             "workload_type": workload_type,
             **type_defaults,
             "source_queue_depth": (
@@ -869,6 +870,8 @@ def default_parameters() -> Dict[str, object]:
         "mc_qos_error_deadband_percent": 5.0,
         "mc_qos_error_max_delta": 2,
         "mc_qos_error_quantization": "threshold_lut",
+        "mc_qos_combiner_order": "adjust_after_request_combine",
+        "mc_qos_combine_op": "replace",
         "mc_qos_map_8_to_4_enable": False,
         "max_outstanding": 32,
         "core_max_outstanding": 48,
@@ -940,6 +943,7 @@ def _apply_stimulus(
     read_ratio: float = 1.0,
     target_p99_ns: float = 0.0,
     address_base_mb: int = 0,
+    request_qos: int = 0,
 ) -> None:
     row = parameters["stimulus_configs"][slot]
     type_defaults = _stimulus_defaults_for_type(workload_type)
@@ -948,6 +952,7 @@ def _apply_stimulus(
             "enabled": True,
             "partid": partid,
             "pmg": partid,
+            "request_qos": request_qos,
             "workload_type": workload_type,
             **type_defaults,
             "source_queue_depth": (
@@ -1457,6 +1462,9 @@ def _parse_stimulus_configs(
         try:
             rate_value = float(raw.get("rate_value", 0.0))
             request_size = int(raw.get("request_size_bytes", 64))
+            request_qos = int(
+                raw.get("request_qos", raw.get("qos_class", 0))
+            )
             read_ratio = float(raw.get("read_ratio", 1.0))
             working_set_mb = int(raw.get("working_set_mb", 64))
             address_base_mb = int(raw.get("address_base_mb", 0))
@@ -1492,6 +1500,10 @@ def _parse_stimulus_configs(
         if not 16 <= request_size <= 4096:
             raise ParameterError(
                 f"Stimulus {slot}: request size must be 16..4096 bytes"
+            )
+        if not 0 <= request_qos <= 7:
+            raise ParameterError(
+                f"Stimulus {slot}: request QoS must be 0..7"
             )
         if not 0.0 <= read_ratio <= 1.0:
             raise ParameterError(
@@ -1558,6 +1570,7 @@ def _parse_stimulus_configs(
                 "requester": _thread_requester(slot, threads_per_core),
                 "partid": partid,
                 "pmg": pmg,
+                "request_qos": request_qos,
                 "workload_type": workload_type,
                 "address_pattern": address_pattern,
                 "operation_mix": operation_mix,
@@ -1602,6 +1615,7 @@ def _build_workloads(
             "requesters": [row["requester"]],
             "partid": row["partid"],
             "pmg": row["pmg"],
+            "request_qos": row["request_qos"],
             "request_size_bytes": row["request_size_bytes"],
             "injection_scope": "per_requester",
             "read_ratio": row["read_ratio"],
@@ -1919,6 +1933,21 @@ def build_config(
         "threshold_lut",
         ["round", "ceil", "threshold_lut"],
     )
+    mc_qos_combiner_order = _choice(
+        values,
+        "mc_qos_combiner_order",
+        "adjust_after_request_combine",
+        [
+            "adjust_before_request_combine",
+            "adjust_after_request_combine",
+        ],
+    )
+    mc_qos_combine_op = _choice(
+        values,
+        "mc_qos_combine_op",
+        "replace",
+        ["replace", "max", "average"],
+    )
     mc_qos_map_8_to_4_enable = _boolean(
         values,
         "mc_qos_map_8_to_4_enable",
@@ -2153,6 +2182,8 @@ def build_config(
             "qos_error_deadband_percent": mc_qos_error_deadband_percent,
             "qos_error_max_delta": mc_qos_error_max_delta,
             "qos_error_quantization": mc_qos_error_quantization,
+            "qos_combiner_order": mc_qos_combiner_order,
+            "qos_combine_op": mc_qos_combine_op,
             "qos_map_8_to_4_enable": mc_qos_map_8_to_4_enable,
             "cbusy_sample_ns": cbusy_sample_ns,
             "cbusy_feedback_latency_ns": cbusy_feedback_latency_ns,
