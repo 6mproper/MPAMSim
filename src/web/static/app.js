@@ -369,6 +369,51 @@ function configFilePayload(parameters) {
   };
 }
 
+function defaultConfigFileName(payload) {
+  const timestamp = payload.exported_at.replace(/[:.]/g, "-");
+  return `mpamsim-config-${timestamp}.json`;
+}
+
+function normalizeConfigFileName(fileName) {
+  const trimmed = String(fileName || "").trim();
+  if (!trimmed) return "";
+  return trimmed.toLowerCase().endsWith(".json") ? trimmed : `${trimmed}.json`;
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function promptConfigExportFileName(defaultName) {
+  const input = window.prompt("输入导出配置文件名", defaultName);
+  if (input === null) return "";
+  return normalizeConfigFileName(input);
+}
+
+async function saveConfigBlobWithPicker(blob, suggestedName) {
+  const handle = await window.showSaveFilePicker({
+    suggestedName,
+    types: [
+      {
+        description: "MPAMSim配置JSON",
+        accept: { "application/json": [".json"] },
+      },
+    ],
+    excludeAcceptAllOption: false,
+  });
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return handle.name || suggestedName;
+}
+
 function parseConfigFilePayload(text) {
   let payload;
   try {
@@ -393,24 +438,39 @@ function parseConfigFilePayload(text) {
   return mergedConfigParameters(parameters);
 }
 
-function exportCurrentConfig() {
+async function exportCurrentConfig() {
   const parameters = collectParameters();
   const payload = configFilePayload(parameters);
   const blob = new Blob(
     [JSON.stringify(payload, null, 2)],
     { type: "application/json" },
   );
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  const timestamp = payload.exported_at.replace(/[:.]/g, "-");
-  anchor.href = url;
-  anchor.download = `mpamsim-config-${timestamp}.json`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-  setStatus("ready", "当前配置已导出为JSON文件", 0);
-  showToast("当前配置已导出");
+  const defaultName = defaultConfigFileName(payload);
+
+  if (typeof window.showSaveFilePicker === "function") {
+    try {
+      const savedName = await saveConfigBlobWithPicker(blob, defaultName);
+      setStatus("ready", `当前配置已保存：${savedName}`, 0);
+      showToast(`当前配置已保存：${savedName}`);
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        setStatus("ready", "已取消导出配置", 0);
+        return;
+      }
+      console.warn("Failed to save config with file picker; falling back to download.", error);
+      showToast("系统另存为不可用，改用浏览器下载");
+    }
+  }
+
+  const fileName = promptConfigExportFileName(defaultName);
+  if (!fileName) {
+    setStatus("ready", "已取消导出配置", 0);
+    return;
+  }
+  downloadBlob(blob, fileName);
+  setStatus("ready", `当前配置已导出：${fileName}`, 0);
+  showToast(`当前配置已导出：${fileName}`);
 }
 
 async function importConfigFile(file) {

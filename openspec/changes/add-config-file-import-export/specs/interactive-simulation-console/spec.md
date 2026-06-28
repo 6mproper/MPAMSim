@@ -12,6 +12,15 @@
 - **THEN** 控制台 MUST 生成带`schema`、`version`、`exported_at`和`parameters`字段的JSON文件
 - **AND** `parameters` MUST 包含SoC、激励、resctrl-like、MPAM和策略配置
 
+#### Scenario: 选择导出保存路径和文件名
+
+- **WHEN** 用户点击导出配置且浏览器支持系统保存对话框
+- **THEN** 控制台 MUST 提供默认JSON文件名并允许用户选择保存路径和修改文件名
+- **AND** MUST 将版本化配置JSON写入用户选择的位置
+- **WHEN** 浏览器不支持系统保存对话框
+- **THEN** 控制台 MUST 允许用户修改下载文件名
+- **AND** MUST 退化为浏览器默认下载路径，不得新增服务端文件列表或第二套配置模型
+
 #### Scenario: 导入配置文件
 
 - **WHEN** 用户选择有效配置JSON文件
