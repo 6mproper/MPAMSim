@@ -1491,6 +1491,9 @@ function configuredControlIntervalNs() {
 }
 
 function participatesInMcActualChart(mcRows) {
+  if (mcRows.some((row) => String(row.capture_id || "").startsWith("final:"))) {
+    return false;
+  }
   const intervalNs = Math.max(
     0,
     ...mcRows.map((row) => Number(row.interval_ns)).filter(Number.isFinite),

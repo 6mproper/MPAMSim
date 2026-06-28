@@ -8,7 +8,7 @@ MUST NOT 参与`actual`曲线绘制或纵轴autoscale。
 
 #### Scenario: 排除final短窗口actual
 
-- **WHEN** 仿真结束时产生`interval_ns < control_interval_ns`的MC final snapshot
+- **WHEN** 仿真结束时产生`capture_id=final:*`或`interval_ns < control_interval_ns`的MC final snapshot
 - **THEN** 控制台 MUST 不绘制该snapshot的MC `actual`点
 - **AND** MUST 不使用该点计算MC带宽图纵轴范围
 - **AND** 表格或概览中的该点 MUST 标记为尾部窗口不参与
