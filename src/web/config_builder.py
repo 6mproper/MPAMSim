@@ -222,6 +222,7 @@ def _stimulus_defaults_for_type(workload_type: str) -> Dict[str, object]:
 def _default_stimulus_configs(
     active_cores: int = 8,
     threads_per_core: int = 2,
+    max_outstanding: int = 32,
 ) -> List[Dict[str, object]]:
     rows = []
     workload_types = [
@@ -237,6 +238,7 @@ def _default_stimulus_configs(
             "slot": slot,
             "enabled": True,
             "requester": _thread_requester(slot, threads_per_core),
+            "max_outstanding": max_outstanding,
             "partid": slot % 16,
             "pmg": slot % 16,
             "request_qos": 0,
@@ -654,6 +656,7 @@ def _apply_resctrl_groups(
             values.get("stimulus_configs"),
             active_cores,
             threads_per_core,
+            max_outstanding,
         )
     )
     groups = _parse_resctrl_groups(
@@ -780,8 +783,13 @@ def _normalize_stimulus_configs(
     raw_rows: object,
     active_cores: int,
     threads_per_core: int,
+    max_outstanding: int = 32,
 ) -> List[Dict[str, object]]:
-    defaults = _default_stimulus_configs(active_cores, threads_per_core)
+    defaults = _default_stimulus_configs(
+        active_cores,
+        threads_per_core,
+        max_outstanding,
+    )
     if not isinstance(raw_rows, list):
         return defaults
     rows_by_slot: Dict[int, Dict[str, object]] = {}
@@ -1379,6 +1387,7 @@ def _parse_stimulus_configs(
     parameters: Dict[str, object],
     active_cores: int = 8,
     threads_per_core: int = 2,
+    default_max_outstanding: int = 32,
 ) -> List[Dict[str, object]]:
     raw_rows = parameters.get("stimulus_configs")
     expected_slots = _hardware_threads(active_cores, threads_per_core)
@@ -1465,6 +1474,9 @@ def _parse_stimulus_configs(
             request_qos = int(
                 raw.get("request_qos", raw.get("qos_class", 0))
             )
+            requester_max_outstanding = int(
+                raw.get("max_outstanding", default_max_outstanding)
+            )
             read_ratio = float(raw.get("read_ratio", 1.0))
             working_set_mb = int(raw.get("working_set_mb", 64))
             address_base_mb = int(raw.get("address_base_mb", 0))
@@ -1504,6 +1516,10 @@ def _parse_stimulus_configs(
         if not 0 <= request_qos <= 7:
             raise ParameterError(
                 f"Stimulus {slot}: request QoS must be 0..7"
+            )
+        if not 1 <= requester_max_outstanding <= 1024:
+            raise ParameterError(
+                f"Stimulus {slot}: requester OSTD must be 1..1024"
             )
         if not 0.0 <= read_ratio <= 1.0:
             raise ParameterError(
@@ -1568,6 +1584,7 @@ def _parse_stimulus_configs(
                 "slot": slot,
                 "enabled": enabled,
                 "requester": _thread_requester(slot, threads_per_core),
+                "max_outstanding": requester_max_outstanding,
                 "partid": partid,
                 "pmg": pmg,
                 "request_qos": request_qos,
@@ -2053,11 +2070,13 @@ def build_config(
         values.get("stimulus_configs"),
         active_cores,
         threads_per_core,
+        max_outstanding,
     )
     stimulus_configs = _parse_stimulus_configs(
         values,
         active_cores,
         threads_per_core,
+        max_outstanding,
     )
     workloads = _build_workloads(stimulus_configs)
 
@@ -2201,6 +2220,28 @@ def build_config(
         core: f"r{index % noc_routers}"
         for index, core in enumerate(cores)
     }
+    core_cluster_ids = {
+        core: cluster["id"]
+        for cluster in clusters
+        for core in cluster["cores"]
+    }
+    explicit_requesters = []
+    for row in stimulus_configs:
+        slot = int(row["slot"])
+        core_index = slot // threads_per_core
+        thread_index = slot % threads_per_core
+        core_id = f"cpu{core_index}"
+        explicit_requesters.append(
+            {
+                "id": row["requester"],
+                "type": "cpu_thread",
+                "cluster": core_cluster_ids[core_id],
+                "core": core_id,
+                "thread": thread_index,
+                "attach_node": core_attach_nodes[core_id],
+                "max_outstanding": row["max_outstanding"],
+            }
+        )
     cache_controls = [
         {
             "msc_id": f"slc{index}",
@@ -2303,7 +2344,7 @@ def build_config(
             },
         },
         "requesters": {
-            "auto_expand_cpu_threads": True,
+            "auto_expand_cpu_threads": False,
             "defaults": {
                 "max_outstanding": max_outstanding,
                 "core_max_outstanding": core_max_outstanding,
@@ -2312,7 +2353,7 @@ def build_config(
                 "cbusy_response_enable": cpu_cbusy_response_enable,
             },
             "core_attach_nodes": core_attach_nodes,
-            "explicit": [],
+            "explicit": explicit_requesters,
         },
         "mpam": {
             "partid_width": 4,

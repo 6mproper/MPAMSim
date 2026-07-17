@@ -190,6 +190,7 @@ def test_cpu_monitor_reports_outstanding_by_partid(tmp_path) -> None:
         row["enabled"] = row["slot"] == 0
     parameters["stimulus_configs"][0].update(
         {
+            "max_outstanding": 4,
             "partid": 5,
             "pmg": 3,
             "workload_type": "pointer_chase",

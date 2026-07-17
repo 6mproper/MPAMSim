@@ -87,6 +87,10 @@ def test_results_default_to_control_evidence_workspace() -> None:
         "overviewCpuCard",
         "overviewL3Card",
         "overviewMcCard",
+        "overviewCompareSummary",
+        "overviewComparePartids",
+        "overviewCompareActive",
+        "overviewCompareVisible",
         "overviewL3Chart",
         "overviewMcChart",
         "overviewPartidMatrix",
@@ -199,6 +203,7 @@ def test_control_overview_chart_layers_are_configurable() -> None:
         "controlInput",
         "filtered",
         "actual",
+        "actualMa",
         "raw",
         "events",
     ]
@@ -211,6 +216,8 @@ def test_control_overview_chart_layers_are_configurable() -> None:
     for snippet in (
         "published monitor",
         "sampled-owner",
+        "完整统计窗口",
+        "尾随4窗口moving average",
         "高级证据层默认关闭",
     ):
         assert snippet in index_html
@@ -219,14 +226,51 @@ def test_control_overview_chart_layers_are_configurable() -> None:
     assert 'data-overview-layer="actual" type="checkbox" checked' in index_html
     assert 'data-overview-layer="events" type="checkbox" checked' in index_html
     assert 'data-overview-layer="filtered" type="checkbox" checked' not in index_html
+    assert 'data-overview-layer="actualMa" type="checkbox" checked' not in index_html
     assert 'data-overview-layer="raw" type="checkbox" checked' not in index_html
     for snippet in (
         "Published Sampled",
         "published sampled",
         "latest filtered BW",
+        "actual raw",
+        "actual MA",
         "sampled-owner counter bank",
     ):
         assert snippet in app_js
+
+
+def test_control_overview_charts_support_multi_partid_compare() -> None:
+    index_html = (
+        PROJECT_ROOT / "src/web/static/index.html"
+    ).read_text(encoding="utf-8")
+    app_js = (
+        PROJECT_ROOT / "src/web/static/app.js"
+    ).read_text(encoding="utf-8")
+    styles = (
+        PROJECT_ROOT / "src/web/static/styles.css"
+    ).read_text(encoding="utf-8")
+    for snippet in (
+        "同图对比 PARTID",
+        'id="overviewComparePartids"',
+        'id="overviewCompareActive"',
+        'id="overviewCompareVisible"',
+        "颜色表示PARTID，线型表示",
+    ):
+        assert snippet in index_html
+    for snippet in (
+        "overviewComparePartids",
+        "renderOverviewCompareControls",
+        "compareData.flatMap",
+        "rgbaFromHex(entry.color",
+        "comparedPartids",
+    ):
+        assert snippet in app_js
+    for snippet in (
+        ".overview-compare-bar",
+        ".overview-compare-chip",
+        ".overview-partid.compared",
+    ):
+        assert snippet in styles
 
 
 def test_l3_same_line_merge_is_unchecked_by_default() -> None:

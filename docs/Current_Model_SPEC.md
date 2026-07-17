@@ -513,10 +513,12 @@ traffic_entry_point: l3_facing
 至少包含：
 
 - Core OSTD；
-- Thread OSTD；
+- 每requester独立配置的Thread基础OSTD；
 - Core/PARTID OSTD；
 - Core/PARTID OSTD的目标MC诊断计数；
 - CBusy动态上限。
+
+Web JSON把基础OSTD保存在每条`stimulus_configs`行的`max_outstanding`字段，并生成对应的显式CPU requester。SoC页签的默认Thread OSTD只作为新行和旧JSON缺省值；CBusy cap仍是按PARTID动态形成的有效上限，二者不得混为同一配置。
 
 新事务准入条件：
 
@@ -1203,7 +1205,9 @@ aging_max_qos_steps:
 必须显示：
 
 - BMIN/BMAX目标及assert/release阈值；
-- raw/filtered/actual带宽；
+- raw/filtered/control input带宽；
+- actual raw带宽：完整统计窗口内真实服务字节换算的验证观测，不做平滑，不作为控制输入；
+- actual MA：可选前端趋势显示，使用过去有效actual raw窗口计算，默认关闭，不参与控制、验证判定或目标达成计算；
 - UNDER_BMIN、OVER_BMAX、HARD_BLOCK；
 - base、raw effective QoS和final effective QoS；
 - QoS 8级到4级映射开关和映射事件；
@@ -1558,7 +1562,8 @@ outcome_reason
 | --- | --- |
 | 配置目标 | 点线 |
 | 有效目标 | 阶梯虚线 |
-| 实际值 | 细实线 |
+| 实际值 | 细实线。L3为physical actual occupancy；MC默认为完整统计窗口raw actual bandwidth，不做平滑 |
+| 实际趋势 | 可选辅助线。MC可显示尾随moving average，但必须标注为actual MA，默认关闭 |
 | 原始监控 | 带点线 |
 | 发布监控 | 粗实线，L3为sampled-owner快照，MC为latest filtered bandwidth |
 | 控制事件 | 垂直标记 |
@@ -1570,7 +1575,7 @@ outcome_reason
 根据启用控制自动选择3到5张重点图：
 
 - CMIN/CMAX：目标、control input、published sampled-owner、raw sampled-owner、actual和控制事件；
-- BMIN/BMAX：目标、control input、latest filtered、raw、actual、QoS和状态；
+- BMIN/BMAX：目标、control input、latest filtered、raw、actual raw、可选actual MA、QoS和状态；
 - CBusy：MC buffer、MC等级、RN等级、OSTD和stall；
 - 无控制：吞吐、延迟和瓶颈。
 
@@ -1743,6 +1748,7 @@ P1验收不要求所有控制目标必然达成，也不要求所有控制组合
 - 类型化监控快照、样本、控制决策和控制事件；
 - 组件能力声明、注册和兼容性校验；
 - 可配置核数和每核线程数的Thread/Core两级OSTD；
+- 激励表和Web JSON支持每个CPU requester独立基础OSTD，旧JSON缺字段时继承SoC默认值；
 - `shared`、`static_partition`和`reserve_borrow` Core策略；
 - 按PARTID保存CBusy反馈和准入状态，并按`(PARTID, home MC)`保留outstanding和stall诊断；
 - `per_cpu_partid.csv`和`per_cpu_partid_mc.csv`源端监控。

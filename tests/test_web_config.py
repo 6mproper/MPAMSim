@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -171,6 +174,97 @@ def test_web_parameters_preserve_mc_qos_combiner_fields(tmp_path) -> None:
     )
     assert config.memory_controllers[0].qos_combine_op == "average"
     assert config.workloads[0].request_qos == 7
+
+
+def test_web_stimulus_configures_per_requester_ostd(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["active_cores"] = 2
+    parameters["threads_per_core"] = 1
+    parameters["stimulus_configs"][0]["max_outstanding"] = 32
+    parameters["stimulus_configs"][1]["max_outstanding"] = 4
+
+    raw = build_config(parameters, str(tmp_path / "run"))
+    assert raw["requesters"]["auto_expand_cpu_threads"] is False
+    requester_ostd = {
+        row["id"]: row["max_outstanding"]
+        for row in raw["requesters"]["explicit"]
+    }
+    assert requester_ostd == {"cpu0.t0": 32, "cpu1.t0": 4}
+
+    config_path = tmp_path / "per_requester_ostd.yaml"
+    config_path.write_text(
+        yaml.safe_dump(raw, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    assert config.requester_by_id["cpu0.t0"].max_outstanding == 32
+    assert config.requester_by_id["cpu1.t0"].max_outstanding == 4
+
+
+def test_old_web_config_inherits_default_requester_ostd(tmp_path) -> None:
+    parameters = default_parameters()
+    parameters["max_outstanding"] = 64
+    for row in parameters["stimulus_configs"]:
+        row.pop("max_outstanding", None)
+
+    raw = build_config(parameters, str(tmp_path / "run"))
+    assert {
+        row["max_outstanding"]
+        for row in raw["requesters"]["explicit"]
+    } == {64}
+
+
+@pytest.mark.parametrize(
+    ("filename", "cpu_response_enable"),
+    [
+        ("noisy_neighbor_partid0_cbusy_off.json", False),
+        ("noisy_neighbor_partid0_cbusy_on.json", True),
+    ],
+)
+def test_noisy_neighbor_json_is_web_importable(
+    tmp_path,
+    filename: str,
+    cpu_response_enable: bool,
+) -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "examples"
+        / "experiments"
+        / filename
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    assert payload["schema"] == "mpamsim.config.parameters"
+    assert payload["version"] == 1
+
+    parameters = payload["parameters"]
+    assert parameters["cpu_cbusy_response_enable"] is cpu_response_enable
+    assert [
+        row["max_outstanding"]
+        for row in parameters["stimulus_configs"]
+    ] == [32, 4]
+
+    raw = build_config(parameters, str(tmp_path / filename))
+    assert {
+        row["id"]: row["max_outstanding"]
+        for row in raw["requesters"]["explicit"]
+    } == {"cpu0.t0": 32, "cpu1.t0": 4}
+
+
+def test_noisy_neighbor_json_ab_changes_only_cpu_response() -> None:
+    experiment_dir = (
+        Path(__file__).parents[1] / "examples" / "experiments"
+    )
+    parameters = []
+    for suffix in ("off", "on"):
+        source = (
+            experiment_dir
+            / f"noisy_neighbor_partid0_cbusy_{suffix}.json"
+        )
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        current = payload["parameters"]
+        current.pop("cpu_cbusy_response_enable")
+        parameters.append(current)
+    assert parameters[0] == parameters[1]
 
 
 def test_msc_rows_expose_partial_capture_interval(tmp_path) -> None:

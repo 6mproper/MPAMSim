@@ -51,7 +51,7 @@
             <label>随机种子<input data-param="seed" type="number" min="0" step="1"></label>
             <label>活跃核数<input data-param="active_cores" type="number" min="1" max="16" step="1"></label>
             <label>每核线程<input data-param="threads_per_core" type="number" min="1" max="4" step="1"></label>
-            <label>Thread 最大 OSTD<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
+            <label>默认 Thread OSTD<input data-param="max_outstanding" type="number" min="1" max="1024" step="1"></label>
             <label>Core 最大 OSTD<input data-param="core_max_outstanding" type="number" min="1" max="2048" step="1"></label>
             <label>Core OSTD 策略
               <select data-param="core_ostd_policy">
@@ -148,6 +148,7 @@
                 <tr>
                   <th>Requester</th>
                   <th>En</th>
+                  <th>OSTD</th>
                   <th>PARTID</th>
                   <th>PMG</th>
                   <th>ReqQoS</th>
@@ -420,15 +421,33 @@
               <label>PARTID
                 <select id="overviewPartid"></select>
               </label>
+              <label class="overview-render-mode" data-help="MC带宽显示只改变前端画法，不改变仿真数据和控制输入。插值曲线会连接离散采样点并保留采样点提示，适合多PARTID趋势对比；硬件阶梯按周期锁存值保持到下一采样点，适合检查监控/控制时序语义。">MC带宽显示
+                <select id="overviewMcRenderMode">
+                  <option value="interpolated">插值曲线</option>
+                  <option value="step">硬件阶梯</option>
+                </select>
+              </label>
               <fieldset id="overviewChartLayers" class="overview-layer-controls" data-help="选择控制总览中 L3 和 MC 图表显示哪些曲线层；只影响前端显示，不会重新仿真。">
                 <legend>曲线</legend>
                 <label data-help="目标带：L3显示CMIN/CMAX允许占用比例，MC显示BMIN/BMAX带宽范围；这是用户配置的控制目标。"><input data-overview-layer="targetBand" type="checkbox" checked><span>目标带</span></label>
                 <label data-help="control input：控制器实际读取的已发布保存值；L3是抽样占用，MC是滤波带宽。"><input data-overview-layer="controlInput" type="checkbox" checked><span>control input</span></label>
                 <label data-help="published monitor：L3显示监控边界发布的sampled-owner快照；MC显示latest filtered带宽。该高级证据层默认关闭以减少重叠。"><input data-overview-layer="filtered" type="checkbox"><span>published monitor</span></label>
-                <label data-help="actual：验证用真实观测值；L3为物理实际缓存占比，MC为实际服务带宽，不直接作为控制输入。"><input data-overview-layer="actual" type="checkbox" checked><span>actual</span></label>
+                <label data-help="actual：验证用真实观测值；L3为物理实际缓存占比，MC为完整统计窗口内的真实服务带宽raw actual；不做平滑，也不直接作为控制输入。"><input data-overview-layer="actual" type="checkbox" checked><span>actual</span></label>
+                <label data-help="actual MA：仅用于观察MC actual趋势的尾随4窗口moving average；默认关闭，不参与控制、验证判定或目标达成计算。"><input data-overview-layer="actualMa" type="checkbox"><span>actual MA</span></label>
                 <label data-help="raw：L3为当前采样offset counter bank读出的raw sampled-owner；MC为未滤波带宽。该高级证据层默认关闭以减少曲线重叠。"><input data-overview-layer="raw" type="checkbox"><span>raw</span></label>
                 <label data-help="控制事件：橙色竖线标记控制逻辑在该周期产生状态或参数动作，帮助对齐因果链。"><input data-overview-layer="events" type="checkbox" checked><span>控制事件</span></label>
               </fieldset>
+            </div>
+          </div>
+          <div class="overview-compare-bar" data-help="同图对比PARTID：只影响下方L3和MC主图，状态卡仍显示右上角当前PARTID；多选后颜色表示PARTID，线型表示目标带、control input、actual、raw和控制事件。">
+            <div class="overview-compare-title">
+              <strong>同图对比 PARTID</strong>
+              <span id="overviewCompareSummary">1 个PARTID</span>
+            </div>
+            <div id="overviewComparePartids" class="overview-compare-partids"></div>
+            <div class="overview-compare-actions">
+              <button id="overviewCompareActive" type="button">只看当前</button>
+              <button id="overviewCompareVisible" type="button">同步可见PARTID</button>
             </div>
           </div>
           <div class="overview-grid">

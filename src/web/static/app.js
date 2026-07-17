@@ -29,14 +29,17 @@ const state = {
   resctrlGroups: [],
   resourceView: "cpu",
   overviewPartid: 0,
+  overviewComparePartids: new Set([0]),
   overviewChartLayers: {
     targetBand: true,
     controlInput: true,
     filtered: false,
     actual: true,
+    actualMa: false,
     raw: false,
     events: true,
   },
+  overviewMcRenderMode: "interpolated",
   advancedEvidenceView: "resource-monitor",
   causalPartid: 0,
   experimentPartid: 0,
@@ -67,6 +70,7 @@ const configHeaderFields = {
   stimulus: {
     Requester: "requester",
     En: "enabled",
+    OSTD: "max_outstanding",
     PARTID: "partid",
     PMG: "pmg",
     ReqQoS: "request_qos",
@@ -552,6 +556,9 @@ function defaultStimulusRow(slot) {
     slot,
     enabled: true,
     requester: requesterForSlot(slot),
+    max_outstanding: Number(
+      $('[data-param="max_outstanding"]')?.value || 32
+    ),
     partid: slot % 16,
     pmg: slot % 16,
     request_qos: 0,
@@ -595,6 +602,10 @@ function normalizeStimulusRows(rows) {
     row.partid = moduloPartid(row.partid, slot);
     row.pmg = moduloPartid(row.pmg, slot);
     row.request_qos = Math.max(0, Math.min(7, Number(row.request_qos || 0)));
+    row.max_outstanding = Math.max(
+      1,
+      Math.min(1024, Number(row.max_outstanding || 32)),
+    );
     return row;
   });
 }
@@ -712,6 +723,7 @@ function renderStimulusConfig(rows) {
     <tr data-stimulus-row="${escapeHtml(row.slot)}">
       <td><span class="thread-chip">${escapeHtml(row.requester)}</span></td>
       <td><input data-stimulus-field="enabled" ${configHelpAttributes("stimulus", "enabled")} type="checkbox" ${row.enabled ? "checked" : ""}></td>
+      <td><input data-stimulus-field="max_outstanding" ${configHelpAttributes("stimulus", "max_outstanding")} type="number" min="1" max="1024" step="1" value="${escapeHtml(row.max_outstanding)}"></td>
       <td><select data-stimulus-field="partid" ${configHelpAttributes("stimulus", "partid", row.partid)}>${selectOptions(partidOptions, row.partid)}</select></td>
       <td><input data-stimulus-field="pmg" ${configHelpAttributes("stimulus", "pmg")} type="number" min="0" max="15" step="1" value="${escapeHtml(row.pmg)}"></td>
       <td><input data-stimulus-field="request_qos" ${configHelpAttributes("stimulus", "request_qos")} type="number" min="0" max="7" step="1" value="${escapeHtml(row.request_qos || 0)}"></td>
@@ -739,6 +751,7 @@ function collectStimulusConfigs() {
       slot,
       enabled: value("enabled").checked,
       requester: requesterForSlot(slot),
+      max_outstanding: Number(value("max_outstanding").value),
       partid: Number(value("partid").value),
       pmg: Number(value("pmg").value),
       request_qos: Number(value("request_qos").value),
@@ -1079,6 +1092,7 @@ function focusPresetPartids(parameters) {
   const first = activePartids[0];
   state.visiblePartids = new Set(activePartids);
   state.overviewPartid = first;
+  state.overviewComparePartids = new Set(activePartids.slice(0, 4));
   state.effectPartid = first;
   state.causalPartid = first;
   state.experimentPartid = first;
@@ -1092,6 +1106,7 @@ function applySelectedPreset() {
       Array.from({ length: 16 }, (_, partid) => partid),
     );
     state.overviewPartid = 0;
+    state.overviewComparePartids = new Set([0]);
     state.effectPartid = 0;
     state.causalPartid = 0;
     state.experimentPartid = 0;
@@ -1429,7 +1444,13 @@ function renderSocCapabilitySummaries() {
     .length;
   const threadOstd = numberParam("max_outstanding", 32);
   const coreOstd = numberParam("core_max_outstanding", 48);
-  const threadTotal = hardwareThreads * threadOstd;
+  const requesterOstdRows = collectStimulusConfigs();
+  const threadTotal = requesterOstdRows.length
+    ? requesterOstdRows.reduce(
+      (sum, row) => sum + Number(row.max_outstanding || threadOstd),
+      0,
+    )
+    : hardwareThreads * threadOstd;
   const coreTotal = activeCores * coreOstd;
   const effectiveOstd = Math.min(threadTotal, coreTotal);
   setCapabilityRow(
@@ -2383,6 +2404,10 @@ function syncPartidSelect(selector, selected) {
 
 function overviewLayerEnabled(layer) {
   return Boolean(state.overviewChartLayers[layer]);
+}
+
+function overviewMcRenderMode() {
+  return state.overviewMcRenderMode === "step" ? "step" : "interpolated";
 }
 
 function syncOverviewLayerControls() {
@@ -3548,6 +3573,7 @@ function buildEffectRows(partid) {
         ),
         mcBandwidth: mcControlBandwidth,
         mcActualBandwidth,
+        mcActualRawBandwidth: null,
         mcActualMovingAverageBandwidth: null,
         mcChartActualBandwidth: null,
         mcActualParticipates,
@@ -3606,12 +3632,14 @@ function applyMcActualMovingAverage(rows) {
         / Math.max(1, window.length);
       return {
         ...row,
+        mcActualRawBandwidth: Number(row.mcActualBandwidth),
         mcActualMovingAverageBandwidth: movingAverage,
-        mcChartActualBandwidth: movingAverage,
+        mcChartActualBandwidth: Number(row.mcActualBandwidth),
       };
     }
     return {
       ...row,
+      mcActualRawBandwidth: null,
       mcActualMovingAverageBandwidth: null,
       mcChartActualBandwidth: null,
     };
@@ -3658,7 +3686,7 @@ function stateBadge(value) {
 function formatMcActualEvidence(row) {
   if (!row) return "--";
   if (row.mcActualParticipates === false) return "尾部窗口不参与";
-  return `${formatNumber(row.mcActualMovingAverageBandwidth, 3)} Gbps MA`;
+  return `${formatNumber(row.mcActualRawBandwidth, 3)} Gbps`;
 }
 
 function renderControlEffect() {
@@ -3712,7 +3740,7 @@ function renderControlEffect() {
   });
 
   renderLegend("#effectBwLegend", [
-    { color: "#60717e", label: "actual MA", kind: "actual" },
+    { color: "#60717e", label: "actual raw", kind: "actual" },
     { color: "#a66a00", label: "原始监控", kind: "raw" },
     { color: selectedColor, label: "控制输入", kind: "filtered" },
     { color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" },
@@ -3723,7 +3751,7 @@ function renderControlEffect() {
     { color: colors.amber, label: "控制事件", kind: "event" },
   ]);
   drawLineChart($("#effectBwChart"), [
-    { color: "#60717e", width: 1.2, marker: "none", points: points("mcChartActualBandwidth", { omitMissing: true }) },
+    { color: "#60717e", width: 1.2, step: true, marker: "none", points: points("mcChartActualBandwidth", { omitMissing: true }) },
     { color: "#a66a00", width: 1.2, dash: [1, 4], step: true, marker: "points", points: points("mcRawBandwidth") },
     { color: selectedColor, width: 2.8, step: true, points: points("mcControlBandwidth") },
     { color: "#6d5fa8", width: 1.6, dash: [6, 3], step: true, marker: "none", points: points("mcFilteredBandwidth") },
@@ -3848,6 +3876,60 @@ function latestEffectRow(partid) {
   return rows[rows.length - 1] || null;
 }
 
+function rgbaFromHex(color, alpha) {
+  const match = String(color || "").match(/^#([0-9a-f]{6})$/i);
+  if (!match) return color;
+  const value = match[1];
+  const red = parseInt(value.slice(0, 2), 16);
+  const green = parseInt(value.slice(2, 4), 16);
+  const blue = parseInt(value.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function normalizePartidSelection(partids, fallback = 0) {
+  const selected = [...new Set(
+    (partids || [])
+      .map((partid) => Number(partid))
+      .filter((partid) => Number.isInteger(partid) && partid >= 0 && partid < 16),
+  )].sort((left, right) => left - right);
+  if (selected.length) return selected;
+  const safeFallback = Number.isInteger(Number(fallback))
+    ? Math.max(0, Math.min(15, Number(fallback)))
+    : 0;
+  return [safeFallback];
+}
+
+function setOverviewComparePartids(partids) {
+  state.overviewComparePartids = new Set(
+    normalizePartidSelection(partids, state.overviewPartid),
+  );
+}
+
+function overviewComparePartidList() {
+  const partids = normalizePartidSelection(
+    [...(state.overviewComparePartids || [])],
+    state.overviewPartid,
+  );
+  state.overviewComparePartids = new Set(partids);
+  return partids;
+}
+
+function renderOverviewCompareControls(partids) {
+  const container = $("#overviewComparePartids");
+  if (!container) return;
+  const selected = new Set(partids);
+  container.innerHTML = Array.from({ length: 16 }, (_, partid) => `
+    <label class="overview-compare-chip ${selected.has(partid) ? "active" : ""}" style="--partid-color:${partidColor(partid)}">
+      <input data-overview-compare-partid="${partid}" type="checkbox" ${selected.has(partid) ? "checked" : ""}>
+      <span>ID ${partid}</span>
+    </label>
+  `).join("");
+  const summary = $("#overviewCompareSummary");
+  if (summary) {
+    summary.textContent = `${partids.length} 个PARTID同图`;
+  }
+}
+
 function overviewTargetBand(minValue, maxValue, fallbackMax, color) {
   if (minValue == null && maxValue == null) return [];
   return [{
@@ -3860,6 +3942,8 @@ function overviewTargetBand(minValue, maxValue, fallbackMax, color) {
 function renderControlOverview() {
   syncPartidSelect("#overviewPartid", state.overviewPartid);
   syncOverviewLayerControls();
+  const mcRenderModeSelect = $("#overviewMcRenderMode");
+  if (mcRenderModeSelect) mcRenderModeSelect.value = overviewMcRenderMode();
   const pid = Number(state.overviewPartid);
   const target = effectTarget(pid);
   const rows = buildEffectRows(pid);
@@ -3868,7 +3952,6 @@ function renderControlOverview() {
   const cpu = aggregateCpuResources()[pid] || {};
   const l3 = aggregateL3Resources()[pid] || {};
   const mc = aggregateMcResources()[pid] || {};
-  const selectedColor = partidColor(pid);
   const cpuLimited = Number(cpu.cbusyLevel || 0) > 0
     || Number(cpu.effectiveMaxOutstanding || 0) < Number(cpu.maxOutstanding || 0);
   const destinationText = [...(cpu.destinations || new Map()).entries()]
@@ -3911,13 +3994,13 @@ function renderControlOverview() {
       ${overviewMetric("Control Input", latest ? `${formatNumber(latest.mcControlBandwidth, 3)} Gbps` : "--", "锁存读取值")}
       ${overviewMetric("Latest Filtered", latest ? `${formatNumber(latest.mcFilteredBandwidth, 3)} Gbps` : "--", "最新发布")}
       ${overviewMetric(
-        "Service Actual MA",
+        "Service Actual",
         latest && latest.mcActualParticipates !== false
-          ? `${formatNumber(latest.mcActualMovingAverageBandwidth, 3)} Gbps`
+          ? `${formatNumber(latest.mcActualRawBandwidth, 3)} Gbps`
           : "--",
         latest && latest.mcActualParticipates === false
           ? "尾部窗口不参与"
-          : `${MC_ACTUAL_MOVING_AVERAGE_WINDOWS}-window`,
+          : "完整窗口raw",
       )}
       ${overviewMetric("Buffer / Queue", formatNumber(mc.bufferEntries || 0, 0), `${formatNumber(mc.avgQueueDelayNs || 0, 2)} ns avg`)}
       ${overviewMetric(
@@ -3929,42 +4012,74 @@ function renderControlOverview() {
       )}
     </div>`;
 
-  const pointSeries = (key, { omitMissing = false } = {}) => rows.map(
+  const comparePartids = overviewComparePartidList();
+  renderOverviewCompareControls(comparePartids);
+  const compareData = comparePartids.map((partid) => ({
+    partid,
+    color: partidColor(partid),
+    target: effectTarget(partid),
+    rows: buildEffectRows(partid),
+  }));
+  const pointsFor = (partidRows, key, { omitMissing = false } = {}) => partidRows.map(
     (row) => ({
       x: row.timeNs,
       y: omitMissing && row[key] == null ? NaN : Number(row[key] || 0),
     }),
   );
   const eventXs = overviewLayerEnabled("events")
-    ? rows.filter((row) => row.events.length).map((row) => row.timeNs)
+    ? [...new Set(compareData.flatMap(
+      (entry) => entry.rows.filter((row) => row.events.length).map((row) => row.timeNs),
+    ))].sort((left, right) => left - right)
     : [];
-  const l3Series = [
-    ...(overviewLayerEnabled("actual")
-      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("l3ActualShare") }]
-      : []),
-    ...(overviewLayerEnabled("raw")
-      ? [{
-        color: "#a66a00",
+  const layerLegend = (publishedLabel, options = {}) => [
+    ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
+    ...(overviewLayerEnabled("controlInput") ? [{ color: "#20303a", label: "control input", kind: "filtered" }] : []),
+    ...(overviewLayerEnabled("filtered") ? [{ color: "#20303a", label: publishedLabel, kind: "effective" }] : []),
+    ...(overviewLayerEnabled("actual") ? [{ color: "#20303a", label: "actual", kind: "actual" }] : []),
+    ...(options.actualMa && overviewLayerEnabled("actualMa") ? [{ color: "#20303a", label: "actual MA", kind: "effective" }] : []),
+    ...(overviewLayerEnabled("raw") ? [{ color: "#20303a", label: "raw", kind: "raw" }] : []),
+    ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
+  ];
+
+  const l3Series = [];
+  compareData.forEach((entry) => {
+    if (overviewLayerEnabled("actual")) {
+      l3Series.push({
+        color: entry.color,
+        width: 1.2,
+        dash: [4, 3],
+        marker: "none",
+        points: pointsFor(entry.rows, "l3ActualShare"),
+      });
+    }
+    if (overviewLayerEnabled("raw")) {
+      l3Series.push({
+        color: entry.color,
         width: 1.1,
         dash: [1, 4],
         marker: "points",
-        points: pointSeries("l3RawShare"),
-      }]
-      : []),
-    ...(overviewLayerEnabled("controlInput")
-      ? [{ color: selectedColor, width: 3, points: pointSeries("l3ControlShare") }]
-      : []),
-    ...(overviewLayerEnabled("filtered")
-      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], points: pointSeries("l3FilteredShare") }]
-      : []),
-  ];
+        points: pointsFor(entry.rows, "l3RawShare"),
+      });
+    }
+    if (overviewLayerEnabled("controlInput")) {
+      l3Series.push({
+        color: entry.color,
+        width: 2.8,
+        points: pointsFor(entry.rows, "l3ControlShare"),
+      });
+    }
+    if (overviewLayerEnabled("filtered")) {
+      l3Series.push({
+        color: entry.color,
+        width: 1.6,
+        dash: [7, 3],
+        points: pointsFor(entry.rows, "l3FilteredShare"),
+      });
+    }
+  });
   renderLegend("#overviewL3Legend", [
-    ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
-    ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "published sampled", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual", kind: "actual" }] : []),
-    ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
-    ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
+    ...compareData.map((entry) => ({ color: entry.color, label: `ID ${entry.partid}`, kind: "dot" })),
+    ...layerLegend("published sampled"),
   ]);
   drawLineChart($("#overviewL3Chart"), l3Series, {
     xLabel: "时间",
@@ -3974,50 +4089,84 @@ function renderControlOverview() {
     yMax: 100,
     eventXs,
     bands: overviewLayerEnabled("targetBand")
-      ? overviewTargetBand(target.cmin, target.cmax, 100, "rgba(45, 122, 76, 0.14)")
+      ? compareData.flatMap((entry) => overviewTargetBand(
+        entry.target.cmin,
+        entry.target.cmax,
+        100,
+        rgbaFromHex(entry.color, 0.10),
+      ))
       : [],
   });
 
-  const mcValues = rows.flatMap((row) => [
-    ...(row.mcChartActualBandwidth == null ? [] : [Number(row.mcChartActualBandwidth)]),
-    Number(row.mcControlBandwidth || 0),
-    Number(row.mcFilteredBandwidth || 0),
-    Number(row.mcRawBandwidth || 0),
+  const mcValues = compareData.flatMap((entry) => [
+    Number(entry.target.bmin || 0),
+    Number(entry.target.bmax || 0),
+    ...entry.rows.flatMap((row) => [
+      ...(row.mcChartActualBandwidth == null ? [] : [Number(row.mcChartActualBandwidth)]),
+      ...(row.mcActualMovingAverageBandwidth == null ? [] : [Number(row.mcActualMovingAverageBandwidth)]),
+      Number(row.mcControlBandwidth || 0),
+      Number(row.mcFilteredBandwidth || 0),
+      Number(row.mcRawBandwidth || 0),
+    ]),
   ]);
-  const mcYMax = Math.max(
-    1,
-    ...mcValues,
-    Number(target.bmin || 0),
-    Number(target.bmax || 0),
-  ) * 1.15;
-  const mcSeries = [
-    ...(overviewLayerEnabled("actual")
-      ? [{ color: "#697680", width: 1.2, marker: "none", points: pointSeries("mcChartActualBandwidth", { omitMissing: true }) }]
-      : []),
-    ...(overviewLayerEnabled("raw")
-      ? [{
-        color: "#a66a00",
+  const mcYMax = Math.max(1, ...mcValues) * 1.15;
+  const mcSeries = [];
+  const mcUsesStep = overviewMcRenderMode() === "step";
+  const mcDiscreteMarker = mcUsesStep ? "none" : "points";
+  compareData.forEach((entry) => {
+    if (overviewLayerEnabled("actual")) {
+      mcSeries.push({
+        color: entry.color,
+        width: 1.2,
+        dash: [4, 3],
+        step: mcUsesStep,
+        marker: mcDiscreteMarker,
+        points: pointsFor(entry.rows, "mcChartActualBandwidth", { omitMissing: true }),
+      });
+    }
+    if (overviewLayerEnabled("actualMa")) {
+      mcSeries.push({
+        color: entry.color,
+        width: 1.5,
+        dash: [7, 4],
+        step: mcUsesStep,
+        marker: "none",
+        points: pointsFor(entry.rows, "mcActualMovingAverageBandwidth", { omitMissing: true }),
+      });
+    }
+    if (overviewLayerEnabled("raw")) {
+      mcSeries.push({
+        color: entry.color,
         width: 1.1,
         dash: [1, 4],
-        step: true,
+        step: mcUsesStep,
         marker: "points",
-        points: pointSeries("mcRawBandwidth"),
-      }]
-      : []),
-    ...(overviewLayerEnabled("controlInput")
-      ? [{ color: selectedColor, width: 3, step: true, points: pointSeries("mcControlBandwidth") }]
-      : []),
-    ...(overviewLayerEnabled("filtered")
-      ? [{ color: "#6d5fa8", width: 1.8, dash: [6, 3], step: true, points: pointSeries("mcFilteredBandwidth") }]
-      : []),
-  ];
+        points: pointsFor(entry.rows, "mcRawBandwidth"),
+      });
+    }
+    if (overviewLayerEnabled("controlInput")) {
+      mcSeries.push({
+        color: entry.color,
+        width: 2.8,
+        step: mcUsesStep,
+        marker: mcDiscreteMarker,
+        points: pointsFor(entry.rows, "mcControlBandwidth"),
+      });
+    }
+    if (overviewLayerEnabled("filtered")) {
+      mcSeries.push({
+        color: entry.color,
+        width: 1.6,
+        dash: [7, 3],
+        step: mcUsesStep,
+        marker: mcDiscreteMarker,
+        points: pointsFor(entry.rows, "mcFilteredBandwidth"),
+      });
+    }
+  });
   renderLegend("#overviewMcLegend", [
-    ...(overviewLayerEnabled("targetBand") ? [{ color: "#2d7a4c", label: "目标带", kind: "band" }] : []),
-    ...(overviewLayerEnabled("controlInput") ? [{ color: selectedColor, label: "control input", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("filtered") ? [{ color: "#6d5fa8", label: "latest filtered BW", kind: "filtered" }] : []),
-    ...(overviewLayerEnabled("actual") ? [{ color: "#697680", label: "actual MA", kind: "actual" }] : []),
-    ...(overviewLayerEnabled("raw") ? [{ color: "#a66a00", label: "raw", kind: "raw" }] : []),
-    ...(overviewLayerEnabled("events") ? [{ color: colors.amber, label: "控制事件", kind: "event" }] : []),
+    ...compareData.map((entry) => ({ color: entry.color, label: `ID ${entry.partid}`, kind: "dot" })),
+    ...layerLegend("latest filtered BW", { actualMa: true }),
   ]);
   drawLineChart($("#overviewMcChart"), mcSeries, {
     xLabel: "时间",
@@ -4027,13 +4176,19 @@ function renderControlOverview() {
     yMax: mcYMax,
     eventXs,
     bands: overviewLayerEnabled("targetBand")
-      ? overviewTargetBand(target.bmin, target.bmax, mcYMax, "rgba(45, 122, 76, 0.14)")
+      ? compareData.flatMap((entry) => overviewTargetBand(
+        entry.target.bmin,
+        entry.target.bmax,
+        mcYMax,
+        rgbaFromHex(entry.color, 0.10),
+      ))
       : [],
   });
 
   const cpuRows = aggregateCpuResources();
   const l3Rows = aggregateL3Resources();
   const mcRows = aggregateMcResources();
+  const comparedPartids = new Set(comparePartids);
   $("#overviewPartidMatrix").innerHTML = Array.from({ length: 16 }, (_, partid) => {
     const row = latestEffectRow(partid);
     const rowTarget = effectTarget(partid);
@@ -4045,7 +4200,7 @@ function renderControlOverview() {
       ? `L${formatNumber(cpuRow.cbusyLevel, 0)}`
       : Number(cpuRow.outstanding || 0) > 0 ? "运行" : "空闲";
     return `
-      <button type="button" class="overview-partid ${partid === pid ? "active" : ""}" data-overview-partid="${partid}" style="--partid-color:${partidColor(partid)}">
+      <button type="button" class="overview-partid ${partid === pid ? "active" : ""} ${comparedPartids.has(partid) ? "compared" : ""}" data-overview-partid="${partid}" style="--partid-color:${partidColor(partid)}">
         <b>ID ${partid}</b>
         <span class="${overviewStateKind(cpuLabel)}">CPU ${escapeHtml(cpuLabel)}</span>
         <span class="${overviewStateKind(rowState.l3)}">L3 ${escapeHtml(rowState.l3)}</span>
@@ -4619,6 +4774,9 @@ function bindEvents() {
   });
   $("#overviewPartid").addEventListener("change", (event) => {
     state.overviewPartid = Number(event.target.value);
+    if ((state.overviewComparePartids?.size || 0) <= 1) {
+      setOverviewComparePartids([state.overviewPartid]);
+    }
     renderControlOverview();
   });
   $("#overviewChartLayers").addEventListener("change", (event) => {
@@ -4627,10 +4785,35 @@ function bindEvents() {
     state.overviewChartLayers[input.dataset.overviewLayer] = input.checked;
     renderControlOverview();
   });
+  $("#overviewMcRenderMode").addEventListener("change", (event) => {
+    state.overviewMcRenderMode = event.target.value === "step" ? "step" : "interpolated";
+    renderControlOverview();
+  });
+  $("#overviewComparePartids").addEventListener("change", (event) => {
+    const input = event.target.closest?.("[data-overview-compare-partid]");
+    if (!input) return;
+    const partid = Number(input.dataset.overviewComparePartid);
+    const next = new Set(state.overviewComparePartids || []);
+    if (input.checked) next.add(partid);
+    else next.delete(partid);
+    setOverviewComparePartids([...next]);
+    renderControlOverview();
+  });
+  $("#overviewCompareActive").addEventListener("click", () => {
+    setOverviewComparePartids([state.overviewPartid]);
+    renderControlOverview();
+  });
+  $("#overviewCompareVisible").addEventListener("click", () => {
+    setOverviewComparePartids([...state.visiblePartids]);
+    renderControlOverview();
+  });
   $("#overviewPartidMatrix").addEventListener("click", (event) => {
     const button = event.target.closest?.("[data-overview-partid]");
     if (!button) return;
     state.overviewPartid = Number(button.dataset.overviewPartid);
+    if ((state.overviewComparePartids?.size || 0) <= 1) {
+      setOverviewComparePartids([state.overviewPartid]);
+    }
     renderControlOverview();
   });
   $("#resetButton").addEventListener("click", () => {

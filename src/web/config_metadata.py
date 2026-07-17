@@ -861,6 +861,15 @@ STIMULUS_METADATA: Dict[str, Dict[str, str]] = {
         "cpu0.t1表示core0的线程1。",
         "固定映射",
     ),
+    "max_outstanding": _field(
+        "Requester基础OSTD",
+        "该硬件线程在没有CBusy收紧时可同时占用的CPU RN事务项上限。",
+        "request/thread",
+        "CPU requester事务表分配前的线程级准入。",
+        "增大可提高该线程的内存级并行度，也会增加其占用共享MC buffer和服务机会的能力；实际值仍受Core池和CBusy cap限制。",
+        "1到1024；旧JSON未提供该字段时继承SoC页签的默认Thread OSTD。",
+        "noisy neighbor线程可配置32，受保护线程配置4。",
+    ),
     "enabled": _field(
         "启用激励",
         "是否为该硬件线程生成workload和请求流。",
